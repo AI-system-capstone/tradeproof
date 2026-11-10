@@ -1,0 +1,28 @@
+# 폴더별 담당자. PR을 올리면 해당 담당자가 리뷰어로 자동 지정됩니다.
+# 이메일은 각자의 GitHub 계정에 등록·인증된 주소여야 인식됩니다.
+# 마지막에 일치하는 규칙이 우선합니다.
+
+*                       only5689@khu.ac.kr
+
+/a_screening/           yunaji0824@gmail.com
+/b_registry/            siwoo0312@khu.ac.kr
+/c_replay/              opis241@khu.ac.kr
+/d_platform/            only5689@khu.ac.kr
+/scripts/               only5689@khu.ac.kr
+/docker-compose.yml     only5689@khu.ac.kr
+/deploy/                opis241@khu.ac.kr only5689@khu.ac.kr
+
+# 데이터 담당 미정 — 정해지면 아래 두 줄의 주석을 풀고 이메일을 채우세요
+# /dataset/                         <데이터 담당 이메일>
+# /common/schema/15_dataset.sql     <데이터 담당 이메일>
+
+# 테이블 소유
+/common/schema/00_common.sql       siwoo0312@khu.ac.kr
+/common/schema/10_a_screening.sql  yunaji0824@gmail.com
+/common/schema/20_b_registry.sql   siwoo0312@khu.ac.kr
+/common/schema/30_c_replay.sql     opis241@khu.ac.kr
+/common/schema/40_d_platform.sql   only5689@khu.ac.kr
+
+# 모두에게 영향이 가는 계약 — 전원 리뷰
+/common/*.py            yunaji0824@gmail.com siwoo0312@khu.ac.kr opis241@khu.ac.kr only5689@khu.ac.kr
+/docs/interfaces.md     yunaji0824@gmail.com siwoo0312@khu.ac.kr opis241@khu.ac.kr only5689@khu.ac.kr

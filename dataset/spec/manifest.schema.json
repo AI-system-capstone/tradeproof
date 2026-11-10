@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tradeproof/dataset/manifest.schema.json",
+  "title": "골든셋 manifest (리스트 버전 1개당 1개)",
+  "description": "초안. 위치: dataset/golden/golden-<list_version>/manifest.json. C가 읽는다 (docs/interfaces.md 3절).",
+  "type": "object",
+  "required": ["golden_version", "list_version", "rules_version", "generator_seed", "created_at", "items"],
+  "properties": {
+    "golden_version": { "type": "string", "description": "예: golden-list-v1" },
+    "list_version": { "type": "string", "description": "예: list-v1" },
+    "rules_version": { "type": "string", "description": "기대 분류 계산에 쓴 규칙 버전, 예: rules-v3" },
+    "generator_seed": { "type": "integer" },
+    "created_at": { "type": "string", "description": "UTC ISO8601, +00:00" },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["tx_id", "label", "expected"],
+        "properties": {
+          "tx_id": { "type": "string" },
+          "label": { "type": "string", "description": "정답 라벨 JSON 경로" },
+          "expected": { "enum": ["PASS_CANDIDATE", "MANUAL_REVIEW", "HIGH_RISK_HOLD"] },
+          "matched_entry_id": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

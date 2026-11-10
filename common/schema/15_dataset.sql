@@ -1,0 +1,16 @@
+-- 소유: 데이터 담당(미정) — golden_labels (리스트 버전별 정답, DAT-03)
+-- 쓰기는 소유 모듈만, 읽기는 누구나. 다른 모듈이 읽는 컬럼은 계약(docs/interfaces.md)이다.
+-- 11/12까지는 이 파일을 직접 고치고 DB를 초기화한다. 이후에는 ALTER 파일을 새로 추가한다.
+-- 파일 이름 순서대로 적용된다 (docker-compose: /docker-entrypoint-initdb.d).
+
+-- 초안 (데이터 담당이 dataset/spec/label.schema.json 과 함께 확정)
+-- CREATE TABLE golden_labels (
+--     golden_version   text        NOT NULL,   -- 예: golden-list-v1
+--     list_version     text        NOT NULL,   -- 예: list-v1
+--     tx_id            text        NOT NULL,
+--     expected         text        NOT NULL,   -- PASS_CANDIDATE | MANUAL_REVIEW | HIGH_RISK_HOLD
+--     matched_entry_id text,
+--     label_uri        text        NOT NULL,   -- s3://tradeproof-docs/golden/... 정답 라벨 JSON
+--     created_at       timestamptz NOT NULL DEFAULT now(),
+--     PRIMARY KEY (golden_version, tx_id)
+-- );

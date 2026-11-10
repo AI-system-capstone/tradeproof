@@ -1,0 +1,76 @@
+# 통합 개발 환경 (담당: D)
+# 1차에는 데이터 계층(postgres, minio=SeaweedFS)만 실제로 동작합니다.
+# 모듈 서비스는 담당자가 Dockerfile을 완성하면 아래 주석을 풀어 추가하세요.
+#
+# 이미지 태그는 버전 고정 규약을 따릅니다. 만든 시점(2026-11-10)에 확인한 버전이며,
+# pull이 실패하면 Docker Hub에서 해당 이미지의 최신 안정 태그로 바꾸고 PR로 공유하세요.
+# TODO(D): SeaweedFS -s3.port=9000 과 minio 파이썬 클라이언트 조합은 아직 직접 검증 전.
+
+name: tradeproof
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # 파일 이름 순서(00 → 10 → 15 → 20 → 30 → 40)로 최초 1회 적용
+      - ./common/schema:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      retries: 10
+
+  # 호스트 이름 minio, 포트 9000 은 팀원 코드를 바꾸지 않기 위해 유지 (실체는 SeaweedFS)
+  minio:
+    image: chrislusf/seaweedfs:4.18
+    command: >
+      server -dir=/data -master.port=9333 -volume.port=8080
+      -s3 -s3.port=9000 -s3.config=/etc/seaweedfs/s3.json
+    ports: ["9000:9000"]
+    volumes:
+      - blobdata:/data
+      - ./d_platform/compose/seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
+
+  # 버킷 생성 (1회 실행 후 종료). 추가 이미지 없이 같은 SeaweedFS 이미지의 weed shell 사용
+  minio-init:
+    image: chrislusf/seaweedfs:4.18
+    depends_on: [minio]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        sleep 5
+        echo "s3.bucket.create -name tradeproof-docs" | weed shell -master=minio:9333
+        echo "s3.bucket.create -name tradeproof-registry" | weed shell -master=minio:9333
+        echo "buckets ready"
+    restart: "no"
+
+  # --- 모듈 서비스 (준비되면 주석 해제) -----------------------------------
+  # a-screening:
+  #   build: { context: ., dockerfile: a_screening/Dockerfile }
+  #   env_file: .env
+  #   ports: ["8000:8000"]
+  #   depends_on: { postgres: { condition: service_healthy }, minio: { condition: service_started } }
+  # b-registry:
+  #   build: { context: ., dockerfile: b_registry/Dockerfile }
+  #   env_file: .env
+  #   ports: ["8100:8100"]
+  #   depends_on: { postgres: { condition: service_healthy } }
+  # c-replay:
+  #   build: { context: ., dockerfile: c_replay/Dockerfile }
+  #   env_file: .env
+  #   ports: ["8200:8200"]
+  #   depends_on: { postgres: { condition: service_healthy } }
+  # d-platform:
+  #   build: { context: ., dockerfile: d_platform/Dockerfile }
+  #   env_file: .env
+  #   ports: ["8300:8300"]
+  #   depends_on: { postgres: { condition: service_healthy } }
+
+volumes:
+  pgdata:
+  blobdata:

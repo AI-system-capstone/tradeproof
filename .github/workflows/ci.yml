@@ -1,0 +1,50 @@
+# 바뀐 폴더의 테스트만 실행합니다. common/ 이 바뀌면 전 모듈 테스트.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 바뀐 모듈 찾기
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          CHANGED=$(git diff --name-only "$BASE" HEAD 2>/dev/null || git ls-files)
+          MODULES=""
+          for m in dataset a_screening b_registry c_replay d_platform; do
+            if echo "$CHANGED" | grep -qE "^($m|common)/"; then MODULES="$MODULES $m"; fi
+          done
+          if echo "$CHANGED" | grep -q "^common/"; then MODULES="common $MODULES"; fi
+          echo "modules=$MODULES" >> "$GITHUB_OUTPUT"
+          echo "테스트할 모듈:$MODULES"
+
+      - name: 테스트
+        run: |
+          pip install pytest
+          for m in ${{ steps.changed.outputs.modules }}; do
+            if [ -s "$m/requirements.txt" ] && grep -qv '^#' "$m/requirements.txt"; then
+              pip install -r "$m/requirements.txt"
+            fi
+            if compgen -G "$m/tests/test_*.py" > /dev/null; then
+              echo "== pytest $m"; pytest -q "$m/tests"
+            else
+              echo "== $m: 테스트 파일 없음 (건너뜀)"
+            fi
+          done

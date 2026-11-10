@@ -1,0 +1,11 @@
+{
+  "identities": [
+    {
+      "name": "tradeproof-dev",
+      "credentials": [
+        { "accessKey": "tradeproof", "secretKey": "tradeproof-dev-secret" }
+      ],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

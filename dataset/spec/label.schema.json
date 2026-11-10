@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tradeproof/dataset/label.schema.json",
+  "title": "정답 라벨 (합성 서류 1건 = 거래 1건)",
+  "description": "초안. 데이터 담당이 11/11 확정. 생성기가 서류를 만들 때 함께 생성한다.",
+  "type": "object",
+  "required": ["tx_id", "seed", "documents", "fields", "noise", "expected"],
+  "properties": {
+    "tx_id": { "type": "string", "description": "예: TX-20261112-1A2B3C4D (common.ids.new_id)" },
+    "seed": { "type": "integer", "description": "이 서류를 만든 난수 시드" },
+    "documents": {
+      "type": "object",
+      "required": ["invoice", "bl"],
+      "properties": {
+        "invoice": { "type": "string", "description": "s3://tradeproof-docs/... 또는 data/docs/... 경로" },
+        "bl": { "type": "string" }
+      }
+    },
+    "fields": {
+      "type": "object",
+      "description": "필드별 정답값. 키는 contracts.py 의 거래 필드 이름(13개)",
+      "additionalProperties": { "type": ["string", "null"] },
+      "examples": [{ "seller_name": "Falcon Oakwood Semiconductor LLC", "buyer_name": "ASTERIA HARBOR TRADING", "vessel_name": "EMERALD TRIUMPH", "amount": "363,517.00" }]
+    },
+    "name_variant": {
+      "type": ["object", "null"],
+      "description": "제재 대상 이름을 넣었다면 어떤 변형인지",
+      "properties": {
+        "field": { "type": "string" },
+        "source_entry_id": { "type": "string", "description": "예: DEMO-A001" },
+        "kind": { "enum": ["exact", "suffix_dropped", "typo", "none"] }
+      }
+    },
+    "noise": {
+      "type": "object",
+      "properties": {
+        "rotation_deg": { "type": "number" },
+        "blur_radius": { "type": "number" },
+        "downscale": { "type": "number", "description": "0~1, 1이면 원본 해상도" },
+        "jpeg_quality": { "type": "integer" }
+      }
+    },
+    "expected": {
+      "type": "object",
+      "description": "리스트 버전별 기대 결과 (DAT-03). 리스트가 새로 생기면 키가 추가된다",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["classification"],
+        "properties": {
+          "classification": { "enum": ["PASS_CANDIDATE", "MANUAL_REVIEW", "HIGH_RISK_HOLD"] },
+          "matched_entry_id": { "type": ["string", "null"] },
+          "rule": { "type": ["string", "null"], "description": "예: party_exact" }
+        }
+      },
+      "examples": [{ "list-v1": { "classification": "PASS_CANDIDATE", "matched_entry_id": null }, "list-v2": { "classification": "HIGH_RISK_HOLD", "matched_entry_id": "DEMO-A001", "rule": "party_exact" } }]
+    }
+  }
+}

@@ -1,0 +1,2 @@
+# 의존성은 == 로 버전 고정 (예: fastapi==X.Y.Z). 담당자가 채웁니다.
+# common/ 이 쓰는 psycopg, minio 도 여기에 포함하세요.

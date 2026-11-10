@@ -1,0 +1,22 @@
+# 비밀값
+.env
+*.pem
+*.key
+!dataset/lists/**/*.pub
+
+# 생성물 (scripts/gen_data.sh 로 재생성)
+data/*
+!data/.gitkeep
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# 에디터·OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
