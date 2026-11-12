@@ -15,7 +15,8 @@ AI는 OCR에만 쓰고, 필드 추출·매칭·분류는 모두 코드입니다.
 | `api/main.py` | 심사 API (접수·조회·검토·지표). OCR은 하지 않고 큐에 넣기만 함 |
 | `ocr/worker.py` | OCR 워커. `screening_jobs` 큐를 `FOR UPDATE SKIP LOCKED`로 꺼내 OCR → 판정 → 저장. 실패 시 재시도, 3회 넘으면 담당자 검토 |
 | `ocr/extract.py` | OCR·필드 추출 (tesseract). `model-v3`(정상)·`model-v4`(일부러 성능 저하) |
-| `screening/match.py` | 판정 순수 함수 `screen(fields, index, rules_version, ocr)`. **C가 그대로 import** |
+| `pipeline.py` | 한 건 처리 경로 `screen_documents(서류 폴더, 번들)`: OCR → 필드 → 판정. **워커와 C(골든셋·Replay)가 같이 씀** |
+| `screening/match.py` | 판정 순수 함수 `screen(fields, index, rules_version, ocr)` |
 | `store.py` | 저장소 (메모리·Postgres). 테이블 정의는 `common/schema/10_a_screening.sql` |
 | `ui/review.html` | 담당자 검토 화면 (`GET /review`, 외부 라이브러리 없음) |
 | `sanctions/`, `docs/`, `db/`, `run_all.sh` | 시연 데이터 생성: 제재 리스트 → 합성 서류 100건 → OCR → 평가 → 과거 거래 적재 (데이터 담당이 정해지면 `dataset/`로 이관) |
@@ -47,7 +48,7 @@ docker build -f a_screening/Dockerfile --target screening-api -t tradeproof/a-sc
 docker build -f a_screening/Dockerfile --target ocr-worker    -t tradeproof/a-ocr-worker:dev .
 ```
 
-환경변수: `DATABASE_URL`, `BLOB_ENDPOINT`·`BLOB_ACCESS_KEY`·`BLOB_SECRET_KEY`, `ACTIVE_BUNDLE`(1차 작업에서 `BUNDLE_ID`로 바꿈), `SHADOW_BUNDLE`.
+환경변수: `DATABASE_URL`, `BLOB_ENDPOINT`·`BLOB_ACCESS_KEY`·`BLOB_SECRET_KEY`, `BUNDLE_ID`(접수 번들, 예전 이름 `ACTIVE_BUNDLE`), `SHADOW_BUNDLE`.
 OCR 결과는 tesseract 버전에 따라 달라서 이미지에서 5.5.0으로 고정합니다 (팀 기준값: model-v3 정확도 94.3%, 미탐 0).
 
 ## 진행 상황
@@ -61,14 +62,15 @@ OCR 결과는 tesseract 버전에 따라 달라서 이미지에서 5.5.0으로 �
 - [x] C가 import할 수 있는 판정 코드: `from a_screening.screening.match import screen, load_index`
 - [x] 거래마다 처리한 `bundle_id` 기록 (canary 중 어느 모델이 처리했는지 구분)
 - [x] 접수 시점에 번들 고정: API 파드마다 번들이 달라도(canary) 워커 하나가 두 모델을 모두 처리
+- [x] C가 쓸 처리 경로 `a_screening.pipeline.screen_documents` — 워커도 같은 함수를 씀 (모델 Replay는 과거 서류를 새 모델로 다시 OCR)
+- [x] 같은 번들·같은 서류 → 같은 결과 (SVC-04): 3회 반복 + 워커 경로 == pipeline 테스트 (tesseract 5.5.0 컨테이너에서도 확인)
+- [x] `BUNDLE_ID` 환경변수로 접수 번들 지정 (예전 이름 `ACTIVE_BUNDLE`도 받음)
 
 **남은 것**
 
-- [ ] OCR 추출 코드를 C가 import할 수 있게 정리 (모델 Replay는 과거 서류를 새 모델로 다시 OCR — S4·S5)
-- [ ] `BUNDLE_ID` 환경변수로 번들을 받고, 구성은 B의 `GET /bundles/{id}`에서 가져오기 (지금은 `contracts.BUNDLES`의 B-7~B-10, `ACTIVE_BUNDLE`)
+- [ ] 번들 구성을 B의 `GET /bundles/{id}`에서 가져오기 (지금은 `contracts.BUNDLES`의 B-7~B-10이라 `BUNDLE_ID=B-1`은 아직 모름)
 - [ ] 모델 변형을 설정으로 교체: 기준 / 개선(S4) / 저하(S5, 지금 `model-v4`) — 노이즈 서류는 데이터 담당과 함께 (TST-05·06)
 - [ ] 번들별 지표: 이름을 `tradeproof_<모듈>_<대상>` 규칙으로, 모든 지표에 `bundle_id` 라벨 (D의 canary 비교·자동 롤백 근거, MON-01)
-- [ ] 같은 번들·같은 서류 → 같은 결과 (SVC-04) 3회 반복 테스트
 - [ ] 운영 화면: 반입 결과(UI-01), 검증·승인(UI-02) — 데이터는 B·C API
 
 **팀과 정할 것**
@@ -80,7 +82,7 @@ OCR 결과는 tesseract 버전에 따라 달라서 이미지에서 5.5.0으로 �
 
 | 제공 | 받는 쪽 | 받는 것 | 주는 쪽 |
 |---|---|---|---|
-| 판정·OCR 코드 (import) | C | 번들 구성 (`GET /bundles/{id}`) | B |
+| 처리 경로 `pipeline.screen_documents` (import) | C | 번들 구성 (`GET /bundles/{id}`) | B |
 | 거래·판정 테이블 (읽기) | C | `BUNDLE_ID` 환경변수 | D (deploy/ 값) |
 | 원문 서류 (SeaweedFS) | C | 합성 서류·과거 거래 적재 | 데이터 |
 | 번들별 지표 | D | 게이트 결과·승인 API | C |
