@@ -8,7 +8,7 @@
 3. PR에 `contract-change` 라벨을 달고, 영향받는 모듈 담당자를 리뷰어로 지정합니다.
 
 API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`과 README에 두고, 여기에는 "누가 누구에게 무엇을"만 적습니다.
-"단계" 칸: **1차** = 11/17까지 리스트 갱신(S1~S3), **2차** = 모델 갱신·재현(S4~S6).
+**11/12 계획 변경([결정 0005](decisions/0005-model-path-only.md)):** 모델(OCR) 갱신 경로만 구현하고 제재 리스트는 고정된 한 버전을 쓴다. 1차/2차 구분이 없어졌으므로 **"단계" 칸은 더 이상 의미가 없다** — 아래 연결은 모두 모델 경로에 필요하다. 지금은 정상 모델 하나로 S4·S6만 만들고, S1·S5는 시간이 남으면 추가한다. (칸 자체는 다른 PR과 충돌을 피하려고 남겨 두고 나중에 지운다)
 
 ## 1. API
 
@@ -17,7 +17,7 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 공통 에러 형식 | 모든 모듈 | 실패 응답은 `{code, message, target_id}`. code는 `VALIDATION_ERROR`(422), `NOT_FOUND`(404), `CONFLICT`(409), `SERVICE_UNAVAILABLE`(503), `INTERNAL_ERROR`(500) 중 하나 | 1차 |
 | 번들 구성 조회 | B → A·C·D | `GET /bundles/{id}`로 번들의 모델·리스트 컴포넌트 ID, 파일 위치, 해시를 알려 준다 | 1차 |
 | 상태 전이 | C·D → B | `POST /bundles/{id}/transitions`에 `{to, actor, reason}`을 보내면 B가 `{from, to, changed_at}`을 돌려준다. 허용되지 않는 전이는 409 | 1차 |
-| 지표 이름 | 각 모듈 → D | 각 모듈은 `contracts.py`에 정한 이름(`tradeproof_<모듈>_<대상>`, `bundle_id` 라벨 포함)으로 지표를 내보내고, D는 이 이름으로 감시·롤백 판단(1차) 및 canary 분석(2차)을 한다 | 1차 |
+| 지표 이름 | 각 모듈 → D | 각 모듈은 `contracts.py`에 정한 이름(`tradeproof_<모듈>_<대상>`, `bundle_id` 라벨 포함)으로 지표를 내보내고, D는 이 이름으로 canary 단계별 분석과 자동 롤백 판단을 한다 | 1차 |
 | 반입 | 운영 화면(A) → B | `POST /imports` (multipart ZIP: manifest.json + 파일 + signature.sig) → 202, `GET /imports/{id}`로 단계별 결과·거부 사유 | 1차 |
 | 검증·승인 | 운영 화면(A) ↔ C | C가 게이트 결과·지표·영향 거래를 제공하고, 화면에서 승인·반려를 C에 보낸다 (`POST /approvals`) | 1차 |
 | 배포 | C → D | 승인되면 `POST /deployments` (`approved`가 아니면 409, 진행 중 배포가 있으면 409) | 1차 |
@@ -36,10 +36,11 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 |---|---|---|---|
 | 과거 거래·판정 결과 | A → C | C는 A의 거래·판정 테이블을 **읽기 전용**으로 읽는다 | 1차 |
 | 원문 서류 | A → C | C는 A가 SeaweedFS(`minio:9000`)에 저장한 원문을 `contracts.blob_key()` 경로 규칙으로 찾는다 | 1차 |
-| 골든셋 | 데이터 → C | C는 `golden_labels` 테이블과 `manifest.json`(`dataset/spec/manifest.schema.json`)을 읽는다. 골든셋은 **리스트 버전별** | 1차 |
+| 골든셋 | 데이터 → C | C는 `golden_labels` 테이블과 `manifest.json`(`dataset/spec/manifest.schema.json`)을 읽는다. 골든셋은 **하나**(고정 리스트 기준) | 1차 |
 | 합성 서류·정답 라벨 | 데이터 → A·C | 노이즈 섞인 합성 송장·B/L과 정답 라벨(`dataset/spec/label.schema.json`) | 1차 |
 | 과거 거래 적재 | 데이터 → A·D | `dataset/seed/`가 합성 서류를 최초 번들로 A의 평시 경로에 넣어 과거 거래를 만든다. D의 `scripts/reset_demo.sh`가 호출 | 1차 |
-| 시연용 리스트 원본 | 데이터 → B | 정상(추가)·변조·손상 리스트 원본. 서명·변조 처리는 B의 `signer/` | 1차 |
+| 고정 리스트 | 데이터 → A·C | 제재 리스트는 **한 버전으로 고정**. 갱신·버전별 골든셋 없음. 최초 번들에 포함 | 1차 |
+| 시연용 모델 파일 | **TODO(제공자 미정)** → B | **정상 개선 모델 원본 1개**(S4). 서명은 B의 `signer/`. 성능 저하 모델(S5)과 변조·손상본(S1)은 시간이 남으면 추가 | 1차 |
 | 배포 이력 | D → B·C | B·C는 D의 `deployments` 테이블을 읽어 현재 stable/canary를 판단할 수 있다 | 1차 |
 
 ## 4. 쿠버네티스
@@ -49,6 +50,7 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 번들 ID | C → A | C가 배포 레포(`deploy/`)에 적은 번들 ID가 Helm 설정을 거쳐 A의 환경변수 `BUNDLE_ID`로 들어간다 (적용은 D) | 1차 |
 | Replay 시작 | B → C | B가 번들을 검증 통과로 바꾸면 C의 Job 템플릿으로 Replay Job이 만들어진다 | 1차 |
 | 롤백 알림 | D → B | Argo Rollouts 알림이 B의 전이 API를 불러 `rolled_back`을 기록한다 | 1차 |
+| A 서비스 구성 | A → D | A는 같은 Dockerfile의 빌드 대상 2개로 뜬다(compose·k3s 공통). `a-screening`(`target: screening-api`, 포트 8000, 지표 `GET :8000/metrics`) + `a-ocr-worker`(`target: ocr-worker`, 포트 없음). 둘 다 DB·`BLOB_*`·`BUNDLE_ID`를 같이 받는다. **TODO(A·D): 워커에 canary를 적용하는 방식과 워커 지표 수집 경로** | 1차 |
 
 ## 5. 메모: 최종 요구사항 문서와 다르게 정한 부분
 
@@ -61,3 +63,4 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 날짜 | 작성자 | 변경 |
 |---|---|---|
 | 2026-11-10 | D 최은호 | 최초 작성 (팀 연동 표 12줄 + 데이터 연동 + 1차 API) |
+| 2026-11-12 | D 최은호 | 계획 변경(결정 0005): 리스트 갱신 경로 제외. 골든셋 단일화, "시연용 리스트 원본" → "고정 리스트"·"시연용 모델 파일", 지표 용도 문구, A 서비스 구성(서비스 2개·포트·지표 경로) 추가 |
