@@ -28,7 +28,7 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 연결 | 방향 | 내용 | 단계 |
 |---|---|---|---|
 | `contracts.py` | 공통 → 전체 | 모든 모듈은 필드 이름·코드값·상태값·팀 상수를 이 파일에서 가져다 쓴다 | 1차 |
-| 판정 코드·OCR 코드 | A → C | C는 A의 판정 코드(`screening/match.py`)와 OCR 추출 코드를 그대로 가져다 써서 실제 심사와 같은 결과를 낸다. A는 이 코드를 **C가 import할 수 있는 형태**로 유지한다 | 1차(판정), 2차(OCR) |
+| 판정 코드·OCR 코드 | A → C | C는 A의 판정 코드(`a_screening/screening/match.py`, `from a_screening.screening.match import screen, load_index`)와 OCR 추출 코드(`a_screening/ocr/extract.py`)를 그대로 가져다 써서 실제 심사와 같은 결과를 낸다. A는 이 코드를 **C가 import할 수 있는 형태**로 유지한다 | 1차(판정), 2차(OCR) |
 
 ## 3. 데이터
 
@@ -61,3 +61,4 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 날짜 | 작성자 | 변경 |
 |---|---|---|
 | 2026-11-10 | D 최은호 | 최초 작성 (팀 연동 표 12줄 + 데이터 연동 + 1차 API) |
+| 2026-11-12 | A 지윤아 | `common/contracts.py`·`common/blob.py` 추가, A 테이블 정의(`common/schema/10_a_screening.sql`: transactions·screening_results·screening_jobs), 판정 코드 import 경로 `a_screening.screening.match` |

@@ -1,0 +1,6 @@
+# screening-api: 접수·판정·담당자 검토 API. 판정 코드(common, screening)는 표준 라이브러리만 쓴다.
+fastapi==0.162.2
+uvicorn==0.54.0
+psycopg[binary]==3.3.8
+python-multipart==0.0.33   # POST /screenings 서류 파일 업로드
+minio==7.2.20              # 원문 저장소
