@@ -52,22 +52,29 @@ OCR 결과는 tesseract 버전에 따라 달라서 이미지에서 5.5.0으로 �
 
 ## 진행 상황
 
-### 1차 (~11/17, 리스트 S1~S3)
+시나리오는 **OCR 모델 갱신 기준**입니다 (S1 변조 모델 차단, S4 개선 모델 canary·자동 롤백, S5 저하 모델 차단).
+제재 리스트는 하나로 고정하고, 리스트 갱신(S2·S3)과 재현(S6)은 하지 않습니다.
+
+**끝난 것**
 
 - [x] 기존 코드를 팀 레포 구조로 이전 (감사 기록 제외 — 결정 0002)
 - [x] C가 import할 수 있는 판정 코드: `from a_screening.screening.match import screen, load_index`
-- [x] 거래마다 `bundle_id` 기록 (`screening_results.bundle_id`, `screening_jobs.bundle_id`)
-- [ ] `BUNDLE_ID` 환경변수로 번들을 받고, 번들 구성은 B의 `GET /bundles/{id}`에서 가져오기 (지금은 `contracts.BUNDLES`의 B-7~B-10, `ACTIVE_BUNDLE`)
-- [ ] 번들에서 규칙 빼기 (번들 = 모델 + 리스트), 결과마다 `rules_version` 기록
+- [x] 거래마다 처리한 `bundle_id` 기록 (canary 중 어느 모델이 처리했는지 구분)
+- [x] 접수 시점에 번들 고정: API 파드마다 번들이 달라도(canary) 워커 하나가 두 모델을 모두 처리
+
+**남은 것**
+
+- [ ] OCR 추출 코드를 C가 import할 수 있게 정리 (모델 Replay는 과거 서류를 새 모델로 다시 OCR — S4·S5)
+- [ ] `BUNDLE_ID` 환경변수로 번들을 받고, 구성은 B의 `GET /bundles/{id}`에서 가져오기 (지금은 `contracts.BUNDLES`의 B-7~B-10, `ACTIVE_BUNDLE`)
+- [ ] 모델 변형을 설정으로 교체: 기준 / 개선(S4) / 저하(S5, 지금 `model-v4`) — 노이즈 서류는 데이터 담당과 함께 (TST-05·06)
+- [ ] 번들별 지표: 이름을 `tradeproof_<모듈>_<대상>` 규칙으로, 모든 지표에 `bundle_id` 라벨 (D의 canary 비교·자동 롤백 근거, MON-01)
 - [ ] 같은 번들·같은 서류 → 같은 결과 (SVC-04) 3회 반복 테스트
-- [ ] 지표 이름을 `tradeproof_<모듈>_<대상>` 규칙으로 정리하고 모든 지표에 `bundle_id` 라벨
 - [ ] 운영 화면: 반입 결과(UI-01), 검증·승인(UI-02) — 데이터는 B·C API
 
-### 2차 (S4~S6)
+**팀과 정할 것**
 
-- [ ] OCR 추출 코드도 C가 import할 수 있게 정리, 번들별 워커(canary 중 두 모델)
-- [ ] 개선·저하 모델 변형을 설정으로 교체 (TST-05·06, 데이터 담당과 함께)
-- [ ] 재현 화면 (UI-03)
+- S4 자동 롤백을 일으키는 방법: "골든셋은 통과하지만 실제 트래픽에서 나빠지는 모델"을 A가 만들지, 장애를 주입할지
+- 리스트를 고정하면 번들 = 모델만인지, 모델 + 고정 리스트인지
 
 ## 제공하는 것 / 받는 것
 
