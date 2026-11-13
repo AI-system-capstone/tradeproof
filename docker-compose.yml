@@ -1,10 +1,11 @@
 # 통합 개발 환경 (담당: D)
-# 1차에는 데이터 계층(postgres, minio=SeaweedFS)만 실제로 동작합니다.
+# 지금은 데이터 계층(postgres, minio=SeaweedFS)만 실제로 동작합니다.
 # 모듈 서비스는 담당자가 Dockerfile을 완성하면 아래 주석을 풀어 추가하세요.
 #
 # 이미지 태그는 버전 고정 규약을 따릅니다. 만든 시점(2026-11-10)에 확인한 버전이며,
 # pull이 실패하면 Docker Hub에서 해당 이미지의 최신 안정 태그로 바꾸고 PR로 공유하세요.
-# TODO(D): SeaweedFS -s3.port=9000 과 minio 파이썬 클라이언트 조합은 아직 직접 검증 전.
+# 2026-11-12 확인: 두 이미지 pull 가능, SeaweedFS -s3.port=9000 + minio 파이썬 클라이언트(7.2.20)로
+# 버킷 조회·업로드·조회·삭제·6MB multipart·재시작 후 유지 통과 (d_platform/tests/test_blob_smoke.py).
 
 name: tradeproof
 
@@ -43,18 +44,35 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        sleep 5
-        echo "s3.bucket.create -name tradeproof-docs" | weed shell -master=minio:9333
-        echo "s3.bucket.create -name tradeproof-registry" | weed shell -master=minio:9333
-        echo "buckets ready"
+        # SeaweedFS가 뜰 때까지 기다린다 (최대 약 60초). 버킷이 둘 다 보여야 성공으로 끝난다.
+        for i in $$(seq 1 20); do
+          for b in tradeproof-docs tradeproof-registry; do
+            echo "s3.bucket.create -name $$b" | weed shell -master=minio:9333 >/dev/null 2>&1
+          done
+          list=$$(echo "s3.bucket.list" | weed shell -master=minio:9333 2>/dev/null)
+          if echo "$$list" | grep -q tradeproof-docs && echo "$$list" | grep -q tradeproof-registry; then
+            echo "buckets ready"; exit 0
+          fi
+          echo "waiting for seaweedfs ($$i/20)"; sleep 3
+        done
+        echo "bucket init failed"; exit 1
     restart: "no"
 
   # --- 모듈 서비스 (준비되면 주석 해제) -----------------------------------
-  # a-screening:
-  #   build: { context: ., dockerfile: a_screening/Dockerfile }
+  # A는 같은 Dockerfile의 빌드 대상 2개로 뜬다 (A 요청 11/12). A의 PR #1 병합 후 주석 해제.
+  # 빌드 context가 저장소 루트라 루트 .dockerignore 가 필요하다.
+  # TODO(A): A 코드가 BUNDLE_ID 를 읽게 된 뒤(지금은 ACTIVE_BUNDLE) POST /screenings 샘플 접수까지 확인.
+  # a-screening:            # 접수·조회·검토 API, 지표 GET :8000/metrics
+  #   build: { context: ., dockerfile: a_screening/Dockerfile, target: screening-api }
   #   env_file: .env
   #   ports: ["8000:8000"]
-  #   depends_on: { postgres: { condition: service_healthy }, minio: { condition: service_started } }
+  #   depends_on: &a-deps
+  #     postgres: { condition: service_healthy }
+  #     minio-init: { condition: service_completed_successfully }
+  # a-ocr-worker:           # 큐에서 꺼내 OCR → 판정 → 저장. 포트 없음
+  #   build: { context: ., dockerfile: a_screening/Dockerfile, target: ocr-worker }
+  #   env_file: .env
+  #   depends_on: *a-deps
   # b-registry:
   #   build: { context: ., dockerfile: b_registry/Dockerfile }
   #   env_file: .env

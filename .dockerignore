@@ -1,0 +1,20 @@
+# 모든 모듈 이미지의 빌드 context 가 저장소 루트(.)라서 필요하다 (담당: D).
+# 없으면 .git·생성 데이터까지 Docker 로 전송돼 빌드가 느리고 디스크를 많이 쓴다.
+.git
+.github
+.venv
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+.env
+
+# 생성물 (scripts/gen_data.sh 로 재생성) — 이미지에 넣지 않는다
+data/
+
+# 이미지에 필요 없는 것
+docs/
+deploy/
+d_platform/helm/
+d_platform/k8s/
+d_platform/monitoring/
