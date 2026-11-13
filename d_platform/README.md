@@ -20,11 +20,11 @@
 
 모델 경로(S4)를 먼저 끝까지 만든다. 자동 롤백(MON-02)은 canary에 먼저 적용한다.
 
-- [ ] docker-compose: postgres + SeaweedFS(`minio:9000`) + 버킷 생성, minio 파이썬 클라이언트 smoke test (`tests/test_blob_smoke.py`)
-- [ ] compose에 A 서비스 2개(`a-screening` API, `a-ocr-worker`) 연결 — A의 PR 병합 후
-- [ ] 배포 API: 미승인 409, 진행 중 배포 409, `deployments` 기록 (처음엔 가짜 드라이버)
+- [x] docker-compose: postgres + SeaweedFS(`minio:9000`) + 버킷 생성, minio 파이썬 클라이언트 smoke test (`tests/test_blob_smoke.py`)
+- [ ] compose에 A 서비스 2개(`a-screening` API, `a-ocr-worker`) 연결 — A 코드가 `BUNDLE_ID`를 읽는 변경이 `main`에 들어온 뒤. 그때까지 A의 번들 목록은 B-7~B-10이라 `BUNDLE_ID=B-1`로는 뜨지 않는다
+- [x] 배포 API: 미승인 409, 진행 중 배포 409, `deployments` 기록 (가짜 드라이버)
 - [ ] k3s + ingress-nginx + Argo Rollouts: `helm/a-screening` 차트, `deploy/values-dev.yaml` → `BUNDLE_ID` 주입, canary 10→50→100 승격·abort·undo (DEP-03·04·05)
-- [ ] TODO(A와 협의): OCR 워커에 canary를 적용하는 방식(번들별 워커 배치 제안), 워커 지표 수집 경로
+- [ ] TODO(A와 확정): 워커 canary — A 제안은 "워커는 하나, 번들은 접수 때 거래마다 고정(`screening_jobs.bundle_id`), canary는 API Rollout만 나눈다". 워커 지표는 A의 API `/metrics`가 DB에서 `bundle_id`별로 집계(`tradeproof_screening_failed_total`, `tradeproof_screening_processing_seconds_avg`)
 - [ ] Prometheus 수집(MON-01), AnalysisTemplate로 단계별 분석 → 기준 초과 시 자동 abort 후 undo(MON-02), 롤백 알림 → B 전이 API
 - [ ] 배포 API 실제 드라이버(Argo Rollouts 조작), 감지 시간·전환 시간 측정
 - [ ] 트래픽·이상 입력 도구 (TST-07·08)
@@ -46,9 +46,35 @@
 | 배포 이력 (`deployments`) | B·C | 과거 거래 적재 스크립트 | 데이터 |
 | Replay Job 템플릿·권한 | B·C | | |
 
+## 배포 API (포트 8300)
+
+상세는 [`docs/openapi/d_platform.json`](../docs/openapi/d_platform.json). 요청에는 `X-Actor` 헤더가 필요하다.
+
+| 호출 | 결과 |
+|---|---|
+| `POST /deployments` `{"bundle_id": "B-2"}` | 202 + 배포 정보. 승인되지 않은 번들 409, 진행 중인 배포가 있으면 409(`target_id` = 그 배포), 없는 번들 404, 이미 운영 중인 번들 409 |
+| `GET /deployments/{id}` | `status`, `weight`(후보 번들 비율 %), `step_index`, `steps`, `analysis` |
+| `POST /deployments/{id}/rollback` | 200. 진행 중이면 중단하고 되돌림, 가장 최근에 반영된 배포면 직전 번들로 되돌림. 그 외 409 |
+| `GET /deployments` | 최근 배포 목록 |
+| `GET /healthz` `/livez` `/metrics` | 지표 이름은 `tradeproof_platform_*` |
+
+`status`: `pending` → `progressing` → `succeeded` 또는 `rolled_back`(`rollback_reason`: `manual` / `analysis_failed`) 또는 `failed`.
+현재 stable 번들 = `succeeded` 중 가장 최근 배포의 `bundle_id` (이력이 없으면 `BUNDLE_ID`).
+
+지금은 **가짜 드라이버**다: 실제 트래픽은 바뀌지 않고, `FAKE_STEP_SECONDS`마다 10→50→100으로 올라간 뒤 `succeeded`가 된다. `FAKE_FAIL_BUNDLES`에 든 번들은 50% 단계 분석이 실패해 자동 롤백된다. 승인 여부도 `FAKE_APPROVED_BUNDLES` 목록으로 흉내 낸다.
+
+확정 전(TODO):
+- C: `POST /deployments` 본문에 `bundle_id` 말고 더 보낼 것(`approval_id` 등)
+- B: `GET /bundles/{id}` 응답의 상태 필드 이름·승인 상태값 (지금은 `status == "approved"`로 가정), 반영 완료·롤백을 알릴 전이 값
+- 상태값·ID 접두사를 `common/contracts.py`·`common/ids.py`로 옮기기
+
 ## 실행·테스트
 
 ```bash
 docker compose up -d postgres minio minio-init
-pytest d_platform/tests
+pip install -r d_platform/requirements.txt
+pytest d_platform/tests                      # 저장소·DB가 없으면 해당 테스트는 skip
+
+docker compose up -d --build d-platform
+curl -s -X POST localhost:8300/deployments -H 'X-Actor: me' -H 'Content-Type: application/json' -d '{"bundle_id":"B-2"}'
 ```

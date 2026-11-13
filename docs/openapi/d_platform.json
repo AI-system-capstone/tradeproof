@@ -1,0 +1,516 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "TradeProof d_platform — 배포 API",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/deployments": {
+      "post": {
+        "summary": "배포 시작",
+        "operationId": "create_deployment_deployments_post",
+        "parameters": [
+          {
+            "name": "x-actor",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "요청한 사람·모듈",
+              "title": "X-Actor"
+            },
+            "description": "요청한 사람·모듈"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeploymentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        }
+      },
+      "get": {
+        "summary": "최근 배포 목록",
+        "operationId": "list_deployments_deployments_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DeploymentResponse"
+                  },
+                  "title": "Response List Deployments Deployments Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/deployments/{deployment_id}": {
+      "get": {
+        "summary": "배포 상태",
+        "operationId": "get_deployment_deployments__deployment_id__get",
+        "parameters": [
+          {
+            "name": "deployment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Deployment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/deployments/{deployment_id}/rollback": {
+      "post": {
+        "summary": "직전 번들로 롤백",
+        "operationId": "rollback_deployments__deployment_id__rollback_post",
+        "parameters": [
+          {
+            "name": "deployment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Deployment Id"
+            }
+          },
+          {
+            "name": "x-actor",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "title": "X-Actor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "summary": "준비 상태 (저장소 연결)",
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "summary": "Prometheus 지표",
+        "operationId": "metrics_metrics_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Analysis": {
+        "properties": {
+          "result": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result",
+            "description": "running | passed | failed"
+          },
+          "checks": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Checks",
+            "description": "단계별 분석 결과"
+          }
+        },
+        "type": "object",
+        "title": "Analysis"
+      },
+      "DeploymentRequest": {
+        "properties": {
+          "bundle_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Bundle Id",
+            "examples": [
+              "B-2"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "bundle_id"
+        ],
+        "title": "DeploymentRequest"
+      },
+      "DeploymentResponse": {
+        "properties": {
+          "deployment_id": {
+            "type": "string",
+            "title": "Deployment Id"
+          },
+          "bundle_id": {
+            "type": "string",
+            "title": "Bundle Id"
+          },
+          "previous_bundle_id": {
+            "type": "string",
+            "title": "Previous Bundle Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "pending | progressing | succeeded | rolled_back | failed"
+          },
+          "weight": {
+            "type": "integer",
+            "title": "Weight",
+            "description": "후보 번들로 가는 트래픽 비율(%)"
+          },
+          "step_index": {
+            "type": "integer",
+            "title": "Step Index"
+          },
+          "steps": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Steps"
+          },
+          "analysis": {
+            "$ref": "#/components/schemas/Analysis"
+          },
+          "rollback_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rollback Reason",
+            "description": "manual | analysis_failed"
+          },
+          "requested_by": {
+            "type": "string",
+            "title": "Requested By"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "deployment_id",
+          "bundle_id",
+          "previous_bundle_id",
+          "status",
+          "weight",
+          "step_index",
+          "steps",
+          "analysis",
+          "requested_by",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "DeploymentResponse"
+      },
+      "ErrorResponse": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "target_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ErrorResponse"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}
