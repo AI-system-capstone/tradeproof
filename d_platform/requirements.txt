@@ -1,2 +1,3 @@
-# 의존성은 == 로 버전 고정 (예: fastapi==X.Y.Z). 담당자가 채웁니다.
-# common/ 이 쓰는 psycopg, minio 도 여기에 포함하세요.
+# 의존성은 == 로 버전 고정. 배포 API 의존성(fastapi 등)은 d/deployments-api 에서 채운다.
+minio==7.2.20      # common/blob.py 와 같은 버전 (A의 a_screening/requirements/api.txt)
+pytest==9.2.0

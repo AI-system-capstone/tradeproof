@@ -1,0 +1,855 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TradeProof 담당자 검토</title>
+<!-- 폐쇄망용: 외부 CDN·폰트·라이브러리 없이 HTML+CSS+바닐라 JS 한 파일. GET /review 로 그대로 나간다. -->
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --text: #1d2330; --muted: #5d6576; --line: #d9dde5;
+    --accent: #2457c5; --accent-weak: #e7eefc;
+    --pass: #1e7a46; --pass-bg: #e3f4ea;
+    --review: #8a5a00; --review-bg: #fff2d6;
+    --hold: #b3261e; --hold-bg: #fde7e5;
+    --warn: #a14a00; --warn-bg: #fff0e0;
+    --focus: #ffb300;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171d; --panel: #1c2028; --text: #e6e9ef; --muted: #a0a8b8; --line: #343a46;
+      --accent: #7aa2ff; --accent-weak: #232d44;
+      --pass: #6fd39a; --pass-bg: #17321f;
+      --review: #f3c25b; --review-bg: #3a2f12;
+      --hold: #ff8a80; --hold-bg: #3d1a18;
+      --warn: #ffb066; --warn-bg: #3a2610;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg); color: var(--text);
+         font: 14px/1.45 system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+  :focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
+  header.top { display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+               background: var(--panel); border-bottom: 1px solid var(--line); }
+  header.top h1 { font-size: 16px; margin: 0; }
+  header.top .sub { color: var(--muted); font-size: 12px; }
+  .layout { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; height: calc(100% - 49px); }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; height: auto; } }
+
+  /* 왼쪽 목록 */
+  aside.list { border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+  .filters { padding: 10px 12px; border-bottom: 1px solid var(--line); display: grid; gap: 8px; }
+  .filters .row { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
+  .filters label { display: grid; gap: 2px; font-size: 12px; color: var(--muted); flex: 1; min-width: 120px; }
+  select, input[type=text], textarea {
+    font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 7px; width: 100%;
+  }
+  textarea { resize: vertical; min-height: 54px; }
+  button { font: inherit; cursor: pointer; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--panel); color: var(--text); padding: 5px 10px; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #listbox { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; min-height: 120px; }
+  #listbox:focus { outline: none; }
+  #listbox:focus-visible li[aria-selected=true] { outline: 3px solid var(--focus); outline-offset: -3px; }
+  #listbox li { padding: 8px 12px; border-bottom: 1px solid var(--line); cursor: pointer; display: grid; gap: 3px; }
+  #listbox li:hover { background: var(--accent-weak); }
+  #listbox li[aria-selected=true] { background: var(--accent-weak); box-shadow: inset 4px 0 0 var(--accent); }
+  #listbox .l1 { display: flex; justify-content: space-between; gap: 6px; align-items: center; }
+  #listbox .txid { font-weight: 600; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  #listbox .l2 { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pager { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px;
+           border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); gap: 6px; }
+
+  /* 배지: 색 + 글자 + 기호 (색만으로 구분하지 않음) */
+  .badge { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600;
+           padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+  .badge.PASS_CANDIDATE { color: var(--pass); background: var(--pass-bg); }
+  .badge.MANUAL_REVIEW { color: var(--review); background: var(--review-bg); }
+  .badge.HIGH_RISK_HOLD { color: var(--hold); background: var(--hold-bg); }
+  .badge.none, .badge.status { color: var(--muted); background: transparent; }
+  .badge.decided { color: var(--accent); background: var(--accent-weak); }
+  .badge.big { font-size: 14px; padding: 3px 12px; }
+
+  /* 오른쪽 상세 */
+  main.detail { overflow-y: auto; padding: 14px 18px 40px; min-height: 0; }
+  .empty { color: var(--muted); padding: 40px 0; text-align: center; }
+  section.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; }
+  section.card > h2 { font-size: 14px; margin: 0 0 8px; }
+  .head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .head h2 { margin: 0; font-size: 18px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  dl.meta { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px 14px; margin: 10px 0 0; }
+  dl.meta div { display: grid; }
+  dl.meta dt { font-size: 11px; color: var(--muted); }
+  dl.meta dd { margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .muted { color: var(--muted); }
+  .alert { border-radius: 6px; padding: 8px 10px; margin: 8px 0; border: 1px solid; }
+  .alert.err { color: var(--hold); background: var(--hold-bg); }
+  .alert.warn { color: var(--warn); background: var(--warn-bg); }
+  .alert.info { color: var(--accent); background: var(--accent-weak); }
+  .alert code { font-weight: 700; }
+  .shadow-item { border: 1px dashed var(--line); border-radius: 6px; padding: 8px; margin-top: 6px; }
+  .shadow-item.diff { border: 2px solid var(--hold); background: var(--hold-bg); }
+
+  /* 서류 이미지 + bbox */
+  .doc-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 14px; }
+  @media (max-width: 1200px) { .doc-grid { grid-template-columns: 1fr; } }
+  [role=tablist] { display: flex; gap: 4px; margin-bottom: 8px; }
+  [role=tab] { border-radius: 6px 6px 0 0; }
+  [role=tab][aria-selected=true] { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .doc-view { position: relative; max-height: 75vh; overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+  .doc-stage { position: relative; display: block; line-height: 0; }
+  .doc-stage img { width: 100%; height: auto; display: block; }
+  .bbox { position: absolute; border: 2px solid rgba(36, 87, 197, .75); background: rgba(36, 87, 197, .08);
+          cursor: pointer; padding: 0; border-radius: 2px; }
+  .bbox.lowconf { border-color: rgba(161, 74, 0, .9); border-style: dashed; }
+  .bbox.active { border: 3px solid #e00000; background: rgba(255, 200, 0, .28); box-shadow: 0 0 0 3px rgba(255,255,255,.8); z-index: 2; }
+  .bbox .tag { position: absolute; left: 0; top: -16px; font: 600 10px/14px system-ui, sans-serif; color: #fff;
+               background: rgba(36, 87, 197, .9); padding: 0 4px; border-radius: 2px; white-space: nowrap; display: none; }
+  .bbox.active .tag, .bbox:hover .tag { display: block; }
+  .bbox.active .tag { background: #e00000; }
+
+  /* 필드 표 */
+  #fieldTable tr { cursor: pointer; }
+  #fieldTable tr.sel td { background: var(--accent-weak); }
+  #fieldTable tr.screen td:first-child { font-weight: 700; }
+  #fieldTable input[type=text] { padding: 3px 5px; min-width: 120px; }
+  #fieldTable input.changed { border-color: var(--accent); border-width: 2px; }
+  .conf-low { color: var(--warn); background: var(--warn-bg); font-weight: 700; border-radius: 4px; padding: 0 4px; }
+  .conflict { color: var(--hold); font-size: 12px; display: block; }
+  .tagline { font-size: 11px; color: var(--muted); }
+
+  /* 검토 폼 */
+  .review-form { display: grid; gap: 10px; }
+  .review-form label { display: grid; gap: 3px; font-size: 12px; color: var(--muted); }
+  .decisions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .decisions button { padding: 8px 16px; font-weight: 600; }
+  .decisions button.emph { background: var(--hold); border-color: var(--hold); color: #fff; box-shadow: 0 0 0 3px var(--hold-bg); }
+  dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); max-width: 520px; width: 92vw; }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  dialog h3 { margin-top: 0; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>TradeProof 담당자 검토</h1>
+  <span class="sub">수출입 서류 심사 · 근거와 원문을 확인하고 최종 판단을 남깁니다</span>
+</header>
+
+<div class="layout">
+  <aside class="list" aria-label="심사 건 목록">
+    <form class="filters" id="filterForm">
+      <div class="row">
+        <label>분류
+          <select id="fClass" aria-label="분류 필터"></select>
+        </label>
+        <label>처리 상태
+          <select id="fStatus" aria-label="처리 상태 필터"></select>
+        </label>
+      </div>
+      <div class="row">
+        <button type="submit" class="primary" id="btnRefresh">새로고침</button>
+        <span class="muted" id="listInfo" aria-live="polite"></span>
+      </div>
+    </form>
+    <div id="listError" role="alert"></div>
+    <ul id="listbox" role="listbox" tabindex="0" aria-label="심사 건 (위·아래 화살표로 이동)"></ul>
+    <nav class="pager" aria-label="페이지">
+      <button type="button" id="btnPrev">이전</button>
+      <span id="pageInfo"></span>
+      <button type="button" id="btnNext">다음</button>
+    </nav>
+  </aside>
+
+  <main class="detail" id="detail" aria-live="polite">
+    <p class="empty">왼쪽 목록에서 심사 건을 고르세요. (목록에 초점을 두고 ↑ ↓ 로 이동)</p>
+  </main>
+</div>
+
+<dialog id="confirmDlg" aria-labelledby="dlgTitle">
+  <form method="dialog">
+    <h3 id="dlgTitle">최종 판단 확인</h3>
+    <div id="dlgBody"></div>
+    <div class="decisions" style="justify-content:flex-end;margin-top:12px">
+      <button value="cancel" type="submit">취소</button>
+      <button value="ok" type="submit" class="primary" id="dlgOk">확정</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+"use strict";
+/* ------------------------------------------------------------------ 계약 값
+ * 필드·분류·상태·판단·규칙 코드·신뢰도 기준·번들은 시작할 때 GET /meta (common/contracts.py) 에서 받아 채운다.
+ * 여기에는 화면 문구(한국어 설명)만 둔다. 문구가 없는 코드는 코드 그대로 보인다. */
+const C = {
+  // ---- GET /meta 로 채우는 값 (applyMeta)
+  PASS: null, REVIEW: null, HOLD: null, CLASSIFICATIONS: [], STATUSES: [], DECISIONS: [],
+  TX_FIELDS: [], SCREEN_FIELDS: [], DOC_TYPES: [], RULES: [], OCR_CONFIDENCE_MIN: null,
+  BUNDLES: {}, ACTIVE_BUNDLE: null, SHADOW_BUNDLE: null,
+  APPROVE: null, HOLD_DECISION: null, COMPLETED: null, FAILED: null, REVIEWABLE: [],
+  // ---- 화면 문구
+  CLASS_LABELS: { PASS_CANDIDATE: "통과 후보", MANUAL_REVIEW: "담당자 검토", HIGH_RISK_HOLD: "고위험 보류" },
+  CLASS_ICONS: { PASS_CANDIDATE: "✓", MANUAL_REVIEW: "?", HIGH_RISK_HOLD: "■" },
+  STATUS_LABELS: { queued: "대기", processing: "처리 중", completed: "판정 완료", failed: "처리 실패" },
+  DECISION_LABELS: { APPROVE: "승인", HOLD: "보류", REJECT: "거절" },
+  FIELD_LABELS: {
+    invoice_no: "송장 번호", invoice_date: "송장 일자", bl_no: "B/L 번호", seller_name: "판매자(Shipper)",
+    seller_country: "판매자 국가", buyer_name: "구매자(Consignee)", buyer_country: "구매자 국가", vessel_name: "선박",
+    port_of_loading: "선적항", port_of_discharge: "양하항", goods_description: "품명", currency: "통화", amount: "금액",
+  },
+  RULE_LABELS: {
+    party_exact: "당사자 정확 일치", vessel_exact: "선박 정확 일치",
+    party_fuzzy: "당사자 유사", vessel_fuzzy: "선박 유사",
+    party_exact_ocr: "당사자 OCR 혼동 감안 일치", vessel_exact_ocr: "선박 OCR 혼동 감안 일치",
+    party_match_other_doc: "당사자: 다른 서류 값으로 일치", vessel_match_other_doc: "선박: 다른 서류 값으로 일치",
+    low_confidence: "OCR 신뢰도 낮음", doc_conflict: "Invoice·B/L 불일치",
+    missing_field: "필드 못 읽음", processing_failed: "처리 실패 (담당자 검토로 넘어옴)",
+  },
+  DOC_LABELS: { invoice: "Invoice", bl: "B/L" },
+};
+
+/** GET /meta 응답을 C 에 반영. 필요한 값이 빠져 있으면 예외 (계약이 어긋난 채로 화면을 쓰지 않음) */
+function applyMeta(m) {
+  const need = ["tx_fields", "screening_fields", "classifications", "review_decisions", "statuses", "doc_types",
+                "ocr_confidence_min", "rules", "classification_roles", "status_roles", "decision_roles",
+                "reviewable_statuses"];
+  const missing = need.filter((k) => !m || m[k] === undefined || m[k] === null);
+  if (missing.length) throw new ApiErr(0, { code: "META_INVALID", message: "/meta 에 " + missing.join(", ") + " 가 없습니다." });
+  const roles = m.classification_roles;
+  C.PASS = roles.pass; C.REVIEW = roles.review; C.HOLD = roles.hold;
+  C.CLASSIFICATIONS = m.classifications; C.STATUSES = m.statuses; C.DECISIONS = m.review_decisions;
+  C.TX_FIELDS = m.tx_fields; C.SCREEN_FIELDS = m.screening_fields; C.DOC_TYPES = m.doc_types;
+  C.RULES = m.rules; C.OCR_CONFIDENCE_MIN = Number(m.ocr_confidence_min);
+  C.BUNDLES = m.bundles || {}; C.ACTIVE_BUNDLE = m.active_bundle || null; C.SHADOW_BUNDLE = m.shadow_bundle || null;
+  C.APPROVE = m.decision_roles.approve; C.HOLD_DECISION = m.decision_roles.hold;
+  C.COMPLETED = m.status_roles.completed; C.FAILED = m.status_roles.failed; C.REVIEWABLE = m.reviewable_statuses;
+}
+
+/** 담당자 판단을 남길 수 있는 건: API(POST /screenings/{tx_id}/review)와 같은 조건.
+ *  분류가 있고, 상태가 /meta 의 reviewable_statuses (판정 완료 completed, 또는 반복 실패로 담당자 검토가 붙은 failed) */
+function canReview(d) {
+  return !!(d && d.classification) && C.REVIEWABLE.includes(d.status);
+}
+const PAGE_SIZE = 20;
+const NEEDS_REVIEW = "__needs__";   // 기본 필터: 담당자 검토 + 고위험 보류
+const LS_REVIEWER = "tradeproof.reviewer";
+
+/* ------------------------------------------------------------------ 작은 도구 */
+function el(tag, attrs, ...kids) {
+  const n = document.createElement(tag);
+  if (attrs) for (const [k, v] of Object.entries(attrs)) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k === "class") n.className = v;
+    else if (k === "text") n.textContent = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of kids.flat()) if (c !== null && c !== undefined && c !== false)
+    n.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  return n;
+}
+const $ = (id) => document.getElementById(id);
+const show = (v) => (v === null || v === undefined || v === "" ? "-" : String(v));
+function lsGet(k) { try { return localStorage.getItem(k) || ""; } catch (_) { return ""; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (_) { /* 저장 못 해도 화면은 동작 */ } }
+function fmtTime(s) {
+  if (!s) return "-";
+  const d = new Date(s);
+  return isNaN(d) ? String(s) : d.toLocaleString("ko-KR", { hour12: false });
+}
+function classBadge(cls, big) {
+  if (!cls) return el("span", { class: "badge none" + (big ? " big" : ""), text: "판정 없음" });
+  return el("span", { class: "badge " + cls + (big ? " big" : "") },
+    el("span", { "aria-hidden": "true", text: C.CLASS_ICONS[cls] || "" }), C.CLASS_LABELS[cls] || cls);
+}
+function statusBadge(st) { return el("span", { class: "badge status", text: C.STATUS_LABELS[st] || show(st) }); }
+function decisionBadge(dec) {
+  return dec ? el("span", { class: "badge decided", text: "검토됨: " + (C.DECISION_LABELS[dec] || dec) })
+             : el("span", { class: "badge none", text: "미검토" });
+}
+
+/** 공통 에러 형식 {code, message, target_id} 를 담은 예외 */
+class ApiErr extends Error {
+  constructor(status, body) {
+    const code = (body && body.code) || ("HTTP_" + status);
+    const msg = (body && body.message) || (typeof body === "string" && body) || "요청 실패";
+    super(msg); this.status = status; this.code = code; this.target_id = body && body.target_id;
+  }
+}
+async function api(path, opts) {
+  let res;
+  try { res = await fetch(path, Object.assign({ headers: { Accept: "application/json" } }, opts)); }
+  catch (e) { throw new ApiErr(0, { code: "NETWORK_ERROR", message: "서버에 연결할 수 없습니다: " + e.message }); }
+  const text = await res.text();
+  let body = null;
+  try { body = text ? JSON.parse(text) : null; } catch (_) { body = text; }
+  if (!res.ok) throw new ApiErr(res.status, body);
+  return body;
+}
+function errorBox(e, prefix) {
+  return el("div", { class: "alert err", role: "alert" },
+    prefix ? prefix + " " : "", el("code", { text: e.code || "ERROR" }), " ", e.message || String(e),
+    e.target_id ? el("span", { class: "muted", text: " (대상: " + e.target_id + ")" }) : null);
+}
+const enc = encodeURIComponent;
+
+/* ------------------------------------------------------------------ 상태 */
+const S = {
+  items: [], total: 0, offset: 0, selected: null, // 목록
+  detail: null, docTab: "invoice", activeField: null, docUrls: {}, docErr: {}, loadSeq: 0,
+};
+
+/* ------------------------------------------------------------------ 목록 */
+function initFilters() {
+  const fc = $("fClass");
+  fc.append(el("option", { value: NEEDS_REVIEW, text: "검토 필요 (담당자 검토 + 고위험 보류)" }),
+            el("option", { value: "", text: "전체" }));
+  for (const c of C.CLASSIFICATIONS.slice().reverse()) fc.append(el("option", { value: c, text: C.CLASS_LABELS[c] || c }));
+  const fs = $("fStatus");
+  fs.append(el("option", { value: "", text: "전체" }));
+  for (const s of C.STATUSES) fs.append(el("option", { value: s, text: C.STATUS_LABELS[s] || s }));
+  fc.value = NEEDS_REVIEW;
+  fc.addEventListener("change", () => { S.offset = 0; loadList(); });
+  fs.addEventListener("change", () => { S.offset = 0; loadList(); });
+  $("filterForm").addEventListener("submit", (ev) => { ev.preventDefault(); loadList(); });
+  $("btnPrev").addEventListener("click", () => { S.offset = Math.max(0, S.offset - PAGE_SIZE); loadList(); });
+  $("btnNext").addEventListener("click", () => { S.offset += PAGE_SIZE; loadList(); });
+}
+
+/** 목록 질의. 정렬·페이지네이션은 서버가 한다 (unreviewed_first: 미검토 먼저, 그 안에서 최신 접수순).
+ *  '검토 필요' = 고위험 보류 + 담당자 검토 를 classification 쉼표 값 하나로 한 번에 */
+function listQuery(classification, limit, offset) {
+  const p = new URLSearchParams();
+  const st = $("fStatus").value;
+  if (st) p.set("status", st);
+  if (classification) p.set("classification", classification);
+  p.set("unreviewed_first", "true");
+  p.set("limit", String(limit)); p.set("offset", String(offset));
+  return "/screenings?" + p.toString();
+}
+
+async function loadList() {
+  const sel = $("fClass").value;
+  const cls = sel === NEEDS_REVIEW ? [C.HOLD, C.REVIEW].join(",") : sel;
+  $("listError").replaceChildren();
+  $("listInfo").textContent = "불러오는 중…";
+  try {
+    const d = await api(listQuery(cls, PAGE_SIZE, S.offset));
+    const total = d.total || 0, items = d.items || [];
+    if (S.offset > 0 && items.length === 0 && total > 0) {   // 마지막 페이지가 비면 한 페이지 뒤로
+      S.offset = Math.max(0, Math.floor((total - 1) / PAGE_SIZE) * PAGE_SIZE);
+      return loadList();
+    }
+    S.items = items; S.total = total;
+    renderList();
+    $("listInfo").textContent = "총 " + total + "건 · " + new Date().toLocaleTimeString("ko-KR", { hour12: false }) + " 기준";
+  } catch (e) {
+    S.items = []; S.total = 0; renderList();
+    $("listInfo").textContent = "";
+    $("listError").replaceChildren(errorBox(e, "목록을 불러오지 못했습니다."));
+  }
+}
+
+function renderList() {
+  const ul = $("listbox");
+  ul.replaceChildren();
+  if (!S.items.length) ul.append(el("li", { class: "muted", "aria-disabled": "true", text: "해당하는 심사 건이 없습니다." }));
+  for (const it of S.items) {
+    const li = el("li", {
+      role: "option", id: "opt-" + it.tx_id, "data-tx": it.tx_id,
+      "aria-selected": it.tx_id === S.selected ? "true" : "false",
+      onclick: () => select(it.tx_id, true),
+    },
+      el("div", { class: "l1" }, el("span", { class: "txid", text: it.tx_id }), classBadge(it.classification)),
+      el("div", { class: "l1" }, el("span", { class: "l2" }, statusBadge(it.status), " ", show(it.bundle_id)),
+         decisionBadge(it.reviewer_decision)),
+      el("div", { class: "l2", title: [it.seller_name, it.buyer_name, it.vessel_name].map(show).join(" / ") },
+         show(it.seller_name), " → ", show(it.buyer_name), " · ", show(it.vessel_name)),
+      el("div", { class: "l2", text: "접수 " + fmtTime(it.submitted_at) }));
+    ul.append(li);
+  }
+  if (S.selected && S.items.some((i) => i.tx_id === S.selected)) ul.setAttribute("aria-activedescendant", "opt-" + S.selected);
+  else ul.removeAttribute("aria-activedescendant");
+  const page = Math.floor(S.offset / PAGE_SIZE) + 1, pages = Math.max(1, Math.ceil(S.total / PAGE_SIZE));
+  $("pageInfo").textContent = page + " / " + pages + " 페이지";
+  $("btnPrev").disabled = S.offset <= 0;
+  $("btnNext").disabled = S.offset + PAGE_SIZE >= S.total;
+}
+
+function select(txId, focusList) {
+  S.selected = txId;
+  for (const li of $("listbox").querySelectorAll("li[role=option]"))
+    li.setAttribute("aria-selected", li.dataset.tx === txId ? "true" : "false");
+  const cur = $("opt-" + txId);
+  if (cur) { $("listbox").setAttribute("aria-activedescendant", cur.id); cur.scrollIntoView({ block: "nearest" }); }
+  if (focusList) $("listbox").focus({ preventScroll: true });
+  loadDetail(txId);
+}
+
+let moveTimer = null;
+function moveSelection(delta) {
+  if (!S.items.length) return;
+  let i = S.items.findIndex((x) => x.tx_id === S.selected);
+  i = i < 0 ? (delta > 0 ? 0 : S.items.length - 1) : Math.min(S.items.length - 1, Math.max(0, i + delta));
+  const tx = S.items[i].tx_id;
+  S.selected = tx;
+  for (const li of $("listbox").querySelectorAll("li[role=option]"))
+    li.setAttribute("aria-selected", li.dataset.tx === tx ? "true" : "false");
+  const cur = $("opt-" + tx);
+  if (cur) { $("listbox").setAttribute("aria-activedescendant", cur.id); cur.scrollIntoView({ block: "nearest" }); }
+  clearTimeout(moveTimer);                       // 화살표를 빠르게 누를 때 상세 요청을 몰아서 한 번만
+  moveTimer = setTimeout(() => loadDetail(tx), 150);
+}
+
+/** ↑↓: 목록에 초점이 있거나, 입력칸이 아닌 곳에 초점이 있을 때 목록 이동 */
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "ArrowDown" && ev.key !== "ArrowUp") return;
+  if (ev.altKey || ev.ctrlKey || ev.metaKey) return;
+  const t = ev.target;
+  const inList = t === $("listbox");
+  const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+  if (!inList && (typing || (t && t.closest && t.closest("dialog, [role=tablist]")))) return;
+  ev.preventDefault();
+  moveSelection(ev.key === "ArrowDown" ? 1 : -1);
+});
+$("listbox").addEventListener("keydown", (ev) => {
+  if (ev.key === "Home" || ev.key === "End") {
+    ev.preventDefault();
+    if (S.items.length) select(S.items[ev.key === "Home" ? 0 : S.items.length - 1].tx_id, true);
+  }
+});
+
+/* ------------------------------------------------------------------ 상세 */
+function revokeDocs() {
+  for (const u of Object.values(S.docUrls)) if (u) URL.revokeObjectURL(u);
+  S.docUrls = {}; S.docErr = {};
+}
+
+async function loadDetail(txId) {
+  const seq = ++S.loadSeq;
+  const main = $("detail");
+  main.replaceChildren(el("p", { class: "empty", text: txId + " 불러오는 중…" }));
+  try {
+    const d = await api("/screenings/" + enc(txId));
+    if (seq !== S.loadSeq) return;               // 그 사이 다른 건을 골랐으면 버림
+    revokeDocs();
+    S.detail = d; S.activeField = null;
+    S.docTab = firstDocWithBox(d) || "invoice";
+    renderDetail();
+    loadDocs(d.tx_id, seq);
+  } catch (e) {
+    if (seq !== S.loadSeq) return;
+    S.detail = null;
+    main.replaceChildren(errorBox(e, txId + " 상세를 불러오지 못했습니다."));
+  }
+}
+function firstDocWithBox(d) {
+  const ef = d.extracted_fields || {};
+  for (const f of C.SCREEN_FIELDS) if (ef[f] && ef[f].source_doc && ef[f].bbox) return ef[f].source_doc;
+  return null;
+}
+
+/** 서류 PNG 는 fetch 로 받아 에러면 {code, message} 를 보여준다 */
+async function loadDocs(txId, seq) {
+  await Promise.all(C.DOC_TYPES.map(async (doc) => {
+    try {
+      const res = await fetch("/screenings/" + enc(txId) + "/documents/" + doc);
+      if (!res.ok) {
+        const t = await res.text(); let b = null;
+        try { b = JSON.parse(t); } catch (_) { b = t; }
+        throw new ApiErr(res.status, b);
+      }
+      const blob = await res.blob();
+      if (seq !== S.loadSeq) return;
+      S.docUrls[doc] = URL.createObjectURL(blob);
+    } catch (e) {
+      if (seq !== S.loadSeq) return;
+      S.docErr[doc] = e instanceof ApiErr ? e : new ApiErr(0, { code: "NETWORK_ERROR", message: String(e) });
+    }
+  }));
+  if (seq === S.loadSeq) renderDoc();
+}
+
+function renderDetail() {
+  const d = S.detail;
+  const main = $("detail");
+  const conflicts = conflictMap(d);
+  main.replaceChildren(
+    renderHeader(d),
+    renderReasons(d),
+    renderShadow(d),
+    el("div", { class: "doc-grid" },
+      el("section", { class: "card", "aria-labelledby": "docTitle" },
+        el("h2", { id: "docTitle", text: "원문 서류" }),
+        el("div", { role: "tablist", "aria-label": "서류 종류", id: "docTabs" },
+          C.DOC_TYPES.map((doc) => el("button", {
+            type: "button", role: "tab", id: "tab-" + doc, "aria-controls": "docPanel",
+            "aria-selected": doc === S.docTab ? "true" : "false", tabindex: doc === S.docTab ? "0" : "-1",
+            onclick: () => switchDoc(doc, true), text: C.DOC_LABELS[doc],
+          }))),
+        el("div", { id: "docPanel", role: "tabpanel", "aria-labelledby": "tab-" + S.docTab, class: "doc-view" },
+          el("p", { class: "empty", text: "서류 불러오는 중…" })),
+        el("p", { class: "tagline", text: "파란 상자: 추출 위치 · 점선: 신뢰도 낮음 · 상자나 필드 행을 누르면 강조됩니다." })),
+      el("section", { class: "card", "aria-labelledby": "fieldTitle" },
+        el("h2", { id: "fieldTitle", text: "추출 필드 · 정정" }),
+        renderFieldTable(d, conflicts),
+        el("p", { class: "tagline" },
+          "굵은 글씨 = 스크리닝 필드. 신뢰도 " + C.OCR_CONFIDENCE_MIN + " 미만은 ⚠ 표시. 값을 고친 필드만 정정으로 보냅니다."))),
+    renderReview(d));
+  $("docTabs").addEventListener("keydown", (ev) => {
+    if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
+    ev.preventDefault();
+    const i = C.DOC_TYPES.indexOf(S.docTab);
+    const next = C.DOC_TYPES[(i + (ev.key === "ArrowRight" ? 1 : C.DOC_TYPES.length - 1)) % C.DOC_TYPES.length];
+    switchDoc(next, true); $("tab-" + next).focus();
+  });
+}
+
+function renderHeader(d) {
+  const meta = [
+    ["번들", d.bundle_id], ["모델", d.model_version], ["규칙", d.rules_version], ["리스트", d.list_version],
+    ["처리 상태", C.STATUS_LABELS[d.status] || d.status], ["처리 시도", d.attempts],
+    ["섀도 번들", d.shadow_bundle_id],
+  ];
+  const box = el("section", { class: "card", "aria-label": "판정 요약" },
+    el("div", { class: "head" }, el("h2", { text: d.tx_id }), classBadge(d.classification, true),
+      statusBadge(d.status), decisionBadge(d.reviewer_decision)),
+    el("dl", { class: "meta" }, meta.map(([k, v]) => el("div", null, el("dt", { text: k }), el("dd", { text: show(v) })))));
+  if (d.error) {
+    const e = typeof d.error === "object" ? d.error : { code: "ERROR", message: String(d.error) };
+    box.append(errorBox(new ApiErr(0, e), "처리 오류:"));
+  }
+  if (!canReview(d))
+    box.append(el("div", { class: "alert info", text: "아직 판정 전입니다. 판정이 끝나야 최종 판단을 남길 수 있습니다." }));
+  else if (d.status === C.FAILED)
+    box.append(el("div", { class: "alert warn", role: "note" },
+      el("strong", { text: "처리 실패 건: " }), "OCR·판정을 끝내지 못해 담당자 검토로 넘어왔습니다. 원문을 직접 확인하고 판단하세요."));
+  if (d.classification === C.HOLD)
+    box.append(el("div", { class: "alert err", role: "note" },
+      el("strong", { text: "고위험 보류: " }), "제재 리스트와 일치한 근거가 있습니다. 원문과 근거를 확인하기 전에는 승인하지 마세요."));
+  return box;
+}
+
+function renderReasons(d) {
+  const rs = d.reasons || [];
+  const sec = el("section", { class: "card", "aria-labelledby": "reasonTitle" }, el("h2", { id: "reasonTitle", text: "판정 근거 (" + rs.length + "건)" }));
+  if (!rs.length) { sec.append(el("p", { class: "muted", text: "근거 없음 (일치·경고 규칙에 걸리지 않음)" })); return sec; }
+  sec.append(reasonTable(rs, true));
+  return sec;
+}
+function reasonTable(rs, clickable) {
+  return el("table", null,
+    el("thead", null, el("tr", null, ["규칙", "분류", "필드", "값", "매칭 이름", "entry_id", "점수"].map((h) => el("th", { scope: "col", text: h })))),
+    el("tbody", null, rs.map((r) => el("tr", null,
+      el("td", null, C.RULE_LABELS[r.rule] || show(r.rule), el("div", { class: "tagline mono", text: show(r.rule) })),
+      el("td", null, r.classification ? classBadge(r.classification) : "-"),
+      el("td", null, r.field && clickable
+        ? el("button", { type: "button", title: "원문에서 위치 보기", onclick: () => selectField(r.field, true), text: C.FIELD_LABELS[r.field] || r.field })
+        : (C.FIELD_LABELS[r.field] || show(r.field))),
+      el("td", { class: "mono", text: show(r.value) }),
+      el("td", { text: show(r.matched_name) }),
+      el("td", { class: "mono", text: show(r.entry_id) }),
+      el("td", { class: "num", text: r.score === null || r.score === undefined ? "-" : Number(r.score).toFixed(2) }),
+    ))));
+}
+
+function renderShadow(d) {
+  const sh = d.shadow || [];
+  if (!sh.length && !d.shadow_bundle_id) return document.createDocumentFragment();
+  const sec = el("section", { class: "card", "aria-labelledby": "shadowTitle" },
+    el("h2", { id: "shadowTitle", text: "섀도 결과 (참고용, 판정에 반영되지 않음)" }));
+  if (!sh.length) { sec.append(el("p", { class: "muted", text: "섀도 번들 " + show(d.shadow_bundle_id) + " 결과가 아직 없습니다." })); return sec; }
+  for (const s of sh) {
+    if (s.error) {   // 섀도 처리 실패: 분류 비교를 하지 않는다 (불일치 지표에서도 빠짐)
+      sec.append(el("div", { class: "shadow-item" },
+        el("div", { class: "head" }, el("strong", { class: "mono", text: show(s.bundle_id) }),
+          el("span", { class: "badge none", text: "섀도 처리 실패" }),
+          el("span", { class: "muted", text: "주 결과와 비교하지 않음" })),
+        errorBox(new ApiErr(0, s.error), "섀도 오류:")));
+      continue;
+    }
+    const diff = s.classification !== d.classification;
+    sec.append(el("div", { class: "shadow-item" + (diff ? " diff" : "") },
+      el("div", { class: "head" }, el("strong", { class: "mono", text: show(s.bundle_id) }), classBadge(s.classification),
+        diff ? el("strong", { style: "color:var(--hold)", text: "⚠ 주 결과(" + (C.CLASS_LABELS[d.classification] || show(d.classification)) + ")와 다름" })
+             : el("span", { class: "muted", text: "주 결과와 같음" })),
+      (s.reasons && s.reasons.length) ? reasonTable(s.reasons, false) : el("p", { class: "muted", text: "근거 없음" })));
+  }
+  return sec;
+}
+
+function conflictMap(d) {
+  const m = {};
+  for (const c of d.conflicts || []) if (c && c.field) m[c.field] = c;
+  return m;
+}
+function isLowConf(x) { return x && typeof x.confidence === "number" && x.confidence < C.OCR_CONFIDENCE_MIN; }
+
+function renderFieldTable(d, conflicts) {
+  const ef = d.extracted_fields || {}, fields = d.fields || {}, corrected = d.corrected_fields || {};
+  const tbody = el("tbody");
+  for (const f of C.TX_FIELDS) {
+    const x = ef[f] || {};
+    const value = f in fields ? fields[f] : x.value;
+    const low = isLowConf(x);
+    const cf = conflicts[f];
+    const inputId = "fix-" + f;
+    const input = el("input", { type: "text", id: inputId, "data-field": f, "data-orig": value ?? "",
+      value: (f in corrected ? corrected[f] : value) ?? "", autocomplete: "off", spellcheck: "false",
+      "aria-label": (C.FIELD_LABELS[f] || f) + " 정정 값" });
+    input.addEventListener("input", () => input.classList.toggle("changed", input.value !== input.dataset.orig));
+    input.addEventListener("focus", () => selectField(f, false));
+    if (input.value !== input.dataset.orig) input.classList.add("changed");
+    const tr = el("tr", { "data-field": f, class: C.SCREEN_FIELDS.includes(f) ? "screen" : null,
+                         onclick: (ev) => { if (ev.target.tagName !== "INPUT") selectField(f, true); } },
+      el("td", null, el("label", { for: inputId, text: C.FIELD_LABELS[f] || f }), el("div", { class: "tagline mono", text: f })),
+      el("td", { class: "mono" }, show(value),
+        f in corrected ? el("span", { class: "tagline", text: " (정정됨)" }) : null,
+        cf ? el("span", { class: "conflict" }, el("strong", { text: "⚠ 서류 불일치 " }),
+               "Invoice: " + show(cf.invoice) + " / B/L: " + show(cf.bl)) : null),
+      el("td", { text: x.source_doc ? (C.DOC_LABELS[x.source_doc] || x.source_doc) : "-" }),
+      el("td", { class: "num" }, typeof x.confidence === "number"
+        ? (low ? el("span", { class: "conf-low", title: "기준 " + C.OCR_CONFIDENCE_MIN + " 미만", text: "⚠ " + x.confidence.toFixed(1) })
+               : x.confidence.toFixed(1))
+        : "-"),
+      el("td", null, input));
+    tbody.append(tr);
+  }
+  return el("div", { style: "overflow-x:auto" }, el("table", { id: "fieldTable" },
+    el("thead", null, el("tr", null, ["필드", "추출 값", "출처", "신뢰도", "정정"].map((h) => el("th", { scope: "col", text: h })))),
+    tbody));
+}
+
+/* ------------------------------------------------------------------ 서류 이미지 + bbox */
+function switchDoc(doc, render) {
+  S.docTab = doc;
+  for (const t of C.DOC_TYPES) {
+    const b = $("tab-" + t);
+    if (b) { b.setAttribute("aria-selected", t === doc ? "true" : "false"); b.tabIndex = t === doc ? 0 : -1; }
+  }
+  const p = $("docPanel"); if (p) p.setAttribute("aria-labelledby", "tab-" + doc);
+  if (render) renderDoc();
+}
+
+let resizeObs = null;
+function renderDoc() {
+  const panel = $("docPanel");
+  if (!panel || !S.detail) return;
+  const doc = S.docTab;
+  if (resizeObs) { resizeObs.disconnect(); resizeObs = null; }
+  if (S.docErr[doc]) { panel.replaceChildren(errorBox(S.docErr[doc], C.DOC_LABELS[doc] + " 이미지를 불러오지 못했습니다.")); return; }
+  if (!S.docUrls[doc]) { panel.replaceChildren(el("p", { class: "empty", text: "서류 불러오는 중…" })); return; }
+  const img = el("img", { src: S.docUrls[doc], alt: S.detail.tx_id + " " + C.DOC_LABELS[doc] + " 원문 이미지" });
+  const stage = el("div", { class: "doc-stage" }, img);
+  panel.replaceChildren(stage);
+  const ef = S.detail.extracted_fields || {};
+  for (const f of C.TX_FIELDS) {
+    const x = ef[f];
+    if (!x || x.source_doc !== doc || !Array.isArray(x.bbox) || x.bbox.length !== 4) continue;
+    stage.append(el("button", {
+      type: "button", class: "bbox" + (isLowConf(x) ? " lowconf" : "") + (S.activeField === f ? " active" : ""),
+      "data-field": f, "data-bbox": x.bbox.join(","),
+      "aria-label": (C.FIELD_LABELS[f] || f) + " 위치: " + show(x.value), title: (C.FIELD_LABELS[f] || f) + ": " + show(x.value),
+      onclick: () => selectField(f, false),
+    }, el("span", { class: "tag", text: C.FIELD_LABELS[f] || f })));
+  }
+  const place = () => placeBoxes(img, stage);
+  if (img.complete && img.naturalWidth) place(); else img.addEventListener("load", () => { place(); scrollToActive(); });
+  if ("ResizeObserver" in window) { resizeObs = new ResizeObserver(place); resizeObs.observe(img); }
+}
+
+/** bbox 는 원본 픽셀 좌표 → 표시 크기/원본 크기 비율로 바꿔 놓는다 */
+function placeBoxes(img, stage) {
+  const nw = img.naturalWidth, nh = img.naturalHeight;
+  if (!nw || !nh) return;
+  const sx = img.clientWidth / nw, sy = img.clientHeight / nh;
+  for (const b of stage.querySelectorAll(".bbox")) {
+    const [x0, y0, x1, y1] = b.dataset.bbox.split(",").map(Number);
+    const pad = 3;
+    b.style.left = (Math.min(x0, x1) * sx - pad) + "px";
+    b.style.top = (Math.min(y0, y1) * sy - pad) + "px";
+    b.style.width = (Math.abs(x1 - x0) * sx + pad * 2) + "px";
+    b.style.height = (Math.abs(y1 - y0) * sy + pad * 2) + "px";
+  }
+}
+window.addEventListener("resize", () => {
+  const img = document.querySelector(".doc-stage img"), stage = document.querySelector(".doc-stage");
+  if (img && stage) placeBoxes(img, stage);
+});
+
+function scrollToActive() {
+  const b = document.querySelector(".bbox.active");
+  const view = $("docPanel");
+  if (!b || !view) return;
+  const top = parseFloat(b.style.top) || 0;
+  view.scrollTo({ top: Math.max(0, top - view.clientHeight / 3), behavior: "smooth" });
+}
+
+/** 필드 선택: 해당 서류 탭으로 바꾸고 bbox 강조·스크롤, 필드 행 강조 */
+function selectField(f, scrollRow) {
+  S.activeField = f;
+  for (const tr of document.querySelectorAll("#fieldTable tbody tr")) tr.classList.toggle("sel", tr.dataset.field === f);
+  if (scrollRow) {
+    const tr = document.querySelector('#fieldTable tbody tr[data-field="' + f + '"]');
+    if (tr) tr.scrollIntoView({ block: "nearest" });
+  }
+  const x = ((S.detail && S.detail.extracted_fields) || {})[f];
+  if (x && x.source_doc && x.source_doc !== S.docTab && C.DOC_TYPES.includes(x.source_doc)) {
+    switchDoc(x.source_doc, true);
+  } else {
+    for (const b of document.querySelectorAll(".bbox")) b.classList.toggle("active", b.dataset.field === f);
+  }
+  scrollToActive();
+}
+
+/* ------------------------------------------------------------------ 검토 */
+function renderReview(d) {
+  const sec = el("section", { class: "card", "aria-labelledby": "reviewTitle" }, el("h2", { id: "reviewTitle", text: "담당자 최종 판단" }));
+  if (d.reviewer_decision) {
+    sec.append(el("div", { class: "alert info", role: "status" },
+      el("strong", { text: "기존 판단: " + (C.DECISION_LABELS[d.reviewer_decision] || d.reviewer_decision) }),
+      " · 검토자 " + show(d.reviewer) + " · " + fmtTime(d.reviewed_at),
+      d.reviewer_note ? el("div", { text: "메모: " + d.reviewer_note }) : null,
+      d.corrected_fields && Object.keys(d.corrected_fields).length
+        ? el("div", { text: "정정한 필드: " + Object.entries(d.corrected_fields).map(([k, v]) => (C.FIELD_LABELS[k] || k) + "=" + show(v)).join(", ") })
+        : null));
+  }
+  const ready = canReview(d);
+  if (ready && d.status === C.FAILED) {
+    const e = d.error && typeof d.error === "object" ? d.error : { code: "SCREENING_FAILED", message: show(d.error) };
+    sec.append(el("div", { class: "alert warn", role: "note" },
+      el("strong", { text: "처리 오류: " }), show(e.message),
+      el("div", { class: "tagline", text: "판정을 끝내지 못한 건입니다. 시스템 분류(" + (C.CLASS_LABELS[d.classification] || d.classification) +
+        ")는 처리 실패로 붙은 것이므로, 원문을 직접 확인하고 판단하세요." })));
+  }
+  const reviewer = el("input", { type: "text", id: "reviewer", value: lsGet(LS_REVIEWER), autocomplete: "name", required: true });
+  const note = el("textarea", { id: "note", rows: "3", placeholder: "판단 근거, 확인한 원문 내용 등" });
+  const msg = el("div", { id: "reviewMsg", "aria-live": "assertive" });
+  const btns = C.DECISIONS.map((dec) => el("button", {
+    type: "button", "data-decision": dec, disabled: !ready,
+    class: dec === C.HOLD_DECISION && d.classification === C.HOLD ? "emph" : null,
+    onclick: () => submitReview(dec),
+    text: (C.DECISION_LABELS[dec] || dec) + (dec === C.HOLD_DECISION && d.classification === C.HOLD ? " (권장)" : ""),
+  }));
+  sec.append(el("div", { class: "review-form" },
+    el("label", { for: "reviewer" }, "검토자 이름 (이 브라우저에 기억됨)", reviewer),
+    el("label", { for: "note" }, "메모", note),
+    el("div", { class: "decisions", role: "group", "aria-label": "최종 판단" }, btns),
+    ready ? null : el("p", { class: "muted", text: "판정이 끝난 건(또는 처리 실패로 담당자 검토로 넘어온 건)만 판단을 남길 수 있습니다." }),
+    d.reviewer_decision && ready ? el("p", { class: "tagline", text: "다시 누르면 기존 판단을 새 판단으로 바꿉니다." }) : null,
+    msg));
+  return sec;
+}
+
+/** 원래 값과 달라진 정정 입력만 모은다. 없으면 null */
+function collectCorrections() {
+  const out = {};
+  for (const inp of document.querySelectorAll("#fieldTable input[data-field]")) {
+    if (inp.value === inp.dataset.orig) continue;
+    out[inp.dataset.field] = inp.value.trim() === "" ? null : inp.value;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function confirmDialog(bodyNodes, okLabel, danger) {
+  const dlg = $("confirmDlg");
+  $("dlgBody").replaceChildren(...bodyNodes);
+  const ok = $("dlgOk");
+  ok.textContent = okLabel;
+  ok.style.background = danger ? "var(--hold)" : ""; ok.style.borderColor = danger ? "var(--hold)" : "";
+  if (typeof dlg.showModal !== "function")          // <dialog> 미지원 브라우저
+    return Promise.resolve(window.confirm(dlg.textContent.replace(/\s+/g, " ").trim()));
+  return new Promise((resolve) => {
+    dlg.returnValue = "";
+    dlg.addEventListener("close", () => resolve(dlg.returnValue === "ok"), { once: true });
+    dlg.showModal();
+    dlg.querySelector('button[value="cancel"]').focus();   // 실수로 Enter 눌러도 확정되지 않게
+  });
+}
+
+async function submitReview(decision) {
+  const d = S.detail;
+  if (!d) return;
+  const msg = $("reviewMsg");
+  msg.replaceChildren();
+  const reviewer = $("reviewer").value.trim();
+  if (!reviewer) {
+    msg.append(el("div", { class: "alert err", role: "alert", text: "검토자 이름을 입력하세요." }));
+    $("reviewer").focus(); return;
+  }
+  const note = $("note").value.trim();
+  const corrected = collectCorrections();
+  const body = [
+    el("p", null, el("strong", { class: "mono", text: d.tx_id }), " 을(를) ",
+      el("strong", { text: "'" + (C.DECISION_LABELS[decision] || decision) + "'" }), " 으로 확정합니다."),
+    el("p", null, "시스템 분류: ", classBadge(d.classification), " · 검토자: " + reviewer),
+  ];
+  const danger = decision === C.APPROVE && d.classification !== C.PASS;
+  if (decision === C.APPROVE && d.classification === C.HOLD)
+    body.push(el("div", { class: "alert err" }, el("strong", { text: "주의: " }), "제재 리스트와 일치한 고위험 보류 건을 승인하려고 합니다. 오탐임을 원문으로 확인했는지 다시 확인하세요."));
+  else if (danger)
+    body.push(el("div", { class: "alert warn", text: "판정 근거를 모두 확인했는지 다시 확인하세요." }));
+  if (corrected) body.push(el("p", null, "정정 필드: " + Object.entries(corrected).map(([k, v]) => (C.FIELD_LABELS[k] || k) + " → " + show(v)).join(", ")));
+  if (corrected && Object.keys(corrected).some((k) => C.SCREEN_FIELDS.includes(k)))
+    body.push(el("div", { class: "alert info", text: "스크리닝 필드를 정정했으므로 같은 번들(" + show(d.bundle_id) +
+      ")로 다시 판정합니다. 재판정 결과가 고위험 보류면 승인할 수 없습니다. 스크리닝 필드는 비워서 정정할 수 없습니다." }));
+  if (d.reviewer_decision) body.push(el("p", { class: "muted", text: "기존 판단(" + (C.DECISION_LABELS[d.reviewer_decision] || d.reviewer_decision) + ")을 바꿉니다." }));
+  if (!(await confirmDialog(body, (C.DECISION_LABELS[decision] || decision) + " 확정", danger))) return;
+
+  lsSet(LS_REVIEWER, reviewer);
+  const buttons = document.querySelectorAll(".decisions button[data-decision]");
+  buttons.forEach((b) => (b.disabled = true));
+  try {
+    const updated = await api("/screenings/" + enc(d.tx_id) + "/review", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ decision, reviewer, note: note || null, corrected_fields: corrected }),
+    });
+    if (S.detail && S.detail.tx_id === d.tx_id) {
+      const keepUrls = S.docUrls, keepErr = S.docErr, keepTab = S.docTab;
+      S.detail = updated; S.activeField = null;
+      renderDetail();
+      S.docUrls = keepUrls; S.docErr = keepErr; switchDoc(keepTab, true);
+      const saved = el("div", { class: "alert info", role: "status",
+        text: "저장했습니다: " + (C.DECISION_LABELS[updated.reviewer_decision] || decision) });
+      const rs = updated.rescreen;
+      if (rs) saved.append(el("div", null, "정정 값으로 재판정: ", classBadge(rs.classification),
+        (rs.reasons && rs.reasons.length) ? reasonTable(rs.reasons, false) : el("span", { class: "muted", text: " (근거 없음)" })));
+      $("reviewMsg").replaceChildren(saved);
+    }
+    const it = S.items.find((x) => x.tx_id === d.tx_id);
+    if (it) { it.reviewer_decision = updated.reviewer_decision || decision; renderList(); }
+  } catch (e) {
+    buttons.forEach((b) => (b.disabled = false));
+    $("reviewMsg").replaceChildren(errorBox(e, e.status === 409 ? "지금은 판단을 남길 수 없습니다." : "저장하지 못했습니다."));
+  }
+}
+
+/* ------------------------------------------------------------------ 시작 */
+async function start() {
+  $("listError").replaceChildren();
+  $("listInfo").textContent = "계약 값 불러오는 중…";
+  try {
+    applyMeta(await api("/meta"));
+  } catch (e) {
+    $("listInfo").textContent = "";
+    $("listError").replaceChildren(errorBox(e, "계약 값(/meta)을 불러오지 못해 화면을 쓸 수 없습니다."),
+      el("button", { type: "button", onclick: start, text: "다시 시도" }));
+    return;
+  }
+  initFilters();
+  loadList();
+}
+start();
+</script>
+</body>
+</html>

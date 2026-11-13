@@ -1,0 +1,3 @@
+# data-pipeline: 제재 리스트 -> 합성 서류(PDF) -> OCR -> 평가 -> DB 시드. 시스템 패키지 postgresql-client 필요
+-r ocr.txt
+reportlab==5.1.0

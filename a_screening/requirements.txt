@@ -1,2 +1,5 @@
-# 의존성은 == 로 버전 고정 (예: fastapi==X.Y.Z). 담당자가 채웁니다.
-# common/ 이 쓰는 psycopg, minio 도 여기에 포함하세요.
+# 로컬 개발·테스트·CI: 모든 서비스 의존성 + 테스트 도구 (이미지는 requirements/ 의 서비스별 파일만 설치)
+-r requirements/api.txt
+-r requirements/pipeline.txt
+pytest==9.2.0
+httpx==0.28.1      # FastAPI TestClient
