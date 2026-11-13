@@ -1,0 +1,6 @@
+# ocr-worker: 큐에서 심사 건을 꺼내 OCR -> 필드 추출 -> 판정 -> 저장. 시스템 패키지 tesseract-ocr 5.5.0, poppler-utils 필요 (Dockerfile에서 고정)
+pytesseract==0.3.13
+Pillow==13.0.0
+numpy==2.5.4
+psycopg[binary]==3.3.8
+minio==7.2.20
