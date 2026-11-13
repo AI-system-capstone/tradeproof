@@ -1,4 +1,4 @@
--- 소유: C — replays, approvals (검증 결과, 승인·반려 기록)
+-- 소유: C — replays (M3 검증 결과·지표·영향 거래)
 -- 쓰기는 소유 모듈만, 읽기는 누구나. 다른 모듈이 읽는 컬럼은 계약(docs/interfaces.md)이다.
 -- 11/12까지는 이 파일을 직접 고치고 DB를 초기화한다. 이후에는 ALTER 파일을 새로 추가한다.
 -- 파일 이름 순서대로 적용된다 (docker-compose: /docker-entrypoint-initdb.d).

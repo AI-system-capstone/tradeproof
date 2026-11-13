@@ -8,7 +8,7 @@
 3. PR에 `contract-change` 라벨을 달고, 영향받는 모듈 담당자를 리뷰어로 지정합니다.
 
 API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`과 README에 두고, 여기에는 "누가 누구에게 무엇을"만 적습니다.
-**11/12 계획 변경([결정 0005](decisions/0005-model-path-first.md)):** ① 모델(OCR) 갱신 경로(S4·S6) → ② 모델 변형 시나리오(S1·S5) → ③ 제재 리스트 갱신(S2·S3) 순서로 만든다. 그래서 **"단계" 칸의 1차/2차는 더 이상 순서를 뜻하지 않는다** — 리스트 갱신에만 쓰는 줄은 내용에 "(이어서)"라고 적었고, 나머지는 모두 지금 필요하다. (칸 자체는 다른 PR과 충돌을 피하려고 남겨 두고 나중에 정리한다)
+**11/12~13 계획 변경([결정 0005](decisions/0005-model-path-first.md), [결정 0006](decisions/0006-m8-owner-c-and-exclude-s6.md)):** ① 모델(OCR) 갱신 경로(S4) → ② 모델 변형 시나리오(S1·S5) → ③ 제재 리스트 갱신(S2·S3) 순서로 만든다. 담당은 **B(M1·M2), C(M3·M8), A(M6), D(M4·M5)**로 정리하며, S6(과거 판정 재현)은 제외한다. 그래서 **"단계" 칸의 1차/2차는 더 이상 순서를 뜻하지 않는다** — 리스트 갱신에만 쓰는 줄은 내용에 "(이어서)"라고 적었고, 나머지는 모두 지금 필요하다. (칸 자체는 다른 PR과 충돌을 피하려고 남겨 두고 나중에 정리한다)
 
 ## 1. API
 
@@ -18,10 +18,11 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 번들 구성 조회 | B → A·C·D | `GET /bundles/{id}`로 번들의 모델·리스트 컴포넌트 ID, 파일 위치, 해시를 알려 준다 | 1차 |
 | 상태 전이 | C·D → B | `POST /bundles/{id}/transitions`에 `{to, actor, reason}`을 보내면 B가 `{from, to, changed_at}`을 돌려준다. 허용되지 않는 전이는 409 | 1차 |
 | 지표 이름 | 각 모듈 → D | 각 모듈은 `contracts.py`에 정한 이름(`tradeproof_<모듈>_<대상>`, `bundle_id` 라벨 포함)으로 지표를 내보내고, D는 이 이름으로 canary 단계별 분석과 자동 롤백 판단을 한다 | 1차 |
-| 반입 | 운영 화면(A) → B | `POST /imports` (multipart ZIP: manifest.json + 파일 + signature.sig) → 202, `GET /imports/{id}`로 단계별 결과·거부 사유 | 1차 |
-| 검증·승인 | 운영 화면(A) ↔ C | C가 게이트 결과·지표·영향 거래를 제공하고, 화면에서 승인·반려를 C에 보낸다 (`POST /approvals`) | 1차 |
-| 배포 | C → D | 승인되면 `POST /deployments` (`approved`가 아니면 409, 진행 중 배포가 있으면 409) | 1차 |
-| 배포 상태·롤백 | D → C·화면 | `GET /deployments/{id}`, `POST /deployments/{id}/rollback` | 1차 |
+| 반입 | 운영 화면(C) → B | `POST /imports` (multipart ZIP: manifest.json + 파일 + signature.sig) → 202, `GET /imports/{id}`로 단계별 결과·거부 사유 | 1차 |
+| 검증 결과 | C(M3) → 운영 화면(C) · B(M2) | C(M3)가 골든셋·Replay 검증 결과, 지표, 영향 거래(diff)를 제공하여 운영 화면(C) 조회 및 B(M2) 게이트 판정에 사용한다 | 1차 |
+| 게이트·승인 | 운영 화면(C) ↔ B(M2) | B(M2)가 게이트 결과를 제공하고, 운영 화면(C)에서 승인·반려를 B에 보낸다 (`POST /approvals`) | 1차 |
+| 배포 | B(M2) → D | 승인되면 B가 `POST /deployments` 요청 (`approved`가 아니면 409, 진행 중 배포가 있으면 409) | 1차 |
+| 배포 상태·롤백 | D → B · 운영 화면(C) | `GET /deployments/{id}`, `POST /deployments/{id}/rollback` | 1차 |
 
 ## 2. 코드 (import)
 
@@ -47,15 +48,15 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 
 | 연결 | 방향 | 내용 | 단계 |
 |---|---|---|---|
-| 번들 ID | C → A | C가 배포 레포(`deploy/`)에 적은 번들 ID가 Helm 설정을 거쳐 A의 환경변수 `BUNDLE_ID`로 들어간다 (적용은 D) | 1차 |
-| Replay 시작 | B → C | B가 번들을 검증 통과로 바꾸면 C의 Job 템플릿으로 Replay Job이 만들어진다 | 1차 |
+| 번들 ID | B → A | B(M2)가 배포 레포(`deploy/`)에 적은 번들 ID가 Helm 설정을 거쳐 A의 환경변수 `BUNDLE_ID`로 들어간다 (적용은 D) | 1차 |
+| 검증 Job 시작 | B → C | B가 번들을 검증 통과로 바꾸면 C의 Job 템플릿으로 M3 검증 Job(골든셋 검증·Replay)이 만들어진다 | 1차 |
 | 롤백 알림 | D → B | Argo Rollouts 알림이 B의 전이 API를 불러 `rolled_back`을 기록한다 | 1차 |
 | A 서비스 구성 | A → D | A는 같은 Dockerfile의 빌드 대상 2개로 뜬다(compose·k3s 공통). `a-screening`(`target: screening-api`, 포트 8000, 지표 `GET :8000/metrics`) + `a-ocr-worker`(`target: ocr-worker`, 포트 없음). 둘 다 DB·`BLOB_*`·`BUNDLE_ID`를 같이 받는다. **TODO(A·D): 워커에 canary를 적용하는 방식과 워커 지표 수집 경로** | 1차 |
 
 ## 5. 메모: 최종 요구사항 문서와 다르게 정한 부분
 
 - **C가 A의 코드를 직접 실행한다.** 최종본은 "검증도 M6(심사 서비스)의 평시 경로를 거친다"이고, 이 표는 "같은 코드를 C 안에서 실행"이다. 결과는 같아야 하므로 **SVC-04(같은 입력 → 같은 결과)를 A·C 양쪽 테스트로 확인**한다. 규약의 import 예외가 판정 코드에서 OCR 코드까지 넓어진다.
-- **Replay를 K8s Job으로 실행한다.** docker compose에는 Job이 없으므로 C의 `job/` 진입점은 **일반 프로세스로도 실행 가능**하게 만든다. B가 Job을 만들 권한(RBAC)은 D가 부여한다.
+- **M3 검증을 K8s Job으로 실행한다.** docker compose에는 Job이 없으므로 C의 `job/` 진입점은 **일반 프로세스로도 실행 가능**하게 만든다. B가 Job을 만들 권한(RBAC)은 D가 부여한다.
 - **반영·롤백 결과는 B(번들 상태)에도 남는다.** 롤백 시 B의 상태가 갱신되지 않으면 번들 상태, "갱신은 한 번에 하나" 잠금, 다음 후보의 기준 번들이 모두 틀어진다.
 
 ## 변경 기록
@@ -65,3 +66,4 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 2026-11-10 | D 최은호 | 최초 작성 (팀 연동 표 12줄 + 데이터 연동 + 1차 API) |
 | 2026-11-12 | D 최은호 | 계획 변경(결정 0005): 모델 갱신 경로를 먼저, 리스트 갱신은 이어서. "단계" 칸 설명, "시연용 모델 파일" 추가, 리스트 전용 줄에 "(이어서)" 표시, 지표 용도 문구, A 서비스 구성(서비스 2개·포트·지표 경로) 추가 |
 | 2026-11-12 | A 지윤아 | `common/contracts.py`·`common/blob.py` 추가, A 테이블 정의(`common/schema/10_a_screening.sql`: transactions·screening_results·screening_jobs), 판정 코드 import 경로 `a_screening.screening.match` |
+| 2026-11-13 | C 강민성 | [결정 0006](decisions/0006-m8-owner-c-and-exclude-s6.md): 모듈 담당 재정비(B: M1·M2 / C: M3·M8 / A: M6), S6 제외, "Replay Job"을 M3 전체(골든셋 검증·Replay)를 포괄하는 "검증 Job" 표현으로 정비 |
