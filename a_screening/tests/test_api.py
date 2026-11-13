@@ -410,14 +410,26 @@ def test_shadow_same_as_active_ignored(env, monkeypatch):
     assert submit(env, json={"fields": clean_fields()})["shadow_bundle_id"] is None
 
 
-@pytest.mark.parametrize("var", ["SHADOW_BUNDLE", "ACTIVE_BUNDLE"])
+@pytest.mark.parametrize("var", ["SHADOW_BUNDLE", "ACTIVE_BUNDLE", "BUNDLE_ID"])
 def test_bad_bundle_env_fails_at_startup(var):
-    envv = {k: v for k, v in os.environ.items() if k not in ("DATABASE_URL", "SHADOW_BUNDLE", "ACTIVE_BUNDLE")}
+    envv = {k: v for k, v in os.environ.items() if k not in ("DATABASE_URL", "SHADOW_BUNDLE", "ACTIVE_BUNDLE", "BUNDLE_ID")}
     envv[var] = "B-99"
     p = subprocess.run([sys.executable, "-c", "import a_screening.api.main"], cwd=ROOT, env=envv, capture_output=True, text=True,
                        timeout=60)
     assert p.returncode != 0 and "RuntimeError" in p.stderr and var in p.stderr
 
+
+
+def test_bundle_id_env_preferred():
+    """팀 규약 이름 BUNDLE_ID 가 있으면 그것을, 없으면 예전 이름 ACTIVE_BUNDLE 을 쓴다."""
+    base = {k: v for k, v in os.environ.items() if k not in ("DATABASE_URL", "SHADOW_BUNDLE", "ACTIVE_BUNDLE", "BUNDLE_ID")}
+    code = "import a_screening.api.main as A; print(A.ACTIVE_BUNDLE)"
+    for extra, want in (({"BUNDLE_ID": "B-9", "ACTIVE_BUNDLE": "B-8"}, "B-9"), ({"ACTIVE_BUNDLE": "B-8"}, "B-8"),
+                        ({}, C.BASELINE_BUNDLE)):
+        p = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env={**base, **extra}, capture_output=True,
+                           text=True, timeout=60)
+        assert p.returncode == 0, p.stderr
+        assert p.stdout.strip().splitlines()[-1] == want
 
 # ---------------------------------------------------------------- 지표
 def parse_metrics(text: str) -> tuple[dict, dict]:
