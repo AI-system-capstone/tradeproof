@@ -68,7 +68,7 @@ def _log(**fields) -> None:
 
 
 class DeploymentRequest(BaseModel):
-    # TODO(C 확인 필요): C 가 보낼 본문. 지금은 bundle_id 만 받는다 (approval_id 등은 정해지면 추가)
+    # TODO(B 확인 필요): 요청은 B(M2)가 보낸다. 지금은 bundle_id 만 받는다 (approval_id 등은 정해지면 추가)
     bundle_id: str = Field(min_length=1, max_length=64, examples=["B-2"])
 
 

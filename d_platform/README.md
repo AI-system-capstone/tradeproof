@@ -28,7 +28,7 @@
 - [ ] Prometheus 수집(MON-01), AnalysisTemplate로 단계별 분석 → 기준 초과 시 자동 abort 후 undo(MON-02), 롤백 알림 → B 전이 API
 - [ ] 배포 API 실제 드라이버(Argo Rollouts 조작), 감지 시간·전환 시간 측정
 - [ ] 트래픽·이상 입력 도구 (TST-07·08)
-- [ ] Replay Job 템플릿(Indexed Job)·RBAC (C·B와 협의)
+- [ ] 검증 Job(골든셋 검증 + Replay) 템플릿(Indexed Job)·RBAC (C·B와 협의)
 - [ ] `scripts/reset_demo.sh`: DB·버킷 초기화 → 최초 번들 반입(B) → 과거 거래·골든셋 적재(데이터)
 - [ ] Grafana 감시 화면 (UI-04, P1), 시나리오 실행 스크립트 (TST-09), NetworkPolicy
 
@@ -40,11 +40,11 @@
 
 | 제공 | 받는 쪽 | 받는 것 | 주는 쪽 |
 |---|---|---|---|
-| 개발 환경(compose), 시연 환경(k3s) | 전원 | 배포 요청 | C |
-| `BUNDLE_ID` 주입 | A | 번들 ID (`deploy/`) | C |
+| 개발 환경(compose), 시연 환경(k3s) | 전원 | 배포 요청 (`POST /deployments`) | B (M2) |
+| `BUNDLE_ID` 주입 | A | 번들 ID (`deploy/`) | B (M2) |
 | 롤백 알림 → 상태 전이 | B | 번들별 지표 | A |
-| 배포 이력 (`deployments`) | B·C | 과거 거래 적재 스크립트 | 데이터 |
-| Replay Job 템플릿·권한 | B·C | | |
+| 배포 이력 (`deployments`), 배포 상태 조회·롤백 API | B·운영 화면(C) | 과거 거래 적재 스크립트 | 데이터 |
+| 검증 Job 템플릿·권한 | B·C | | |
 
 ## 배포 API (포트 8300)
 
@@ -64,7 +64,10 @@
 지금은 **가짜 드라이버**다: 실제 트래픽은 바뀌지 않고, `FAKE_STEP_SECONDS`마다 10→50→100으로 올라간 뒤 `succeeded`가 된다. `FAKE_FAIL_BUNDLES`에 든 번들은 50% 단계 분석이 실패해 자동 롤백된다. 승인 여부도 `FAKE_APPROVED_BUNDLES` 목록으로 흉내 낸다.
 
 확정 전(TODO):
-- C: `POST /deployments` 본문에 `bundle_id` 말고 더 보낼 것(`approval_id` 등)
+- B(M2, 11/13 담당 변경으로 배포 요청은 C가 아니라 B가 보낸다): `POST /deployments` 본문에 `bundle_id` 말고 더 보낼 것(`approval_id` 등)
+- B: 배포 요청을 받은 D가 승인 여부를 B에 되묻는다(`GET /bundles/{id}`). B는 번들을 `approved`로 바꾼 **뒤에** 요청을 보내야 하고, 그 요청을 처리하는 동안 B가 같은 번들을 잠그고 있으면 서로 기다리게 된다
+- 운영 화면(C): 브라우저에서 D의 API(8300)를 직접 부르면 주소가 달라 CORS가 걸린다. k3s에서는 ingress 경로로 같은 주소 아래에 묶을 예정(예: `/api/deployments` → d-platform). compose에서 직접 부를지, C의 서버를 거칠지 정해야 한다
+- 운영 화면(C): 진행 상황은 `GET /deployments/{id}`를 주기적으로 조회(polling)하는 방식이다. 밀어 주는 방식(SSE 등)은 없다
 - B: `GET /bundles/{id}` 응답의 상태 필드 이름·승인 상태값 (지금은 `status == "approved"`로 가정), 반영 완료·롤백을 알릴 전이 값
 - 상태값·ID 접두사를 `common/contracts.py`·`common/ids.py`로 옮기기
 

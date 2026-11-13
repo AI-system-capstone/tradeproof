@@ -13,7 +13,7 @@ from d_platform.api.main import create_app  # noqa: E402
 from d_platform.api.registry import FakeRegistry, RegistryUnavailable  # noqa: E402
 from d_platform.api.store import MemoryStore  # noqa: E402
 
-ACTOR = {"X-Actor": "c-replay"}
+ACTOR = {"X-Actor": "b-registry"}
 STEP = 10  # 가짜 드라이버의 단계당 시간(초)
 
 
@@ -70,7 +70,7 @@ def test_create_returns_202_and_first_step(client):
     assert body["previous_bundle_id"] == "B-1"       # 이력이 없으면 BUNDLE_ID 가 stable
     assert body["status"] == "pending"
     assert body["steps"] == [10, 50, 100]
-    assert body["requested_by"] == "c-replay"
+    assert body["requested_by"] == "b-registry"
     assert body["created_at"].endswith("+00:00")
 
 
