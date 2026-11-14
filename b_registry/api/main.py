@@ -85,7 +85,6 @@ def create_app(cfg=None, db=None, store=None):
             await run_in_threadpool(worker.stop)
 
     app = FastAPI(title="Tradeproof Registry", version="1.0.0", lifespan=lifespan,
-        docs_url=None, redoc_url=None, openapi_url=None,
         responses={n: {"model": ErrorResponse} for n in (400, 404, 409, 413, 422, 500, 503)})
     app.add_middleware(BodyLimitMiddleware, limit=cfg.max_zip_bytes)
     app.state.db, app.state.service, app.state.worker = db, service, worker

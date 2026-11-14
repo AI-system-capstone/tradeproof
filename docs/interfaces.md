@@ -67,3 +67,4 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 2026-11-12 | D 최은호 | 계획 변경(결정 0005): 모델 갱신 경로를 먼저, 리스트 갱신은 이어서. "단계" 칸 설명, "시연용 모델 파일" 추가, 리스트 전용 줄에 "(이어서)" 표시, 지표 용도 문구, A 서비스 구성(서비스 2개·포트·지표 경로) 추가 |
 | 2026-11-12 | A 지윤아 | `common/contracts.py`·`common/blob.py` 추가, A 테이블 정의(`common/schema/10_a_screening.sql`: transactions·screening_results·screening_jobs), 판정 코드 import 경로 `a_screening.screening.match` |
 | 2026-11-14 | B 박시우 | 번들 조회를 모델·리스트 ID와 원본 ZIP URI 기준으로 변경. 반입 검증 실패는 422, 반입 조회는 쿼리 옵션 없이 `{status, reason, bundle_id}` 반환. D 적용용 B 스키마 마이그레이션 추가 |
+| 2026-11-14 | B 박시우 | `common/contracts.py`에 반입 상태 `IMPORT_*`(A), 번들 상태·전이 `REGISTRY_*`(C·D), 지표 이름 `METRIC_REGISTRY_*`(D) 추가. 기존 A 정의 유지 |

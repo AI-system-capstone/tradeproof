@@ -9,6 +9,7 @@ from b_registry.verify.validation import validate
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("openapi")
     sub.add_parser("check-db")
     sub.add_parser("migrate-db")
     check = sub.add_parser("validate")
@@ -16,7 +17,10 @@ def main():
     check.add_argument("--trust-key", type=Path, required=True)
     args = parser.parse_args()
     cfg = Settings()
-    if args.command == "migrate-db":
+    if args.command == "openapi":
+        from b_registry.api.main import create_app
+        print(json.dumps(create_app(cfg).openapi(), ensure_ascii=False, indent=2))
+    elif args.command == "migrate-db":
         from b_registry.migrations import migrate
         migrate(cfg.database_url)
         print("B registry migration applied; existing IDs and artifact URIs preserved")

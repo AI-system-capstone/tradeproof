@@ -41,4 +41,4 @@ python -m b_registry.cli check-db
 
 기본 pytest는 외부 PostgreSQL 없이 단위 테스트를 수행한다. 마이그레이션 통합 테스트는 기존 테스트 DB의 `B_REGISTRY_TEST_DATABASE_URL`을 설정하면 실행한다. 각 테스트는 무작위 이름의 독립 스키마를 만들고 끝나면 그 스키마만 제거한다. 운영 DB 주소를 사용하지 않는다.
 
-공통 변경이므로 A/C/D 리뷰와 `contract-change` 라벨이 필요하다. 과거 사용자 요청으로 제거한 B의 livez/OpenAPI/번들 이력은 복원하지 않으며 `docs/interfaces.md`에 공통 규약 예외로 기록했다.
+공통 변경이므로 A/C/D 리뷰와 `contract-change` 라벨이 필요하다. 과거 사용자 요청으로 제거한 B의 livez/번들 이력은 복원하지 않으며 `docs/interfaces.md`에 공통 규약 예외로 기록했다.

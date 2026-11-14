@@ -4,7 +4,7 @@
 
 - `GET /imports/{id}`는 조회 옵션 없이 `{status, reason, bundle_id}`를 반환합니다. 번들이 없으면 bundle_id는 null이며, 처리 중에는 202와 빈 본문을 반환합니다.
 - 주소: `http://b-registry:8100`. API 경로와 응답: [README](../README.md#http-인터페이스).
-- B는 단일 컨테이너 모듈로 `/healthz`와 `/metrics`를 제공합니다. `/livez`, `/docs`, `/redoc`, `/openapi.json` 및 정적 OpenAPI 사본은 제공하지 않습니다.
+- B는 단일 컨테이너 모듈로 `/healthz`와 `/metrics`를 제공합니다. `/livez`는 제공하지 않습니다. `/docs`, `/redoc`, `/openapi.json`과 [정적 OpenAPI 명세](openapi/b_registry.json)를 제공합니다.
 - 테스트 반입 파일은 Git에서 제외하며 `python -m b_registry.tests.generate_fixtures`로 로컬 생성합니다. 자동 테스트는 임시 디렉터리에 별도로 생성합니다.
 - `GET /bundles/{id}`의 `model`은 `{model_id, uri}`, `list`는 `{list_id, uri}`입니다. URI는 원본 ZIP입니다. 개별 파일 메타데이터는 ZIP 안의 manifest에서 읽습니다. DB/API의 `files`, `sha256`, 중복 버전 필드는 제거했습니다.
 - S3 URI는 `s3://tradeproof-registry/registry/<sha256>`. A/C가 같은 SeaweedFS에서 읽고 해시를 확인합니다. 로컬 `file://registry/...`는 B의 BLOB_DIR 기준 키이므로 단독 개발용입니다.
@@ -32,7 +32,7 @@ Job 이름과 Kubernetes 응답으로 중복 생성을 막고, 장애 후 재시
 - 별도 `50_b_registry_20261114.sql`에서 빈 B 기준 구조 보완 및 기존 테이블 ALTER/데이터 이관을 수행합니다. 상세 절차는 [MIGRATIONS.md](MIGRATIONS.md).
 - B의 상태 전이·반입 상태·지표 계약은 `common/contracts.py`에 추가하고 `b_registry/contracts.py`는 호환 import만 제공합니다. 기존 A 상수는 변경하지 않습니다.
 - API 변경과 기존 공통 규칙의 예외는 `docs/interfaces.md`에 기록합니다. PR은 `contract-change` 라벨 및 A/C/D 리뷰가 필요합니다. 단톡방 공유는 담당자가 수행합니다.
-- 기존 사용자 결정대로 B는 livez/OpenAPI/번들 이력을 복원하지 않습니다. 일반 규칙의 예외이며 팀 전체 합의가 완료됐다는 뜻은 아닙니다.
+- 기존 사용자 결정대로 B는 livez/번들 이력을 복원하지 않습니다. 일반 규칙의 예외이며 팀 전체 합의가 완료됐다는 뜻은 아닙니다.
 
 반입 시 ZIP·서명·해시·내용 검증을 먼저 통과해야 DB와 파일 저장소에 저장합니다. 실패하면 422이며 import_id가 없습니다. 이후 워커가 리스트 변경률·버전 충돌·번들 등록을 처리하므로 202는 배포 승인을 뜻하지 않습니다.
 

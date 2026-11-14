@@ -216,3 +216,20 @@ EXPECTED = {  # case_type -> {list_version: 기대 분류}
 #   tx_id, received_at, case_type, matched_entry_id, expected:{list-v14:..., list-v15:...},
 #   fields:{TX_FIELDS...}, documents:{invoice:{pdf,png}, bl:{pdf,png}}   (경로는 DATA 기준 상대경로)
 # }
+
+# B 공통 계약: 반입 결과(A), 번들 상태 전이(C·D), 수집 지표(D).
+# 기존 BUNDLE_STATUSES는 유지하여 A의 기존 계약에 영향을 주지 않는다.
+REGISTRY_BUNDLE_STATUSES = (*BUNDLE_STATUSES, "superseded")
+REGISTRY_TRANSITIONS = {
+    "candidate": {"validated", "validation_failed"},
+    "validated": {"approved", "rejected"},
+    "approved": {"active", "rolled_back"},
+    "active": {"rolled_back"},
+    "superseded": {"active"},
+    "validation_failed": set(), "rejected": set(), "rolled_back": set(),
+}
+IMPORT_RECEIVED = "RECEIVED"
+IMPORT_APPROVED = "APPROVED"
+IMPORT_REJECTED = "REJECTED"
+METRIC_REGISTRY_IMPORTS = "tradeproof_registry_imports"
+METRIC_REGISTRY_BUNDLES = "tradeproof_registry_bundles"

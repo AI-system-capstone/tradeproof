@@ -31,8 +31,13 @@ def client_for(service):
 
 def test_http_contract_and_bootstrap(service):
     client = client_for(service)
-    for path in ("/livez", "/docs", "/redoc", "/openapi.json"):
-        assert client.get(path).status_code == 404
+    assert client.get("/livez").status_code == 404
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert client.get(path).status_code == 200
+    schema = client.get("/openapi.json").json()
+    assert "/imports" in schema["paths"]
+    assert not any(p["in"] == "query" for p in schema["paths"]["/imports/{import_id}"]["get"].get("parameters", []))
+    assert "bundle_id" in schema["components"]["schemas"]["VerificationResult"]["required"]
     assert client.get("/healthz").status_code == 200
     assert client.get("/bundles/active").status_code == 404
     response = client.post("/imports", files={"package": ("model.zip", (service.cfg.trust_key.parent / "packages/model-v3.zip").read_bytes())},

@@ -31,7 +31,7 @@
 | `GET /healthz`                  | —                            | 모듈 준비 상태 확인 (DB/파일 저장소/신뢰 키 장애 시 503) |
 | `GET /metrics`                   | —                            | Prometheus 지표                                             |
 
-B는 하나의 컨테이너에서 API와 검증 워커를 실행하는 모듈입니다. DB·저장소의 수명주기는 상위 관리 프로세스가 담당하며, `/healthz`는 B가 해당 의존성을 사용할 준비가 되었는지만 확인합니다. 별도 `/livez`와 개발용 `/docs`, `/redoc`, `/openapi.json`은 제공하지 않습니다.
+B는 하나의 컨테이너에서 API와 검증 워커를 실행하는 모듈입니다. DB·저장소의 수명주기는 상위 관리 프로세스가 담당하며, `/healthz`는 B가 해당 의존성을 사용할 준비가 되었는지만 확인합니다. 별도 `/livez`는 제공하지 않습니다. FastAPI 기본 문서 경로 `/docs`(Swagger UI), `/redoc`(ReDoc), `/openapi.json`(API 명세)을 제공합니다. 정적 명세는 [b_registry.json](docs/openapi/b_registry.json)에 보관하며 `python -m b_registry.cli openapi`로 생성합니다.
 
 저장 전 ZIP·서명·manifest 해시·내용 검증을 수행합니다. 실패하면 422로 즉시 거부하며 반입 DB 행과 영구 저장 파일을 생성하지 않습니다. 202는 이 검증을 통과한 ZIP의 접수를 의미하며, 리스트 변경률·버전 충돌·번들 등록은 워커가 처리합니다.
 
