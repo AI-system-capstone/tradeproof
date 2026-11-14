@@ -1,0 +1,23 @@
+# Run from repo root with -f docker-compose.yml -f b_registry/compose.yml.
+services:
+  b-registry:
+    build:
+      context: .
+      dockerfile: b_registry/Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      BLOB_ENDPOINT: ${BLOB_ENDPOINT:-minio:9000}
+      BLOB_ACCESS_KEY: ${BLOB_ACCESS_KEY}
+      BLOB_SECRET_KEY: ${BLOB_SECRET_KEY}
+      BLOB_SECURE: ${BLOB_SECURE:-false}
+      TRUST_KEY: /run/registry/publisher.pub
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ${REGISTRY_TRUST_KEY:-./b_registry/tests/fixtures/trusted.pub}:/run/registry/publisher.pub:ro
+    ports: ["8100:8100"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    command: ["sh", "-c", "python -m b_registry.cli check-db && uvicorn b_registry.api.main:app --host 0.0.0.0 --port 8100"]

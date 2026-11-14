@@ -15,10 +15,10 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 연결 | 방향 | 내용 | 단계 |
 |---|---|---|---|
 | 공통 에러 형식 | 모든 모듈 | 실패 응답은 `{code, message, target_id}`. code는 `VALIDATION_ERROR`(422), `NOT_FOUND`(404), `CONFLICT`(409), `SERVICE_UNAVAILABLE`(503), `INTERNAL_ERROR`(500) 중 하나 | 1차 |
-| 번들 구성 조회 | B → A·C·D | `GET /bundles/{id}`로 번들의 모델·리스트 컴포넌트 ID, 파일 위치, 해시를 알려 준다 | 1차 |
+| 번들 구성 조회 | B → A·C·D | `GET /bundles/{id}`로 `model_id`, `list_id`, 원본 ZIP URI를 제공한다. 모델/리스트의 중첩 값은 ID와 uri만 포함하며 해시·개별 파일 목록·규칙 버전·이력·Replay 상태는 반환하지 않는다 | 1차 |
 | 상태 전이 | C·D → B | `POST /bundles/{id}/transitions`에 `{to, actor, reason}`을 보내면 B가 `{from, to, changed_at}`을 돌려준다. 허용되지 않는 전이는 409 | 1차 |
 | 지표 이름 | 각 모듈 → D | 각 모듈은 `contracts.py`에 정한 이름(`tradeproof_<모듈>_<대상>`, `bundle_id` 라벨 포함)으로 지표를 내보내고, D는 이 이름으로 canary 단계별 분석과 자동 롤백 판단을 한다 | 1차 |
-| 반입 | 운영 화면(A) → B | `POST /imports` (multipart ZIP: manifest.json + 파일 + signature.sig) → 202, `GET /imports/{id}`로 단계별 결과·거부 사유 | 1차 |
+| 반입 | 운영 화면(A) → B | `POST /imports` (multipart ZIP: manifest.json + 파일 + signature.sig) → 저장 전 서명·해시·내용 검증 통과 시 202, 실패 시 422(영구 저장 없음). `GET /imports/{id}`는 `{status, reason, bundle_id}`를 기본 반환한다(번들 미생성 시 null, 처리 중 202) | 1차 |
 | 검증·승인 | 운영 화면(A) ↔ C | C가 게이트 결과·지표·영향 거래를 제공하고, 화면에서 승인·반려를 C에 보낸다 (`POST /approvals`) | 1차 |
 | 배포 | C → D | 승인되면 `POST /deployments` (`approved`가 아니면 409, 진행 중 배포가 있으면 409) | 1차 |
 | 배포 상태·롤백 | D → C·화면 | `GET /deployments/{id}`, `POST /deployments/{id}/rollback` | 1차 |
@@ -41,6 +41,7 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 과거 거래 적재 | 데이터 → A·D | `dataset/seed/`가 합성 서류를 최초 번들로 A의 평시 경로에 넣어 과거 거래를 만든다. D의 `scripts/reset_demo.sh`가 호출 | 1차 |
 | 시연용 리스트 원본 | 데이터 → B | (이어서, 3순서) 정상(추가)·변조·손상 리스트 원본. 서명·변조 처리는 B의 `signer/`. 그 전까지 리스트는 최초 번들의 한 버전을 그대로 쓴다 | 1차 |
 | 시연용 모델 파일 | **TODO(제공자 미정)** → B | **정상 개선 모델 원본 1개**(S4)부터. 서명은 B의 `signer/`. 성능 저하 모델(S5)과 변조·손상본(S1)은 그다음(2순서) | 1차 |
+| B 스키마 적용 | B → D | 기존 DB에 `common/schema/50_b_registry_20261114.sql`을 적용한다. 모델·리스트는 `ai_models`·`sanctions_lists`, 번들은 `model_id`·`list_id`로 참조한다 | 1차 |
 | 배포 이력 | D → B·C | B·C는 D의 `deployments` 테이블을 읽어 현재 stable/canary를 판단할 수 있다 | 1차 |
 
 ## 4. 쿠버네티스
@@ -65,3 +66,4 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 2026-11-10 | D 최은호 | 최초 작성 (팀 연동 표 12줄 + 데이터 연동 + 1차 API) |
 | 2026-11-12 | D 최은호 | 계획 변경(결정 0005): 모델 갱신 경로를 먼저, 리스트 갱신은 이어서. "단계" 칸 설명, "시연용 모델 파일" 추가, 리스트 전용 줄에 "(이어서)" 표시, 지표 용도 문구, A 서비스 구성(서비스 2개·포트·지표 경로) 추가 |
 | 2026-11-12 | A 지윤아 | `common/contracts.py`·`common/blob.py` 추가, A 테이블 정의(`common/schema/10_a_screening.sql`: transactions·screening_results·screening_jobs), 판정 코드 import 경로 `a_screening.screening.match` |
+| 2026-11-14 | B 박시우 | 번들 조회를 모델·리스트 ID와 원본 ZIP URI 기준으로 변경. 반입 검증 실패는 422, 반입 조회는 쿼리 옵션 없이 `{status, reason, bundle_id}` 반환. D 적용용 B 스키마 마이그레이션 추가 |
