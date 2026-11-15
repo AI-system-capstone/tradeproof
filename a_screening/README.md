@@ -76,10 +76,16 @@ A 담당은 결정 0006에 따라 M6(심사 서비스, 담당자 검토 화면 �
 - [x] C가 쓸 처리 경로 `a_screening.pipeline.screen_documents` — 워커도 같은 함수를 씀 (모델 Replay는 과거 서류를 새 모델로 다시 OCR)
 - [x] 같은 번들·같은 서류 → 같은 결과 (SVC-04): 3회 반복 + 워커 경로 == pipeline 테스트 (tesseract 5.5.0 컨테이너에서도 확인)
 - [x] `BUNDLE_ID` 환경변수로 접수 번들 지정 (예전 이름 `ACTIVE_BUNDLE`도 받음)
+- [x] 판정 규칙 `rules-v3` 고정 (`contracts.RULES_FIXED`)
+- [x] API 명세서 `docs/openapi/a_screening.json` + 명세 == 코드 == 실제 응답 테스트
+- [x] 담당자 검토 화면, 원문 업로드(PDF·PNG → SeaweedFS), 재시도·섀도 판정, `/metrics`·`/healthz`·`/livez`
 
 **남은 것 (1순위: S4)**
 
-- [ ] 번들 구성을 B의 `GET /bundles/{id}`에서 가져오기 (지금은 `contracts.BUNDLES`의 B-7~B-10. B는 반입 순서대로 B-8, B-9…를 만들어서 구성이 다를 수 있음)
+- [ ] k3s에 A 실제 이미지 올리기: D 차트(`d_platform/helm/a-screening`)는 지금 더미 이미지. A 이미지 2개(`screening-api`, `ocr-worker`)와
+  필요한 설정(DB·SeaweedFS 주소, 제재 리스트·모델 설정 위치)을 D에 넘긴다
+- [ ] 번들 구성을 B의 `GET /bundles/{id}`에서 가져오기 (B PR #8 병합 뒤). 응답의 `model.uri`·`list.uri`(SeaweedFS `tradeproof-registry`)에서
+  ZIP을 받아 `payload/model_config.json`·`payload/sanctions.json`을 쓴다. 지금은 `contracts.BUNDLES`(B-7~B-10)와 `data/`
 - [ ] 번들별 지표: 이름을 `tradeproof_<모듈>_<대상>` 규칙으로, 모든 지표에 `bundle_id` 라벨 (D의 canary 비교·자동 롤백 근거, MON-01)
 
 **남은 것 (2순위: S1·S5)**
@@ -102,6 +108,6 @@ A 담당은 결정 0006에 따라 M6(심사 서비스, 담당자 검토 화면 �
 | 제공 | 받는 쪽 | 받는 것 | 주는 쪽 |
 |---|---|---|---|
 | 처리 경로 `pipeline.screen_documents` (import) | C | 번들 구성 (`GET /bundles/{id}`) | B |
-| 거래·판정 테이블 (읽기) | C | `BUNDLE_ID` 환경변수 | D (deploy/ 값) |
-| 원문 서류 (SeaweedFS) | C | 합성 서류·과거 거래 적재 | 데이터 |
-| 번들별 지표 | D | — | — |
+| 거래·판정 테이블 (읽기) | C | 모델 설정·제재 리스트 ZIP (SeaweedFS `tradeproof-registry`) | B |
+| 원문 서류 (SeaweedFS) | C | `BUNDLE_ID` 환경변수 (D가 `deploy/values-dev.yaml` → Helm으로 넣음) | D |
+| 번들별 지표 (`/metrics`) | D | 합성 서류·과거 거래 적재 | 데이터 |
