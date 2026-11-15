@@ -1,0 +1,13 @@
+# 0006 모듈 담당 재정비 (B: M1·M2 / C: M3·M8 / A: M6) 및 S6 제외
+- 날짜 / 결정한 사람: 2026-11-13 / C 강민성 (팀 공유·합의 필요)
+- 결정:
+  - **모듈 담당을 다음과 같이 명확히 분리한다:**
+    - **A (`a_screening/`)**: **M6** (샘플 심사 서비스 및 담당자 거래 검토 화면 `ui/review.html`)
+    - **B (`b_registry/`)**: **M1** (반입 검증), **M2** (릴리스 관리: 번들 레지스트리·상태 전이·게이트·승인/반려·배포 요청)
+    - **C (`c_replay/`)**: **M3** (검증: 골든셋 검증 `VAL-01` + Replay `VAL-02·03`), **M8** (관리자 운영 화면 `UI-01·UI-02`)
+    - **D (`d_platform/`)**: **M4** (배포·서빙), **M5** (모니터링), 인프라, M7 저장소
+  - **시나리오 S6(과거 판정 재현, VAL-04·UI-03)은 제외한다.** M3 검증의 Replay(과거 거래 재처리)와 본질적으로 중복되므로 별도 시나리오·전용 화면으로 두지 않는다.
+- 영향:
+  - M2(게이트·`POST /approvals`·`POST /deployments` 호출·`deploy/values-dev.yaml` 기록)와 `approvals` 테이블 소유가 B로 이동한다 (`common/schema/`, `deploy/README.md`, `.github/CODEOWNERS` 등 후속 협의 필요).
+  - C(M8)가 B(반입·번들·게이트·승인 API)와 D(배포 상태 조회·롤백)를 호출하고, C(M3)가 검증 결과를 저장·제공하여 B(M2)가 게이트 판정에 활용한다.
+  - `docs/interfaces.md`의 "Replay 시작 / Replay Job" 표현을 "검증 Job 시작 / M3 검증 Job"으로 정비한다 (Job이 골든셋 검증과 Replay를 함께 수행하기 때문. 과거 거래 재처리 자체는 계속 "Replay"로 부른다).
