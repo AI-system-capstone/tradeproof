@@ -62,6 +62,7 @@ from common import contracts as C  # noqa: E402
 from common.blob import make_blob_store  # noqa: E402
 from a_screening.store import make_store  # noqa: E402
 from a_screening.screening.match import is_blank, load_index, screen  # noqa: E402  (검토 정정 재판정: 워커와 같은 순수 함수)
+from a_screening.api import schemas as S  # noqa: E402  (API 명세서용 응답 모양·예시)
 
 
 def _check_bundle_env(active: str, shadow: str | None) -> None:
@@ -97,7 +98,8 @@ if not LOG.handlers:
     LOG.setLevel(logging.INFO)
     LOG.propagate = False
 
-app = FastAPI(title="TradeProof 심사 서비스 (모듈 A)", version="0.3.0")
+app = FastAPI(title="TradeProof a_screening — 샘플 심사 서비스 (M6)", version="0.4.0",
+              description=S.API_DESCRIPTION, openapi_tags=S.TAGS, servers=S.SERVERS)
 
 
 def shadow_bundle() -> str | None:
@@ -524,13 +526,14 @@ def render_metrics(stats: dict) -> str:
 
 
 # ---------------------------------------------------------------- 엔드포인트
-@app.get("/livez")
+@app.get("/livez", tags=["ops"], summary="살아 있는지 확인 (liveness)", responses=S.ok(S.Live, {"status": "ok"}))
 def livez():
     """K8s liveness: 프로세스가 요청을 받을 수 있으면 200 (DB 장애로 재시작시키지 않음)."""
     return {"status": "ok"}
 
 
-@app.get("/healthz")
+@app.get("/healthz", tags=["ops"], summary="DB·원문 저장소 연결 확인 (readiness)",
+         responses={**S.ok(S.Health, S.EX_HEALTH), **S.errors(503)})
 def healthz(request: Request):
     """K8s readiness: 저장소(DB)·원문 저장소에 못 붙으면 503 (트래픽을 빼도록). 상세는 로그에."""
     for name, target in (("저장소", STORE), ("원문 저장소", BLOB)):
@@ -545,7 +548,9 @@ def healthz(request: Request):
             "storage": STORE.kind, "blob": BLOB.kind}
 
 
-@app.get("/metrics")
+@app.get("/metrics", tags=["ops"], summary="운영 지표 (Prometheus 텍스트)",
+         responses={200: {"description": "Prometheus 텍스트 형식. 이름은 contracts.METRIC_*",
+                          "content": {"text/plain": {"example": S.EX_METRICS}}}, **S.errors(503)})
 def metrics(request: Request):
     """Prometheus 스크레이프. 상태가 DB 에 있으므로 어느 복제본에서 긁어도 같은 값."""
     try:
@@ -566,7 +571,7 @@ def all_rules() -> list[str]:
     return list(dict.fromkeys((*C.RULES, *C.RULES_V3_EXTRA, C.RULE_PROCESSING_FAILED)))
 
 
-@app.get("/meta")
+@app.get("/meta", tags=["ui"], summary="검토 화면이 쓰는 계약 값 (필드·분류·규칙·번들)")
 def meta():
     """검토 화면(a_screening/ui/review.html)이 시작할 때 읽는 계약 값. 화면에 계약을 하드코딩하지 않으려고 둔다."""
     return {"tx_fields": list(C.TX_FIELDS), "screening_fields": list(C.SCREENING_FIELDS),
@@ -582,7 +587,8 @@ def meta():
             "active_bundle": ACTIVE_BUNDLE, "shadow_bundle": shadow_bundle()}
 
 
-@app.get("/review")
+@app.get("/review", tags=["ui"], summary="담당자 검토 화면 (HTML)",
+         responses={200: {"description": "HTML", "content": {"text/html": {}}}, **S.errors(404)})
 def review_page():
     if not REVIEW_HTML.is_file():
         raise ApiError(404, C.ERR_NOT_FOUND, "검토 화면 파일(a_screening/ui/review.html) 없음")
@@ -597,7 +603,10 @@ _POST_OPENAPI = {"requestBody": {"required": True, "content": {
 }}}
 
 
-@app.post("/screenings", status_code=202, openapi_extra=_POST_OPENAPI)
+@app.post("/screenings", status_code=202, openapi_extra=_POST_OPENAPI, tags=["screenings"],
+          summary="거래 한 건의 심사를 시작",
+          responses={**S.ok(S.Accepted, S.EX_ACCEPTED, "접수됨. 판정은 OCR 워커가 따로 함 → status_url 조회", 202),
+                     **S.errors(422, 404, 500, e404="sample_tx_id 의 샘플 서류가 없음")})
 async def create_screening(request: Request):
     """접수만 한다 (status=queued). Content-Type 으로 JSON / multipart 업로드를 나눈다."""
     ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
@@ -609,7 +618,8 @@ async def create_screening(request: Request):
                    f"Content-Type {ctype or '(없음)'} 은 지원 안 됨 (application/json 또는 multipart/form-data)")
 
 
-@app.get("/screenings")
+@app.get("/screenings", tags=["screenings"], summary="심사 목록 (검토 화면용)",
+         responses={**S.ok(S.ListResult, S.EX_LIST), **S.errors(422, 500)})
 def list_screenings(status: str | None = None, classification: str | None = None, bundle_id: str | None = None,
                     unreviewed_first: bool = False,
                     limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
@@ -622,12 +632,15 @@ def list_screenings(status: str | None = None, classification: str | None = None
         raise ApiError(422, C.ERR_VALIDATION, str(e)) from e
 
 
-@app.get("/screenings/{tx_id}")
+@app.get("/screenings/{tx_id}", tags=["screenings"], summary="심사 결과를 조회",
+         responses={**S.ok(S.ScreeningDetail, S.EX_DETAIL), **S.errors(404, 500)})
 def get_screening(tx_id: str):
     return _get(tx_id)
 
 
-@app.get("/screenings/{tx_id}/documents/{doc_type}")
+@app.get("/screenings/{tx_id}/documents/{doc_type}", tags=["screenings"], summary="서류 이미지 (검토 화면용 PNG)",
+         responses={200: {"description": "PNG", "content": {"image/png": {}}},
+                    **S.errors(422, 404, e404="거래 없음 / 서류 없음 / PDF 렌더링 전")})
 def get_document(tx_id: str, doc_type: str):
     """검토 화면용 서류 PNG. 샘플은 data/docs, 업로드는 원문 저장소(PDF 는 워커가 렌더링한 PNG)."""
     if doc_type not in C.UPLOAD_DOC_TYPES:
@@ -690,7 +703,9 @@ def _reason_summary(reasons: list[dict], cls: str, n: int = 3) -> str:
     return "; ".join(parts) + more
 
 
-@app.post("/screenings/{tx_id}/review")
+@app.post("/screenings/{tx_id}/review", tags=["screenings"], summary="담당자 최종 판단 저장 (+ 필드 정정 시 재판정)",
+          responses={**S.ok(S.ReviewResult, S.EX_REVIEW), **S.errors(
+              422, 404, 409, e409="아직 판정이 없음, 또는 정정 값으로 재판정하면 HIGH_RISK_HOLD 인데 APPROVE")})
 def review_screening(tx_id: str, req: ReviewRequest):
     """분류가 있는 건만 (completed, 또는 반복 실패로 MANUAL_REVIEW 가 붙은 failed). 저장.
     스크리닝 필드를 정정했으면 재판정해서, 결과가 HIGH_RISK_HOLD 인데 APPROVE 면 저장하지 않고 409.
@@ -709,3 +724,16 @@ def review_screening(tx_id: str, req: ReviewRequest):
                        f"{_reason_summary(rs['reasons'], C.HOLD)}", tx_id)
     STORE.review(tx_id, req.decision, req.reviewer, req.note, corrected)
     return {**_get(tx_id), "rescreen": rs}
+
+
+def _openapi():
+    """명세서: FastAPI 기본 422 모양을 실제 응답(공통 에러 형식)으로 바꾼다."""
+    if app.openapi_schema is None:
+        from fastapi.openapi.utils import get_openapi
+        app.openapi_schema = S.use_common_error_for_422(get_openapi(
+            title=app.title, version=app.version, description=app.description, routes=app.routes,
+            tags=app.openapi_tags, servers=app.servers))
+    return app.openapi_schema
+
+
+app.openapi = _openapi

@@ -76,3 +76,18 @@ def test_worker_path_equals_pipeline(bundle_id, tmp_path: Path):
         assert w["result"] == p["result"]
         assert w["extracted"] == p["extracted"] and w["conflicts"] == p["conflicts"]
         assert (w["model_version"], w["source"]) == (p["model_version"], p["source"])
+
+
+def test_rules_fixed_for_all_bundles():
+    """규칙 버전은 번들과 무관하게 A가 고정 (contracts.RULES_FIXED = rules-v3)."""
+    assert C.RULES_FIXED == C.RULES_NEW
+    assert {b["rules_version"] for b in C.BUNDLES.values()} == {C.RULES_FIXED}
+
+
+def test_bundle_without_rules_uses_fixed(monkeypatch):
+    """B 의 GET /bundles/{id} 에는 rules_version 이 없다 -> 빼고 넘겨도 RULES_FIXED 로 판정."""
+    seen = {}
+    monkeypatch.setattr(P, "screen", lambda f, i, rules_version, ocr: seen.setdefault("rv", rules_version) and {})
+    monkeypatch.setattr(P, "index_for", lambda v: None)
+    P.screen_extracted({}, [], {"bundle_id": "B-x", "model_version": C.MODEL_BASE, "list_version": C.LIST_BASE})
+    assert seen["rv"] == C.RULES_FIXED

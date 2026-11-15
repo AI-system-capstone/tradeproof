@@ -1,0 +1,2395 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "TradeProof a_screening — 샘플 심사 서비스 (M6)",
+    "description": "은행 수출입 서류(송장·선하증권)를 받아 OCR로 필드를 읽고, 제재 리스트와 대조해 3단계로 분류한다.\n**AI는 OCR에만 쓰고** 필드 추출·매칭·분류는 모두 코드다.\n\n**분류:** `PASS_CANDIDATE`(통과 후보) / `MANUAL_REVIEW`(담당자 검토) / `HIGH_RISK_HOLD`(고위험 보류).\n판정 결과에는 항상 근거(`reasons`: rule, field, value, entry_id, matched_name, score)가 있다.\n\n**흐름**\n1. `POST /screenings`로 접수 → 202 + `tx_id`. 이 API는 판정하지 않고 큐(`screening_jobs`)에 넣기만 한다.\n2. OCR 워커가 큐에서 꺼내 OCR → 필드 추출 → 판정 → 저장. 실패하면 재시도, 3번 넘게 실패하면 `MANUAL_REVIEW`.\n3. `GET /screenings/{tx_id}`로 결과 조회. `status`가 `completed`(또는 `failed`)면 분류·근거가 있다.\n\n**번들:** 접수 시점의 `BUNDLE_ID`(모델 + 리스트)로 거래마다 고정된다. canary 중에도 거래 하나는 한 번들로만 처리된다.\n**규칙 버전:** 번들과 무관하게 `rules-v3`로 고정(contracts.RULES_FIXED).\n\n**공통 규칙**\n- 실패 응답은 모두 `{code, message, target_id}` (docs/interfaces.md 1절). 500·503 message 에는 요청 ID만 (상세는 서버 로그).\n- 요청 ID는 `X-Request-ID` 헤더 (들어온 값을 이어 쓰고, 응답에도 돌려준다).\n- 시각은 ISO 8601 UTC 문자열.\n- 인증 없음 (시연용).",
+    "version": "0.4.0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8000",
+      "description": "개발 환경 (compose: a-screening)"
+    }
+  ],
+  "paths": {
+    "/livez": {
+      "get": {
+        "tags": [
+          "ops"
+        ],
+        "summary": "살아 있는지 확인 (liveness)",
+        "description": "K8s liveness: 프로세스가 요청을 받을 수 있으면 200 (DB 장애로 재시작시키지 않음).",
+        "operationId": "livez_livez_get",
+        "responses": {
+          "200": {
+            "description": "성공",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Live"
+                },
+                "example": {
+                  "status": "ok"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "tags": [
+          "ops"
+        ],
+        "summary": "DB·원문 저장소 연결 확인 (readiness)",
+        "description": "K8s readiness: 저장소(DB)·원문 저장소에 못 붙으면 503 (트래픽을 빼도록). 상세는 로그에.",
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "description": "성공",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                },
+                "example": {
+                  "status": "ok",
+                  "bundle_id": "B-7",
+                  "model_version": "model-v3",
+                  "rules_version": "rules-v3",
+                  "list_version": "list-v14",
+                  "rules_supported": [
+                    "rules-v2",
+                    "rules-v3"
+                  ],
+                  "storage": "postgres",
+                  "blob": "minio"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "DB·원문 저장소 연결 안 됨",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "SERVICE_UNAVAILABLE",
+                  "message": "저장소 연결 실패. 잠시 뒤 다시 시도하세요 (요청 ID: 3c1b7a41af2e4c3f)"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": [
+          "ops"
+        ],
+        "summary": "운영 지표 (Prometheus 텍스트)",
+        "description": "Prometheus 스크레이프. 상태가 DB 에 있으므로 어느 복제본에서 긁어도 같은 값.",
+        "operationId": "metrics_metrics_get",
+        "responses": {
+          "200": {
+            "description": "Prometheus 텍스트 형식. 이름은 contracts.METRIC_*",
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "text/plain": {
+                "example": "# TYPE tradeproof_screening_results_total counter\ntradeproof_screening_results_total{bundle_id=\"B-7\",classification=\"HIGH_RISK_HOLD\"} 1\n# TYPE tradeproof_screening_jobs gauge\ntradeproof_screening_jobs{status=\"queued\"} 0\n# TYPE tradeproof_screening_processing_seconds_avg gauge\ntradeproof_screening_processing_seconds_avg{bundle_id=\"B-7\"} 0.571\n# TYPE tradeproof_ocr_confidence_avg gauge\ntradeproof_ocr_confidence_avg{bundle_id=\"B-7\"} 95.89\n"
+              }
+            }
+          },
+          "503": {
+            "description": "DB·원문 저장소 연결 안 됨",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "SERVICE_UNAVAILABLE",
+                  "message": "저장소 연결 실패. 잠시 뒤 다시 시도하세요 (요청 ID: 3c1b7a41af2e4c3f)"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/meta": {
+      "get": {
+        "tags": [
+          "ui"
+        ],
+        "summary": "검토 화면이 쓰는 계약 값 (필드·분류·규칙·번들)",
+        "description": "검토 화면(a_screening/ui/review.html)이 시작할 때 읽는 계약 값. 화면에 계약을 하드코딩하지 않으려고 둔다.",
+        "operationId": "meta_meta_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/review": {
+      "get": {
+        "tags": [
+          "ui"
+        ],
+        "summary": "담당자 검토 화면 (HTML)",
+        "operationId": "review_page_review_get",
+        "responses": {
+          "200": {
+            "description": "HTML",
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "text/html": {}
+            }
+          },
+          "404": {
+            "description": "대상 없음",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "NOT_FOUND",
+                  "message": "심사 건 TX-20261113-639E013E 없음",
+                  "target_id": "TX-20261113-639E013E"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/screenings": {
+      "post": {
+        "tags": [
+          "screenings"
+        ],
+        "summary": "거래 한 건의 심사를 시작",
+        "description": "접수만 한다 (status=queued). Content-Type 으로 JSON / multipart 업로드를 나눈다.",
+        "operationId": "create_screening_screenings_post",
+        "responses": {
+          "202": {
+            "description": "접수됨. 판정은 OCR 워커가 따로 함 → status_url 조회",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Accepted"
+                },
+                "example": {
+                  "tx_id": "TX-20261113-639E013E",
+                  "status": "queued",
+                  "bundle_id": "B-7",
+                  "status_url": "/screenings/TX-20261113-639E013E"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "요청 형식·값 오류",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "VALIDATION_ERROR",
+                  "message": "fields: 스크리닝 필드 ['seller_name'] 가 비어 있음",
+                  "target_id": null
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "sample_tx_id 의 샘플 서류가 없음",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "NOT_FOUND",
+                  "message": "심사 건 TX-20261113-639E013E 없음",
+                  "target_id": "TX-20261113-639E013E"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "서버 내부 오류",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "INTERNAL_ERROR",
+                  "message": "서버 내부 오류 (요청 ID: 3c1b7a41af2e4c3f)"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "sample_tx_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Sample Tx Id"
+                  },
+                  "fields": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Fields"
+                  }
+                },
+                "title": "ScreeningRequest",
+                "type": "object"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "invoice",
+                  "bl"
+                ],
+                "properties": {
+                  "invoice": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "['application/pdf', 'image/png']"
+                  },
+                  "bl": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "['application/pdf', 'image/png']"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "screenings"
+        ],
+        "summary": "심사 목록 (검토 화면용)",
+        "description": "classification 은 쉼표로 여러 개 (예: HIGH_RISK_HOLD,MANUAL_REVIEW). unreviewed_first=true 면\n담당자 판단이 없는 건 먼저 (그 안에서는 최신 접수순). 페이지네이션은 서버에서 (total 은 같은 필터).",
+        "operationId": "list_screenings_screenings_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "classification",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Classification"
+            }
+          },
+          {
+            "name": "bundle_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Bundle Id"
+            }
+          },
+          {
+            "name": "unreviewed_first",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Unreviewed First"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "성공",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListResult"
+                },
+                "example": {
+                  "items": [
+                    {
+                      "tx_id": "TX-20261113-639E013E",
+                      "status": "completed",
+                      "bundle_id": "B-7",
+                      "classification": "HIGH_RISK_HOLD",
+                      "submitted_at": "2026-11-13T05:54:02+00:00",
+                      "completed_at": "2026-11-13T05:54:04+00:00",
+                      "seller_name": "VALERIAN LABS DISTRIBUTION",
+                      "buyer_name": "Fuji Coral Electronics LLC",
+                      "vessel_name": "EMERALD TRIUMPH"
+                    }
+                  ],
+                  "total": 1
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "요청 형식·값 오류",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "VALIDATION_ERROR",
+                  "message": "fields: 스크리닝 필드 ['seller_name'] 가 비어 있음",
+                  "target_id": null
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "서버 내부 오류",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "INTERNAL_ERROR",
+                  "message": "서버 내부 오류 (요청 ID: 3c1b7a41af2e4c3f)"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/screenings/{tx_id}": {
+      "get": {
+        "tags": [
+          "screenings"
+        ],
+        "summary": "심사 결과를 조회",
+        "operationId": "get_screening_screenings__tx_id__get",
+        "parameters": [
+          {
+            "name": "tx_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tx Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "성공",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScreeningDetail"
+                },
+                "example": {
+                  "tx_id": "TX-20261113-639E013E",
+                  "status": "completed",
+                  "bundle_id": "B-7",
+                  "model_version": "model-v3",
+                  "rules_version": "rules-v3",
+                  "list_version": "list-v14",
+                  "input": {
+                    "source": "upload",
+                    "files": {
+                      "invoice": {
+                        "content_type": "application/pdf",
+                        "size": 1955
+                      },
+                      "bl": {
+                        "content_type": "application/pdf",
+                        "size": 1902
+                      }
+                    }
+                  },
+                  "received_at": "2026-11-13T05:54:02+00:00",
+                  "submitted_at": "2026-11-13T05:54:02+00:00",
+                  "started_at": "2026-11-13T05:54:02+00:00",
+                  "completed_at": "2026-11-13T05:54:04+00:00",
+                  "attempts": 1,
+                  "worker_id": "a-ocr-worker-1",
+                  "documents": {
+                    "invoice": "s3://tradeproof-docs/TX-20261113-639E013E/invoice.pdf",
+                    "bl": "s3://tradeproof-docs/TX-20261113-639E013E/bl.pdf"
+                  },
+                  "fields": {
+                    "invoice_no": "INV-2026-5618",
+                    "invoice_date": "2026-08-01",
+                    "bl_no": "BLKHH263335",
+                    "seller_name": "VALERIAN LABS DISTRIBUTION",
+                    "seller_country": "Canada",
+                    "buyer_name": "Fuji Coral Electronics LLC",
+                    "buyer_country": "South Korea",
+                    "vessel_name": "EMERALD TRIUMPH",
+                    "port_of_loading": "Kaohsiung",
+                    "port_of_discharge": "Gwangyang",
+                    "goods_description": "Lithium-ion battery cells, 77,500 pcs",
+                    "currency": "USD",
+                    "amount": "363,517.00"
+                  },
+                  "extracted_fields": {
+                    "invoice_no": {
+                      "value": "INV-2026-5618",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "invoice_date": {
+                      "value": "2026-08-01",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "bl_no": {
+                      "value": "BLKHH263335",
+                      "source_doc": "bl",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "seller_name": {
+                      "value": "VALERIAN LABS DISTRIBUTION",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "seller_country": {
+                      "value": "Canada",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "buyer_name": {
+                      "value": "Fuji Coral Electronics LLC",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "buyer_country": {
+                      "value": "South Korea",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "vessel_name": {
+                      "value": "EMERALD TRIUMPH",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "port_of_loading": {
+                      "value": "Kaohsiung",
+                      "source_doc": "bl",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "port_of_discharge": {
+                      "value": "Gwangyang",
+                      "source_doc": "bl",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "goods_description": {
+                      "value": "Lithium-ion battery cells, 77,500 pcs",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "currency": {
+                      "value": "USD",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "amount": {
+                      "value": "363,517.00",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    }
+                  },
+                  "extraction_source": "ocr:model-v3",
+                  "conflicts": [],
+                  "classification": "HIGH_RISK_HOLD",
+                  "reasons": [
+                    {
+                      "rule": "party_exact",
+                      "field": "seller_name",
+                      "value": "VALERIAN LABS DISTRIBUTION",
+                      "entry_id": "OFAC-45315",
+                      "matched_name": "VALERIAN LABS DISTRIBUTION CORP.",
+                      "score": 1.0,
+                      "classification": "HIGH_RISK_HOLD"
+                    }
+                  ],
+                  "shadow": []
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "대상 없음",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "NOT_FOUND",
+                  "message": "심사 건 TX-20261113-639E013E 없음",
+                  "target_id": "TX-20261113-639E013E"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "서버 내부 오류",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "INTERNAL_ERROR",
+                  "message": "서버 내부 오류 (요청 ID: 3c1b7a41af2e4c3f)"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "요청 형식·값 오류",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "VALIDATION_ERROR",
+                  "message": "fields: 스크리닝 필드 ['seller_name'] 가 비어 있음",
+                  "target_id": null
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/screenings/{tx_id}/documents/{doc_type}": {
+      "get": {
+        "tags": [
+          "screenings"
+        ],
+        "summary": "서류 이미지 (검토 화면용 PNG)",
+        "description": "검토 화면용 서류 PNG. 샘플은 data/docs, 업로드는 원문 저장소(PDF 는 워커가 렌더링한 PNG).",
+        "operationId": "get_document_screenings__tx_id__documents__doc_type__get",
+        "parameters": [
+          {
+            "name": "tx_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tx Id"
+            }
+          },
+          {
+            "name": "doc_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Doc Type"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "PNG",
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "image/png": {}
+            }
+          },
+          "422": {
+            "description": "요청 형식·값 오류",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "VALIDATION_ERROR",
+                  "message": "fields: 스크리닝 필드 ['seller_name'] 가 비어 있음",
+                  "target_id": null
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "거래 없음 / 서류 없음 / PDF 렌더링 전",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "NOT_FOUND",
+                  "message": "심사 건 TX-20261113-639E013E 없음",
+                  "target_id": "TX-20261113-639E013E"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/screenings/{tx_id}/review": {
+      "post": {
+        "tags": [
+          "screenings"
+        ],
+        "summary": "담당자 최종 판단 저장 (+ 필드 정정 시 재판정)",
+        "description": "분류가 있는 건만 (completed, 또는 반복 실패로 MANUAL_REVIEW 가 붙은 failed). 저장.\n스크리닝 필드를 정정했으면 재판정해서, 결과가 HIGH_RISK_HOLD 인데 APPROVE 면 저장하지 않고 409.\n재판정 결과는 응답 rescreen 에 남는다 (DB 컬럼은 없음: 원래 판정은 그대로).",
+        "operationId": "review_screening_screenings__tx_id__review_post",
+        "parameters": [
+          {
+            "name": "tx_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tx Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "성공",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewResult"
+                },
+                "example": {
+                  "tx_id": "TX-20261113-639E013E",
+                  "status": "completed",
+                  "bundle_id": "B-7",
+                  "model_version": "model-v3",
+                  "rules_version": "rules-v3",
+                  "list_version": "list-v14",
+                  "input": {
+                    "source": "upload",
+                    "files": {
+                      "invoice": {
+                        "content_type": "application/pdf",
+                        "size": 1955
+                      },
+                      "bl": {
+                        "content_type": "application/pdf",
+                        "size": 1902
+                      }
+                    }
+                  },
+                  "received_at": "2026-11-13T05:54:02+00:00",
+                  "submitted_at": "2026-11-13T05:54:02+00:00",
+                  "started_at": "2026-11-13T05:54:02+00:00",
+                  "completed_at": "2026-11-13T05:54:04+00:00",
+                  "attempts": 1,
+                  "worker_id": "a-ocr-worker-1",
+                  "documents": {
+                    "invoice": "s3://tradeproof-docs/TX-20261113-639E013E/invoice.pdf",
+                    "bl": "s3://tradeproof-docs/TX-20261113-639E013E/bl.pdf"
+                  },
+                  "fields": {
+                    "invoice_no": "INV-2026-5618",
+                    "invoice_date": "2026-08-01",
+                    "bl_no": "BLKHH263335",
+                    "seller_name": "VALERIAN LABS DISTRIBUTION",
+                    "seller_country": "Canada",
+                    "buyer_name": "Fuji Coral Electronics LLC",
+                    "buyer_country": "South Korea",
+                    "vessel_name": "EMERALD TRIUMPH",
+                    "port_of_loading": "Kaohsiung",
+                    "port_of_discharge": "Gwangyang",
+                    "goods_description": "Lithium-ion battery cells, 77,500 pcs",
+                    "currency": "USD",
+                    "amount": "363,517.00"
+                  },
+                  "extracted_fields": {
+                    "invoice_no": {
+                      "value": "INV-2026-5618",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "invoice_date": {
+                      "value": "2026-08-01",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "bl_no": {
+                      "value": "BLKHH263335",
+                      "source_doc": "bl",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "seller_name": {
+                      "value": "VALERIAN LABS DISTRIBUTION",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "seller_country": {
+                      "value": "Canada",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "buyer_name": {
+                      "value": "Fuji Coral Electronics LLC",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "buyer_country": {
+                      "value": "South Korea",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "vessel_name": {
+                      "value": "EMERALD TRIUMPH",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "port_of_loading": {
+                      "value": "Kaohsiung",
+                      "source_doc": "bl",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "port_of_discharge": {
+                      "value": "Gwangyang",
+                      "source_doc": "bl",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "goods_description": {
+                      "value": "Lithium-ion battery cells, 77,500 pcs",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "currency": {
+                      "value": "USD",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "amount": {
+                      "value": "363,517.00",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    }
+                  },
+                  "extraction_source": "ocr:model-v3",
+                  "conflicts": [],
+                  "classification": "HIGH_RISK_HOLD",
+                  "reasons": [
+                    {
+                      "rule": "party_exact",
+                      "field": "seller_name",
+                      "value": "VALERIAN LABS DISTRIBUTION",
+                      "entry_id": "OFAC-45315",
+                      "matched_name": "VALERIAN LABS DISTRIBUTION CORP.",
+                      "score": 1.0,
+                      "classification": "HIGH_RISK_HOLD"
+                    }
+                  ],
+                  "reviewer_decision": "HOLD",
+                  "reviewer": "kim",
+                  "reviewer_note": "제재 대상 일치",
+                  "reviewed_at": "2026-11-13T06:10:00+00:00",
+                  "shadow": []
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "요청 형식·값 오류",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "VALIDATION_ERROR",
+                  "message": "fields: 스크리닝 필드 ['seller_name'] 가 비어 있음",
+                  "target_id": null
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "대상 없음",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "NOT_FOUND",
+                  "message": "심사 건 TX-20261113-639E013E 없음",
+                  "target_id": "TX-20261113-639E013E"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "아직 판정이 없음, 또는 정정 값으로 재판정하면 HIGH_RISK_HOLD 인데 APPROVE",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "CONFLICT",
+                  "message": "TX-20261113-639E013E 는 아직 판정이 없음 (status=queued, classification=None)",
+                  "target_id": "TX-20261113-639E013E"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Accepted": {
+        "properties": {
+          "tx_id": {
+            "type": "string",
+            "title": "Tx Id",
+            "description": "TX-YYYYMMDD-8자리 16진수"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "processing",
+              "completed",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "bundle_id": {
+            "type": "string",
+            "title": "Bundle Id",
+            "description": "이 건을 처리할 번들 (접수 시점의 BUNDLE_ID 로 고정)"
+          },
+          "shadow_bundle_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shadow Bundle Id"
+          },
+          "status_url": {
+            "type": "string",
+            "title": "Status Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tx_id",
+          "status",
+          "bundle_id",
+          "shadow_bundle_id",
+          "status_url"
+        ],
+        "title": "Accepted",
+        "description": "접수 결과. 판정은 OCR 워커가 비동기로 한다 → status_url 을 조회."
+      },
+      "Error": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "VALIDATION_ERROR",
+              "NOT_FOUND",
+              "CONFLICT",
+              "INTERNAL_ERROR",
+              "SERVICE_UNAVAILABLE"
+            ],
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "사람이 읽는 설명. 500/503 은 일반 문구 + 요청 ID (상세는 서버 로그)"
+          },
+          "target_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Id",
+            "description": "관련 대상 ID (보통 tx_id). 없으면 null"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "target_id"
+        ],
+        "title": "Error",
+        "description": "모든 실패 응답의 공통 형식 (docs/interfaces.md 1절)."
+      },
+      "ExtractedField": {
+        "properties": {
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "source_doc": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "invoice",
+                  "bl"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Doc",
+            "description": "값을 읽은 서류"
+          },
+          "bbox": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bbox",
+            "description": "원본 PNG 픽셀 좌표 [x0, y0, x1, y1]"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence",
+            "description": "OCR 신뢰도 0~100"
+          }
+        },
+        "type": "object",
+        "required": [
+          "value",
+          "source_doc",
+          "bbox",
+          "confidence"
+        ],
+        "title": "ExtractedField"
+      },
+      "Health": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok",
+            "title": "Status"
+          },
+          "bundle_id": {
+            "type": "string",
+            "title": "Bundle Id",
+            "description": "지금 접수에 쓰는 번들 (BUNDLE_ID)"
+          },
+          "model_version": {
+            "type": "string",
+            "title": "Model Version"
+          },
+          "rules_version": {
+            "type": "string",
+            "title": "Rules Version"
+          },
+          "list_version": {
+            "type": "string",
+            "title": "List Version"
+          },
+          "rules_supported": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Rules Supported"
+          },
+          "shadow_bundle_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shadow Bundle Id"
+          },
+          "storage": {
+            "type": "string",
+            "enum": [
+              "postgres",
+              "memory"
+            ],
+            "title": "Storage"
+          },
+          "blob": {
+            "type": "string",
+            "enum": [
+              "minio",
+              "local"
+            ],
+            "title": "Blob"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "bundle_id",
+          "model_version",
+          "rules_version",
+          "list_version",
+          "rules_supported",
+          "shadow_bundle_id",
+          "storage",
+          "blob"
+        ],
+        "title": "Health"
+      },
+      "ListItem": {
+        "properties": {
+          "tx_id": {
+            "type": "string",
+            "title": "Tx Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "processing",
+              "completed",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "bundle_id": {
+            "type": "string",
+            "title": "Bundle Id"
+          },
+          "classification": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "PASS_CANDIDATE",
+                  "MANUAL_REVIEW",
+                  "HIGH_RISK_HOLD"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification"
+          },
+          "submitted_at": {
+            "type": "string",
+            "title": "Submitted At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "reviewer_decision": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "APPROVE",
+                  "HOLD",
+                  "REJECT"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Decision"
+          },
+          "seller_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seller Name"
+          },
+          "buyer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buyer Name"
+          },
+          "vessel_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vessel Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tx_id",
+          "status",
+          "bundle_id",
+          "classification",
+          "submitted_at",
+          "completed_at",
+          "reviewer_decision",
+          "seller_name",
+          "buyer_name",
+          "vessel_name"
+        ],
+        "title": "ListItem"
+      },
+      "ListResult": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ListItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "description": "같은 필터의 전체 건수 (페이지와 무관)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "ListResult"
+      },
+      "Live": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "Live"
+      },
+      "Reason": {
+        "properties": {
+          "rule": {
+            "type": "string",
+            "title": "Rule",
+            "description": "규칙 코드 (GET /meta 의 rules). 예: party_exact, vessel_fuzzy, low_confidence"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field",
+            "description": "근거가 된 필드 (contracts.TX_FIELDS)"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value",
+            "description": "서류에서 읽은 값"
+          },
+          "entry_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Id",
+            "description": "일치한 제재 리스트 항목 ID"
+          },
+          "matched_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Name",
+            "description": "일치한 제재 리스트 이름"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score",
+            "description": "유사도 0~1 (정확 일치 1.0)"
+          },
+          "classification": {
+            "type": "string",
+            "enum": [
+              "PASS_CANDIDATE",
+              "MANUAL_REVIEW",
+              "HIGH_RISK_HOLD"
+            ],
+            "title": "Classification",
+            "description": "이 근거 하나가 가리키는 분류"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rule",
+          "field",
+          "value",
+          "entry_id",
+          "matched_name",
+          "score",
+          "classification"
+        ],
+        "title": "Reason",
+        "description": "판정 근거 한 건. 분류가 PASS_CANDIDATE 가 아니면 최소 하나 있다."
+      },
+      "Rescreen": {
+        "properties": {
+          "classification": {
+            "type": "string",
+            "enum": [
+              "PASS_CANDIDATE",
+              "MANUAL_REVIEW",
+              "HIGH_RISK_HOLD"
+            ],
+            "title": "Classification"
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/Reason"
+            },
+            "type": "array",
+            "title": "Reasons"
+          }
+        },
+        "type": "object",
+        "required": [
+          "classification",
+          "reasons"
+        ],
+        "title": "Rescreen"
+      },
+      "ReviewRequest": {
+        "properties": {
+          "decision": {
+            "type": "string",
+            "title": "Decision"
+          },
+          "reviewer": {
+            "type": "string",
+            "title": "Reviewer"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "corrected_fields": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Corrected Fields"
+          }
+        },
+        "type": "object",
+        "required": [
+          "decision",
+          "reviewer"
+        ],
+        "title": "ReviewRequest"
+      },
+      "ReviewResult": {
+        "properties": {
+          "tx_id": {
+            "type": "string",
+            "title": "Tx Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "processing",
+              "completed",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "bundle_id": {
+            "type": "string",
+            "title": "Bundle Id"
+          },
+          "model_version": {
+            "type": "string",
+            "title": "Model Version"
+          },
+          "rules_version": {
+            "type": "string",
+            "title": "Rules Version"
+          },
+          "list_version": {
+            "type": "string",
+            "title": "List Version"
+          },
+          "input": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Input",
+            "description": "접수 내용 {source: upload|sample|fields, sample_tx_id, fields, files}"
+          },
+          "received_at": {
+            "type": "string",
+            "title": "Received At"
+          },
+          "submitted_at": {
+            "type": "string",
+            "title": "Submitted At"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "attempts": {
+            "type": "integer",
+            "title": "Attempts",
+            "description": "처리 시도 횟수 (실패 시 재시도, 최대 3)"
+          },
+          "worker_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Worker Id"
+          },
+          "documents": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Documents",
+            "description": "원문 저장 위치 {invoice, bl}. 필드로 접수한 건은 값이 null"
+          },
+          "fields": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fields",
+            "description": "추출 필드 값 13개 (contracts.TX_FIELDS)"
+          },
+          "extracted_fields": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/ExtractedField"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extracted Fields",
+            "description": "필드별 값·서류·위치·신뢰도"
+          },
+          "extraction_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extraction Source",
+            "description": "ocr:<모델 버전> 또는 api:fields"
+          },
+          "conflicts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Conflicts",
+            "description": "Invoice 와 B/L 값이 다른 필드 [{field, invoice, bl}]"
+          },
+          "classification": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "PASS_CANDIDATE",
+                  "MANUAL_REVIEW",
+                  "HIGH_RISK_HOLD"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification"
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/Reason"
+            },
+            "type": "array",
+            "title": "Reasons"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error",
+            "description": "처리 실패 사유 (공통 에러 형식, code=SCREENING_FAILED)"
+          },
+          "reviewer_decision": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "APPROVE",
+                  "HOLD",
+                  "REJECT"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Decision"
+          },
+          "reviewer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer"
+          },
+          "reviewer_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Note"
+          },
+          "corrected_fields": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Corrected Fields",
+            "description": "담당자가 고친 필드만"
+          },
+          "reviewed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed At"
+          },
+          "shadow_bundle_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shadow Bundle Id"
+          },
+          "shadow": {
+            "items": {
+              "$ref": "#/components/schemas/ShadowResult"
+            },
+            "type": "array",
+            "title": "Shadow",
+            "description": "섀도 판정 결과 (실제 분류에 쓰지 않음)"
+          },
+          "rescreen": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Rescreen"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "스크리닝 필드를 정정했으면 같은 번들로 다시 판정한 결과 (DB 에는 저장 안 함)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tx_id",
+          "status",
+          "bundle_id",
+          "model_version",
+          "rules_version",
+          "list_version",
+          "input",
+          "received_at",
+          "submitted_at",
+          "started_at",
+          "completed_at",
+          "attempts",
+          "worker_id",
+          "documents",
+          "fields",
+          "extracted_fields",
+          "extraction_source",
+          "conflicts",
+          "classification",
+          "reasons",
+          "error",
+          "reviewer_decision",
+          "reviewer",
+          "reviewer_note",
+          "corrected_fields",
+          "reviewed_at",
+          "shadow_bundle_id",
+          "shadow",
+          "rescreen"
+        ],
+        "title": "ReviewResult"
+      },
+      "ScreeningDetail": {
+        "properties": {
+          "tx_id": {
+            "type": "string",
+            "title": "Tx Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "processing",
+              "completed",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "bundle_id": {
+            "type": "string",
+            "title": "Bundle Id"
+          },
+          "model_version": {
+            "type": "string",
+            "title": "Model Version"
+          },
+          "rules_version": {
+            "type": "string",
+            "title": "Rules Version"
+          },
+          "list_version": {
+            "type": "string",
+            "title": "List Version"
+          },
+          "input": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Input",
+            "description": "접수 내용 {source: upload|sample|fields, sample_tx_id, fields, files}"
+          },
+          "received_at": {
+            "type": "string",
+            "title": "Received At"
+          },
+          "submitted_at": {
+            "type": "string",
+            "title": "Submitted At"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "attempts": {
+            "type": "integer",
+            "title": "Attempts",
+            "description": "처리 시도 횟수 (실패 시 재시도, 최대 3)"
+          },
+          "worker_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Worker Id"
+          },
+          "documents": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Documents",
+            "description": "원문 저장 위치 {invoice, bl}. 필드로 접수한 건은 값이 null"
+          },
+          "fields": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fields",
+            "description": "추출 필드 값 13개 (contracts.TX_FIELDS)"
+          },
+          "extracted_fields": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/ExtractedField"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extracted Fields",
+            "description": "필드별 값·서류·위치·신뢰도"
+          },
+          "extraction_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extraction Source",
+            "description": "ocr:<모델 버전> 또는 api:fields"
+          },
+          "conflicts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Conflicts",
+            "description": "Invoice 와 B/L 값이 다른 필드 [{field, invoice, bl}]"
+          },
+          "classification": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "PASS_CANDIDATE",
+                  "MANUAL_REVIEW",
+                  "HIGH_RISK_HOLD"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification"
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/Reason"
+            },
+            "type": "array",
+            "title": "Reasons"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error",
+            "description": "처리 실패 사유 (공통 에러 형식, code=SCREENING_FAILED)"
+          },
+          "reviewer_decision": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "APPROVE",
+                  "HOLD",
+                  "REJECT"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Decision"
+          },
+          "reviewer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer"
+          },
+          "reviewer_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Note"
+          },
+          "corrected_fields": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Corrected Fields",
+            "description": "담당자가 고친 필드만"
+          },
+          "reviewed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed At"
+          },
+          "shadow_bundle_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shadow Bundle Id"
+          },
+          "shadow": {
+            "items": {
+              "$ref": "#/components/schemas/ShadowResult"
+            },
+            "type": "array",
+            "title": "Shadow",
+            "description": "섀도 판정 결과 (실제 분류에 쓰지 않음)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tx_id",
+          "status",
+          "bundle_id",
+          "model_version",
+          "rules_version",
+          "list_version",
+          "input",
+          "received_at",
+          "submitted_at",
+          "started_at",
+          "completed_at",
+          "attempts",
+          "worker_id",
+          "documents",
+          "fields",
+          "extracted_fields",
+          "extraction_source",
+          "conflicts",
+          "classification",
+          "reasons",
+          "error",
+          "reviewer_decision",
+          "reviewer",
+          "reviewer_note",
+          "corrected_fields",
+          "reviewed_at",
+          "shadow_bundle_id",
+          "shadow"
+        ],
+        "title": "ScreeningDetail",
+        "description": "심사 건 하나. status 가 completed(또는 failed)가 되면 classification·reasons 가 채워진다."
+      },
+      "ShadowResult": {
+        "properties": {
+          "bundle_id": {
+            "type": "string",
+            "title": "Bundle Id"
+          },
+          "classification": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "PASS_CANDIDATE",
+                  "MANUAL_REVIEW",
+                  "HIGH_RISK_HOLD"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification"
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/Reason"
+            },
+            "type": "array",
+            "title": "Reasons"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Error"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "섀도 처리가 실패했으면 공통 에러 형식 (code=SCREENING_FAILED)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "bundle_id",
+          "classification",
+          "reasons",
+          "error"
+        ],
+        "title": "ShadowResult"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "screenings",
+      "description": "M6 심사: 접수·결과 조회·담당자 판단"
+    },
+    {
+      "name": "ui",
+      "description": "담당자 검토 화면과 화면이 읽는 값"
+    },
+    {
+      "name": "ops",
+      "description": "상태 확인·지표"
+    }
+  ]
+}

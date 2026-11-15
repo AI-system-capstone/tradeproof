@@ -29,7 +29,7 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 연결 | 방향 | 내용 | 단계 |
 |---|---|---|---|
 | `contracts.py` | 공통 → 전체 | 모든 모듈은 필드 이름·코드값·상태값·팀 상수를 이 파일에서 가져다 쓴다 | 1차 |
-| 판정 코드·OCR 코드 | A → C | C는 A의 처리 경로(`from a_screening.pipeline import screen_documents, bundle_spec` — 서류 폴더 → OCR → 필드 → 판정, 워커와 같은 함수)를 그대로 가져다 써서 실제 심사와 같은 결과를 낸다. A는 이 코드를 **C가 import할 수 있는 형태**로 유지한다 | 1차 |
+| 판정 코드·OCR 코드 | A → C | C는 A의 처리 경로(`from a_screening.pipeline import screen_documents, bundle_spec` — 서류 폴더 → OCR → 필드 → 판정, 워커와 같은 함수)를 그대로 가져다 써서 실제 심사와 같은 결과를 낸다. A는 이 코드를 **C가 import할 수 있는 형태**로 유지한다. 규칙 버전은 번들에 없고 A가 `rules-v3`로 고정한다(`contracts.RULES_FIXED`, 번들 구성에 `rules_version`을 빼고 넘기면 이 값) | 1차 |
 
 ## 3. 데이터
 
@@ -68,3 +68,4 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 2026-11-12 | A 지윤아 | `common/contracts.py`·`common/blob.py` 추가, A 테이블 정의(`common/schema/10_a_screening.sql`: transactions·screening_results·screening_jobs), 판정 코드 import 경로 `a_screening.screening.match` |
 | 2026-11-12 | A 지윤아 | C가 쓸 처리 경로 `a_screening.pipeline.screen_documents(tx_dir, bundle)` (워커와 같은 함수, SVC-04 테스트), A 접수 번들 환경변수 `BUNDLE_ID` |
 | 2026-11-13 | C 강민성 | [결정 0006](decisions/0006-m8-owner-c-and-exclude-s6.md): 모듈 담당 재정비(B: M1·M2 / C: M3·M8 / A: M6), S6 제외, "Replay Job"을 M3 전체(골든셋 검증·Replay)를 포괄하는 "검증 Job" 표현으로 정비 |
+| 2026-11-16 | A 지윤아 | 판정 규칙 버전을 번들과 무관하게 `rules-v3`로 고정(`contracts.RULES_FIXED`). A API 명세서 `docs/openapi/a_screening.json` 추가 |

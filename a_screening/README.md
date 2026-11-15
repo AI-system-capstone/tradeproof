@@ -51,6 +51,13 @@ docker build -f a_screening/Dockerfile --target ocr-worker    -t tradeproof/a-oc
 환경변수: `DATABASE_URL`, `BLOB_ENDPOINT`·`BLOB_ACCESS_KEY`·`BLOB_SECRET_KEY`, `BUNDLE_ID`(접수 번들, 예전 이름 `ACTIVE_BUNDLE`), `SHADOW_BUNDLE`.
 OCR 결과는 tesseract 버전에 따라 달라서 이미지에서 5.5.0으로 고정합니다 (팀 기준값: model-v3 정확도 94.3%, 미탐 0).
 
+**규칙 버전은 `rules-v3`로 고정**합니다 (`contracts.RULES_FIXED`, 11/16). 규칙은 `screening/match.py` 코드라서 B 번들(모델 + 리스트)에 없고,
+C는 `pipeline`을 쓰면 자동으로 같은 규칙을 씁니다. rules-v3 = rules-v2 + OCR 오류 대비 규칙(OCR 혼동 글자 감안 일치 → 보류, 신뢰도 낮음·서류 불일치·누락 → 검토).
+기준값(rules-v3): model-v3 미탐 0·하향 0 / model-v4(저하) 미탐 0·**보류→검토 하향 3**. 저하는 하향으로 드러나므로 게이트가 하향도 미탐으로 세야 S5가 막힙니다.
+
+**API 명세서:** [`docs/openapi/a_screening.json`](../docs/openapi/a_screening.json). 코드에서 만듭니다: `python -m a_screening.api.export_openapi`
+(코드를 바꾸고 명세를 안 고치면 `tests/test_openapi.py`가 실패). 띄운 서버에서는 `/docs`.
+
 ## 진행 상황
 
 구현 순서는 결정 0005를 따릅니다. 제재 리스트 갱신을 빼는 것이 아니라 **모델(OCR) 갱신 경로를 먼저** 만듭니다.

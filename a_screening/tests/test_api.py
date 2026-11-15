@@ -130,7 +130,7 @@ def test_healthz(env):
     r = client.get("/healthz").json()
     assert r["status"] == "ok" and r["storage"] == env.store.kind and r["blob"] == env.blob.kind
     assert r["bundle_id"] == C.BASELINE_BUNDLE and r["list_version"] == C.LIST_BASE
-    assert r["model_version"] == C.MODEL_BASE and r["rules_version"] == C.RULES_BASE
+    assert r["model_version"] == C.MODEL_BASE and r["rules_version"] == C.RULES_FIXED
     assert r["rules_supported"] == list(C.RULES_VERSIONS) and r["shadow_bundle_id"] is None
 
 

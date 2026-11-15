@@ -25,12 +25,16 @@ MODEL_NEW = "model-v4"       # 시연 장면 4용으로 일부러 성능을 떨�
 RULES_BASE = "rules-v2"
 RULES_NEW = "rules-v3"       # 11/08: OCR 불확실성 규칙 추가 (신뢰도 낮음·Invoice/B-L 불일치·필드 누락 -> 검토, OCR 혼동 글자 감안 일치 -> 보류)
 RULES_VERSIONS = (RULES_BASE, RULES_NEW)
+# 11/16: 규칙 버전은 번들 구성이 아니라 A가 고정한다. 규칙은 match.py 코드라서 B 번들(모델 ZIP + 리스트 ZIP)에 없다.
+#   rules-v3 = rules-v2 + OCR 오류 대비 규칙 (OCR 혼동 글자를 감안한 일치 -> 보류, 신뢰도 낮음·불일치·누락 -> 검토)
+#   미탐 방지가 최우선이라 v3 로 고정 (rules-v2 는 OCR 혼동으로 보류가 검토로 내려가는 경우가 있음)
+RULES_FIXED = RULES_NEW
 BUNDLES = {
-    "B-7": {"model_version": MODEL_BASE, "rules_version": RULES_BASE, "list_version": LIST_BASE, "status": "active"},     # 현재 활성
-    "B-8": {"model_version": MODEL_BASE, "rules_version": RULES_BASE, "list_version": LIST_NEW, "status": "candidate"},   # 리스트 갱신 (장면 2)
-    "B-9": {"model_version": MODEL_NEW, "rules_version": RULES_BASE, "list_version": LIST_NEW, "status": "candidate"},    # 모델 갱신 (장면 4, canary)
-    # 11/08 추가 (팀 공유 필요): 규칙 갱신. 리스트는 B-8과 같고 규칙만 다름
-    "B-10": {"model_version": MODEL_BASE, "rules_version": RULES_NEW, "list_version": LIST_NEW, "status": "candidate"},
+    "B-7": {"model_version": MODEL_BASE, "rules_version": RULES_FIXED, "list_version": LIST_BASE, "status": "active"},     # 현재 활성
+    "B-8": {"model_version": MODEL_BASE, "rules_version": RULES_FIXED, "list_version": LIST_NEW, "status": "candidate"},   # 리스트 갱신 (장면 2)
+    "B-9": {"model_version": MODEL_NEW, "rules_version": RULES_FIXED, "list_version": LIST_NEW, "status": "candidate"},    # 모델 갱신 (장면 4, canary)
+    # 11/08 추가: 규칙 갱신 번들. 11/16 규칙 고정 뒤로는 B-8과 구성이 같다 (D 테스트가 ID를 쓰고 있어 남겨 둠)
+    "B-10": {"model_version": MODEL_BASE, "rules_version": RULES_FIXED, "list_version": LIST_NEW, "status": "candidate"},
 }
 BASELINE_BUNDLE = "B-7"
 

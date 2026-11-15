@@ -10,8 +10,8 @@ DB·원문 저장소는 쓰지 않는다 (입력은 서류 폴더, 출력은 dic
   out["fields"]                        # {필드: 값} (contracts.TX_FIELDS 13개)
 
   # 번들 구성을 직접 줄 수도 있다 (B 의 GET /bundles/{id} 결과로 채우면 됨)
-  screen_documents(tx_dir, {"bundle_id": "B-9", "model_version": "model-v4", "list_version": "list-v15",
-                            "rules_version": "rules-v3"})
+  # rules_version 은 B 번들에 없으므로 빼면 A 가 고정한 contracts.RULES_FIXED(rules-v3)를 쓴다
+  screen_documents(tx_dir, {"bundle_id": "B-9", "model_version": "model-v4", "list_version": "list-v15"})
 
 서류 폴더 형식: <tx_dir>/invoice.png, <tx_dir>/bl.png (한쪽만 있어도 됨, 폴더 이름 = tx_id).
 필요한 것: tesseract-ocr 5.5.0 (a_screening/Dockerfile 의 ocr-base 와 같은 버전이어야 결과가 같음), poppler 는 불필요.
@@ -28,6 +28,7 @@ from a_screening.ocr import extract as X  # noqa: E402
 from a_screening.screening.match import load_index, screen  # noqa: E402
 
 BUNDLE_KEYS = ("model_version", "list_version", "rules_version")
+REQUIRED_KEYS = ("model_version", "list_version")   # rules_version 은 없으면 C.RULES_FIXED
 
 _INDEX: dict = {}
 _INDEX_LOCK = threading.Lock()
@@ -42,7 +43,7 @@ def bundle_spec(bundle_id: str) -> dict:
 
 
 def _check_bundle(bundle: dict) -> None:
-    missing = [k for k in BUNDLE_KEYS if not bundle.get(k)]
+    missing = [k for k in REQUIRED_KEYS if not bundle.get(k)]
     if missing:
         raise ValueError(f"번들 구성에 {missing} 없음: {bundle}")
 
@@ -70,7 +71,7 @@ def screen_extracted(extracted: dict, conflicts: list, bundle: dict, from_ocr: b
     if from_ocr:
         ocr = {"confidence": {f: (extracted.get(f) or {}).get("confidence") for f in C.TX_FIELDS},
                "conflicts": conflicts}
-    return screen(fields, index_for(bundle["list_version"]), rules_version=bundle["rules_version"], ocr=ocr)
+    return screen(fields, index_for(bundle["list_version"]), rules_version=bundle.get("rules_version") or C.RULES_FIXED, ocr=ocr)
 
 
 def screen_documents(tx_dir: str | Path, bundle: dict) -> dict:
