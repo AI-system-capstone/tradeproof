@@ -195,14 +195,38 @@
           {
             "name": "x-actor",
             "in": "header",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": "string",
-              "minLength": 1,
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
               "title": "X-Actor"
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RollbackRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -316,6 +340,31 @@
             "type": "array",
             "title": "Checks",
             "description": "단계별 분석 결과"
+          },
+          "registry_sync": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Registry Sync",
+            "description": "B 번들 상태에 반영했는지: ok | pending(다시 시도 예정) | rejected(B 가 거부)"
+          },
+          "rollback": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rollback",
+            "description": "수동 롤백을 요청한 사람과 사유"
           }
         },
         "type": "object",
@@ -329,7 +378,7 @@
             "minLength": 1,
             "title": "Bundle Id",
             "examples": [
-              "B-2"
+              "B-8"
             ]
           }
         },
@@ -470,6 +519,38 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "RollbackRequest": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "title": "RollbackRequest",
+        "description": "운영 화면(C)은 본문으로 보낸다. X-Actor 헤더만 보내도 된다."
       },
       "ValidationError": {
         "properties": {
