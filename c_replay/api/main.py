@@ -1,17 +1,16 @@
 """검증 API (C, 포트 8200). 명세: docs/openapi/c_replay.json
 
-  POST /validations                 검증 등록 → 202   (같은 번들에 진행 중 검증 있음 409)
-  GET  /validations                 최근 등록 순 목록
+  GET  /validations                 최근 순 목록 (bundle_id·status 로 거르기)
   GET  /validations/{id}            상태·결과
   GET  /validations/{id}/diffs      달라진 거래       (completed 가 아니면 409)
   GET  /admin                       운영 화면 (c_replay/ui/admin.html)
   GET  /healthz /livez /metrics
 
-검증 자체(골든셋 검증·Replay)는 검증 Job 이 하고 c_replay.store 의 start/complete/fail 로 결과를 적는다.
+조회만 한다. 검증 행은 검증 Job(c_replay.job)이 만들고 결과도 Job 이 적는다.
+검증 Job 은 B 가 만든다 (validated 번들 → C 의 Job 템플릿에 BUNDLE_ID 를 넣어 K8s Job 생성).
 
 환경변수:
   DATABASE_URL   있으면 Postgres, 없으면 메모리 저장소
-  BUNDLE_ID      baseline_bundle_id 를 생략했을 때 쓰는 운영 번들 (기본 B-1)
 """
 from __future__ import annotations
 
@@ -22,7 +21,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, Header, Query, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
@@ -62,12 +61,6 @@ class Error(BaseModel):
     code: str
     message: str
     target_id: str | None
-
-
-class ValidationRequest(BaseModel):
-    bundle_id: str = Field(min_length=1, max_length=64, description="검증할 후보 번들", examples=["B-2"])
-    baseline_bundle_id: str | None = Field(default=None, description="비교 기준 번들. 생략하면 현재 운영 번들",
-                                           examples=["B-1"])
 
 
 class Metric(BaseModel):
@@ -144,8 +137,6 @@ _Offset = Query(default=0, ge=0)
 def create_app(store=None, env: dict | None = None) -> FastAPI:
     env = os.environ if env is None else env
     store = store or S.make_store(env.get("DATABASE_URL"))
-    # 가정: B 의 GET /bundles/active 가 아직 없어서, 운영 번들은 환경변수 BUNDLE_ID 로 받는다
-    default_baseline = env.get("BUNDLE_ID", "B-1")
 
     app = FastAPI(title="TradeProof c_replay — 검증 API (M3) + 운영 화면 (M8)", version="0.1.0")
     app.state.store = store
@@ -189,15 +180,6 @@ def create_app(store=None, env: dict | None = None) -> FastAPI:
         return v
 
     # ------------------------------------------------------------ 검증
-    @app.post("/validations", status_code=202, response_model=Validation, tags=["validations"],
-              responses={409: _ERR, 422: _ERR, 503: _ERR}, summary="검증 등록")
-    def create_validation(body: ValidationRequest,
-                          x_actor: str = Header(min_length=1, max_length=64, description="요청한 사람 또는 모듈")):
-        try:
-            return store.create(body.bundle_id, body.baseline_bundle_id or default_baseline, x_actor)
-        except S.InProgressExists:
-            raise ApiError(409, C.ERR_CONFLICT, "이 번들에 진행 중인 검증이 있음", body.bundle_id) from None
-
     @app.get("/validations", response_model=ValidationList, tags=["validations"],
              responses={422: _ERR}, summary="검증 목록")
     def list_validations(bundle_id: str | None = None, status: ValidationStatus | None = None,

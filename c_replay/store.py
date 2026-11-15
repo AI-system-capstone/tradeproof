@@ -2,8 +2,9 @@
 
 Postgres 에 쓰는 곳 (common/schema/30_c_replay.sql): validations, validation_diffs
 
-  API       create() / get() / list() / diffs() / stats() / ping()
-  검증 Job   start() -> complete() 또는 fail()      (조건이 안 맞으면 아무것도 쓰지 않고 False)
+  API       get() / list() / diffs() / stats() / ping()          (조회만)
+  검증 Job   create() -> start() -> complete() 또는 fail()     (조건이 안 맞으면 아무것도 쓰지 않고 False)
+            fail_stale()  Job 이 죽어서 진행 중으로 남은 오래된 검증을 failed 로 (create 전에 부른다)
 
 두 저장소는 같은 모양의 dict 를 돌려준다 (API 응답 그대로, docs/openapi/c_replay.json 의 Validation·Diff).
 "같은 번들에 진행 중(queued·running) 검증은 하나"는 저장소가 막는다 → InProgressExists.
@@ -13,7 +14,7 @@ from __future__ import annotations
 import copy
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from common import contracts as C
 
@@ -126,6 +127,16 @@ class MemoryStore:
             row.update(status=FAILED, error=copy.deepcopy(error), finished_at=_now())
             return True
 
+    def fail_stale(self, bundle_id: str, older_than: timedelta, error: dict) -> int:
+        """같은 번들의 진행 중 검증 중 만든 지 older_than 이 지난 것을 failed 로. 바꾼 건수."""
+        limit, n = _now() - older_than, 0
+        with self._lock:
+            for row in self._rows.values():
+                if row["bundle_id"] == bundle_id and row["status"] in IN_PROGRESS and row["created_at"] < limit:
+                    row.update(status=FAILED, error=copy.deepcopy(error), finished_at=_now())
+                    n += 1
+        return n
+
     def diffs(self, validation_id: str, direction: str | None = None,
               limit: int = 50, offset: int = 0) -> tuple[list[dict], int]:
         with self._lock:
@@ -225,6 +236,12 @@ class PostgresStore:
             return c.execute("UPDATE validations SET status = 'failed', error = %s, finished_at = %s "
                              "WHERE validation_id = %s AND status IN ('queued', 'running')",
                              (self._jsonb(error), _now(), validation_id)).rowcount == 1
+
+    def fail_stale(self, bundle_id: str, older_than: timedelta, error: dict) -> int:
+        with self._conn() as c:
+            return c.execute("UPDATE validations SET status = 'failed', error = %s, finished_at = %s "
+                             "WHERE bundle_id = %s AND status IN ('queued', 'running') AND created_at < %s",
+                             (self._jsonb(error), _now(), bundle_id, _now() - older_than)).rowcount
 
     def diffs(self, validation_id: str, direction: str | None = None,
               limit: int = 50, offset: int = 0) -> tuple[list[dict], int]:
