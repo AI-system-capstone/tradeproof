@@ -2,7 +2,7 @@
 
   DATABASE_URL=postgresql://tradeproof:tradeproof@localhost:5432/tradeproof uvicorn api.app:app --port 8000
   DATABASE_URL=... python ocr/worker.py                 # 처리는 ocr-worker 가 한다 (따로 띄움)
-  ACTIVE_BUNDLE=B-8 ...                                 # 접수 번들 (B-8 리스트 갱신, B-9 모델 갱신 canary)
+  BUNDLE_ID=B-9 ...                                     # 접수 번들 (D 가 배포 때 주입. 예전 이름 ACTIVE_BUNDLE 도 받음)
   SHADOW_BUNDLE=B-9 ...                                 # 섀도 판정 번들 (결과는 참고용, 실제 분류에 안 씀)
   BLOB_ENDPOINT=minio:9000 BLOB_ACCESS_KEY=.. BLOB_SECRET_KEY=..   # 원문 저장소 (없으면 BLOB_DIR / data/blob)
 
@@ -28,7 +28,7 @@
   GET  /livez                               liveness: 프로세스만 (항상 200)
 
 규칙
-  - 번들은 접수 시점에 고정된다 (screening_jobs.bundle_id). 워커는 ACTIVE_BUNDLE 을 읽지 않는다.
+  - 번들은 접수 시점에 고정된다 (screening_jobs.bundle_id). 워커는 BUNDLE_ID 를 읽지 않는다.
   - 에러는 모두 공통 형식(11/01 회의 3-3, contracts.ERROR_FIELDS): {"code", "message", "target_id"}
   - 요청마다 한 줄 JSON 로그 (logger "tradeproof.api"). 요청 ID 는 응답 헤더 X-Request-ID 로도 나간다
     (들어온 X-Request-ID 가 안전한 형식이면 그대로 이어 씀: ingress 로그와 맞추기).
@@ -66,12 +66,14 @@ from a_screening.screening.match import is_blank, load_index, screen  # noqa: E4
 
 def _check_bundle_env(active: str, shadow: str | None) -> None:
     if active not in C.BUNDLES:
-        raise RuntimeError(f"ACTIVE_BUNDLE={active!r} 는 contracts.BUNDLES 에 없음 ({list(C.BUNDLES)})")
+        raise RuntimeError(f"{BUNDLE_ENV}={active!r} 는 contracts.BUNDLES 에 없음 ({list(C.BUNDLES)})")
     if shadow and shadow not in C.BUNDLES:
         raise RuntimeError(f"SHADOW_BUNDLE={shadow!r} 는 contracts.BUNDLES 에 없음 ({list(C.BUNDLES)})")
 
 
-ACTIVE_BUNDLE = os.environ.get("ACTIVE_BUNDLE", C.BASELINE_BUNDLE)
+# 접수 번들: 팀 규약은 BUNDLE_ID (D 가 deploy/ 값으로 주입). 예전 이름 ACTIVE_BUNDLE 도 받는다
+BUNDLE_ENV = "BUNDLE_ID" if os.environ.get("BUNDLE_ID") else "ACTIVE_BUNDLE"
+ACTIVE_BUNDLE = os.environ.get(BUNDLE_ENV) or C.BASELINE_BUNDLE
 SHADOW_BUNDLE = os.environ.get("SHADOW_BUNDLE") or None
 _check_bundle_env(ACTIVE_BUNDLE, SHADOW_BUNDLE)
 
