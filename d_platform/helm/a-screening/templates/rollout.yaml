@@ -1,17 +1,4 @@
-{{- /* BUNDLE_ID 정하기.
-      설치할 때: values 의 bundle.candidate (없으면 bundle.stable).
-      이미 떠 있을 때: 클러스터의 현재 값을 그대로 둔다 (bundle.keepLive=true, 기본).
-        → 번들 교체는 배포 API(D)가 Rollout 을 직접 고쳐서 하므로, 차트를 다시 적용해도 canary 가 시작되지 않는다.
-      helm template / --dry-run 에서는 lookup 이 비어 있어 values 값이 나온다. */ -}}
 {{- $bundle := default .Values.bundle.stable .Values.bundle.candidate -}}
-{{- if .Values.bundle.keepLive -}}
-{{- $live := lookup "argoproj.io/v1alpha1" "Rollout" .Release.Namespace "a-screening" -}}
-{{- if $live -}}
-{{- range (index $live.spec.template.spec.containers 0).env -}}
-{{- if eq .name "BUNDLE_ID" -}}{{- $bundle = .value -}}{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
 # 심사 API. Deployment 대신 Rollout: 파드 템플릿(BUNDLE_ID)이 바뀌면 canary 단계를 밟는다.
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
@@ -22,10 +9,7 @@ metadata:
     app.kubernetes.io/part-of: tradeproof
 spec:
   replicas: {{ .Values.api.replicas }}
-  revisionHistoryLimit: 5
-  # 최근 버전으로 되돌릴 때는 canary 단계를 건너뛰고 바로 전환한다 (롤백은 빨라야 한다, DEP-05)
-  rollbackWindow:
-    revisions: {{ .Values.canary.rollbackWindowRevisions }}
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: a-screening
@@ -45,7 +29,6 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           env:
-            # 배포 API 가 이 값을 고친다. **첫 번째 컨테이너의 첫 번째 env 로 둘 것** (JSON patch 경로가 고정)
             - name: BUNDLE_ID
               value: {{ $bundle | quote }}
           {{- if .Values.api.envFromSecret }}

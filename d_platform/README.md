@@ -90,34 +90,27 @@ helm upgrade --install a-screening d_platform/helm/a-screening -n tradeproof -f 
 curl -H 'Host: tradeproof.local' localhost      # 더미 이미지는 응답 본문이 BUNDLE_ID
 ```
 
-**번들 교체 = Rollout의 `BUNDLE_ID` 환경변수 변경.** 파드 템플릿이 바뀌면 Argo Rollouts가 canary(10 → 50 → 100)를 시작한다.
-
-- Helm은 **설치할 때만** `BUNDLE_ID`를 정한다(`bundle.stable`). 그 뒤에는 배포 API가 Rollout을 직접 고치고, 차트를 다시 적용해도 떠 있는 값을 유지한다(`bundle.keepLive`). 그래서 `deploy/values-dev.yaml`은 설치·시연 초기화 때의 기준 번들을 뜻한다.
-- 롤백 순서: **① abort**(트래픽을 stable로) → **② `BUNDLE_ID`를 직전 번들로 되돌림**(Rollout이 `Healthy`로). 100% 반영이 끝난 뒤의 롤백은 ②만 하면 되고, `rollbackWindow` 덕분에 단계 없이 바로 전환된다.
-- 주의: 최근 3개 버전 안에 있는 번들로 바꾸면 "되돌리기"로 보고 canary 단계를 건너뛴다. 새 번들은 해당 없음.
-
-손으로 해 볼 때 (배포 API의 실제 드라이버가 하게 될 일):
+**번들 교체 = `BUNDLE_ID` 환경변수 변경.** B가 `deploy/values-dev.yaml`에 번들 ID를 적고 D가 Helm으로 적용한다. `bundle.candidate`에 새 번들이 있으면 파드 템플릿이 바뀌어 canary(10 → 50 → 100)가 시작된다.
 
 ```bash
-set_bundle() { kubectl -n tradeproof patch rollout a-screening --type=json -p "[
-  {\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/env/0/value\",\"value\":\"$1\"},
-  {\"op\":\"replace\",\"path\":\"/spec/template/metadata/labels/tradeproof~1bundle-id\",\"value\":\"$1\"}]"; }
-
-set_bundle B-8                                                   # canary 시작, 10% 에서 멈춤
-kubectl argo rollouts get rollout a-screening -n tradeproof
+helm upgrade a-screening d_platform/helm/a-screening -n tradeproof --set bundle.stable=B-7 --set bundle.candidate=B-8
+kubectl argo rollouts get rollout a-screening -n tradeproof      # 10% 에서 멈춤
 kubectl argo rollouts promote a-screening -n tradeproof          # → 50%, 한 번 더 → 100%
-kubectl argo rollouts abort a-screening -n tradeproof            # 롤백 ①
-set_bundle B-7                                                   # 롤백 ② (직전 번들)
+kubectl argo rollouts abort a-screening -n tradeproof            # 롤백 ① 트래픽을 stable 로 (비율 0)
+kubectl argo rollouts undo a-screening -n tradeproof             # 롤백 ② spec 을 직전 번들로 → Healthy
 ```
+
+- 롤백은 **abort 후 undo**다. abort는 트래픽만 되돌리고(Rollout은 `Degraded`), undo가 spec을 되돌린다.
+- undo는 Helm 밖에서 일어나므로 Helm이 기억하는 값과 어긋난다. 그 뒤 `helm upgrade`로 값을 실제 상태에 맞춘다(같은 `BUNDLE_ID`면 아무 일도 일어나지 않는다).
+- B도 번들마다 직전 번들(`previous_active_id`)을 기록하고, `rolled_back` 전이를 받으면 그 번들을 다시 `active`로 복원한다.
 
 2026-11-15 측정 (더미 이미지):
 
 | 확인 | 결과 |
 |---|---|
 | 10% / 50% / 100% 단계의 후보 응답 비율 | 9.3% (37/400) / 51% (205/400) / 100% (300/300) |
-| 차트를 다시 적용했을 때 | `BUNDLE_ID` 유지, canary 시작 안 됨 |
-| canary 중 롤백 (abort → 직전 번들) | 비율 0까지 0.53초, `Healthy`까지 1.55초 |
-| 100% 반영 뒤 롤백 (직전 번들로 변경만) | 단계 없이 즉시 전환, 그 뒤 후보 응답 0건 |
+| abort | 비율 0까지 0.46초·0.82초, 그 뒤 후보 응답 0건(300건 중), Rollout `Degraded` |
+| undo | `Healthy`, `BUNDLE_ID`가 직전 번들 |
 | abort 후 후보의 마지막 응답 (50% 단계, 3회) | 0.63초 / 5.96초 / 2.26초 — **한 번은 목표 5초 초과.** 측정 도구를 만들어 감시 단계에서 다시 잰다 |
 
 ## 실행·테스트

@@ -3,15 +3,14 @@
 #   helm upgrade --install a-screening d_platform/helm/a-screening -n tradeproof -f deploy/values-dev.yaml
 #
 # 번들 교체 = BUNDLE_ID 환경변수 변경. 파드 템플릿이 바뀌므로 Argo Rollouts 가 canary 를 시작한다.
-#   - 처음 설치: BUNDLE_ID = bundle.candidate 가 있으면 candidate, 없으면 stable
-#   - 그 뒤:     배포 API(D)가 Rollout 의 BUNDLE_ID 를 직접 고친다. 차트를 다시 적용해도 떠 있는 값을 유지한다(keepLive).
-#   - 손으로 canary 를 시작하려면: helm upgrade ... --set bundle.keepLive=false --set bundle.candidate=B-8
+#   BUNDLE_ID = bundle.candidate 가 있으면 candidate, 없으면 stable
+#   - 새 번들 반영 시작: candidate 에 새 번들 ID 를 적고 helm upgrade  → canary 시작
+#   - 100% 반영 후:      stable 을 그 번들로, candidate 를 "" 로 고쳐도 BUNDLE_ID 는 그대로라 아무 일도 없다
 
-# deploy/values-dev.yaml 이 덮어쓴다 (B 가 쓰고 D 가 적용). 설치·시연 초기화 때의 기준 번들.
+# deploy/values-dev.yaml 이 덮어쓴다 (B 가 쓰고 D 가 적용)
 bundle:
   stable: B-7        # common/contracts.py 의 BASELINE_BUNDLE
   candidate: ""
-  keepLive: true     # 이미 떠 있는 Rollout 의 BUNDLE_ID 를 유지
 
 api:
   # A 이미지를 k3s 에 넣기 전까지는 더미 이미지로 canary 뼈대만 확인한다.
@@ -55,7 +54,5 @@ canary:
   # 0 이면 사람이 승격할 때까지 멈춘다 (kubectl argo rollouts promote a-screening -n tradeproof).
   # 초를 적으면 그 시간 뒤 자동으로 다음 단계. 감시(AnalysisTemplate)는 다음 단계에서 붙인다.
   pauseSeconds: 0
-  # 옛 버전 파드를 내리기 전 기다리는 시간. 이 안에 되돌리면 옛 ReplicaSet 을 그대로 다시 쓴다.
+  # 옛 버전 파드를 내리기 전 기다리는 시간. 이 안에 undo 하면 옛 ReplicaSet 을 그대로 다시 쓴다.
   scaleDownDelaySeconds: 30
-  # 최근 이만큼의 버전으로 되돌릴 때는 단계 없이 바로 전환한다.
-  rollbackWindowRevisions: 3
