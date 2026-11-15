@@ -37,7 +37,7 @@
         "description": "최근에 등록된 순서. 운영 화면과 B(M2 게이트)는 `bundle_id`로 걸러 첫 번째 줄(가장 최근 검증)을 쓴다.",
         "operationId": "listValidations",
         "parameters": [
-          { "name": "bundle_id", "in": "query", "schema": { "type": "string" }, "example": "B-2" },
+          { "name": "bundle_id", "in": "query", "schema": { "type": "string" }, "example": "B-9" },
           { "name": "status", "in": "query", "schema": { "$ref": "#/components/schemas/ValidationStatus" } },
           { "$ref": "#/components/parameters/Limit" },
           { "$ref": "#/components/parameters/Offset" }
@@ -146,8 +146,8 @@
         "type": "object",
         "required": ["bundle_id"],
         "properties": {
-          "bundle_id": { "type": "string", "minLength": 1, "maxLength": 64, "description": "검증할 후보 번들", "examples": ["B-2"] },
-          "baseline_bundle_id": { "type": ["string", "null"], "description": "비교 기준 번들. 생략하면 현재 운영 번들", "examples": ["B-1"] }
+          "bundle_id": { "type": "string", "minLength": 1, "maxLength": 64, "description": "검증할 후보 번들", "examples": ["B-9"] },
+          "baseline_bundle_id": { "type": ["string", "null"], "description": "비교 기준 번들. 생략하면 현재 운영 번들", "examples": ["B-7"] }
         }
       },
       "ValidationStatus": {
@@ -160,8 +160,8 @@
         "required": ["validation_id", "bundle_id", "baseline_bundle_id", "status", "golden", "replay", "error", "requested_by", "created_at", "started_at", "finished_at"],
         "properties": {
           "validation_id": { "type": "string", "description": "RP-<12자리 hex>", "examples": ["RP-3f9a1c0b7d2e"] },
-          "bundle_id": { "type": "string", "description": "후보 번들", "examples": ["B-2"] },
-          "baseline_bundle_id": { "type": "string", "description": "비교 기준(운영) 번들", "examples": ["B-1"] },
+          "bundle_id": { "type": "string", "description": "후보 번들", "examples": ["B-9"] },
+          "baseline_bundle_id": { "type": "string", "description": "비교 기준(운영) 번들", "examples": ["B-7"] },
           "status": { "$ref": "#/components/schemas/ValidationStatus" },
           "golden": { "oneOf": [{ "$ref": "#/components/schemas/GoldenResult" }, { "type": "null" }] },
           "replay": { "oneOf": [{ "$ref": "#/components/schemas/ReplayResult" }, { "type": "null" }] },

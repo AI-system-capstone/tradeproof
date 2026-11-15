@@ -11,7 +11,7 @@
 
 환경변수:
   DATABASE_URL   있으면 Postgres, 없으면 메모리 저장소
-  BUNDLE_ID      baseline_bundle_id 를 생략했을 때 쓰는 운영 번들 (기본 B-1)
+  BUNDLE_ID      baseline_bundle_id 를 생략했을 때 쓰는 운영 번들 (기본 contracts.BASELINE_BUNDLE = B-7)
 """
 from __future__ import annotations
 
@@ -65,9 +65,9 @@ class Error(BaseModel):
 
 
 class ValidationRequest(BaseModel):
-    bundle_id: str = Field(min_length=1, max_length=64, description="검증할 후보 번들", examples=["B-2"])
+    bundle_id: str = Field(min_length=1, max_length=64, description="검증할 후보 번들", examples=["B-9"])
     baseline_bundle_id: str | None = Field(default=None, description="비교 기준 번들. 생략하면 현재 운영 번들",
-                                           examples=["B-1"])
+                                           examples=["B-7"])
 
 
 class Metric(BaseModel):
@@ -145,7 +145,7 @@ def create_app(store=None, env: dict | None = None) -> FastAPI:
     env = os.environ if env is None else env
     store = store or S.make_store(env.get("DATABASE_URL"))
     # 가정: B 의 GET /bundles/active 가 아직 없어서, 운영 번들은 환경변수 BUNDLE_ID 로 받는다
-    default_baseline = env.get("BUNDLE_ID", "B-1")
+    default_baseline = env.get("BUNDLE_ID", C.BASELINE_BUNDLE)
 
     app = FastAPI(title="TradeProof c_replay — 검증 API (M3) + 운영 화면 (M8)", version="0.1.0")
     app.state.store = store
