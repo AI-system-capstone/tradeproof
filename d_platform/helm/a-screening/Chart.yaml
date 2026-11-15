@@ -1,0 +1,6 @@
+apiVersion: v2
+name: a-screening
+description: 심사 서비스(A) — API 는 Argo Rollout 으로 canary, OCR 워커는 Deployment 하나
+type: application
+version: 0.1.0
+appVersion: "dev"

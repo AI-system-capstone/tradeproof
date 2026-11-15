@@ -1,0 +1,32 @@
+{{- if .Values.worker.enabled }}
+# OCR 워커: 큐(screening_jobs)에서 꺼내 OCR → 판정 → 저장. 포트 없음, BUNDLE_ID 를 읽지 않는다.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: a-ocr-worker
+  labels:
+    app.kubernetes.io/name: a-ocr-worker
+    app.kubernetes.io/part-of: tradeproof
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      app: a-ocr-worker
+  template:
+    metadata:
+      labels:
+        app: a-ocr-worker
+        app.kubernetes.io/part-of: tradeproof
+    spec:
+      containers:
+        - name: worker
+          image: {{ .Values.worker.image | quote }}
+          imagePullPolicy: {{ .Values.worker.imagePullPolicy }}
+          {{- if .Values.worker.envFromSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.worker.envFromSecret }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+{{- end }}
