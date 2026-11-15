@@ -1,6 +1,6 @@
 # B — 패키지 검증·번들 Registry
 
-포트 **8100**. 모델/제재리스트 ZIP을 받아 검증하고 번들을 관리합니다.재시작하면 DB의 미완료 작업을 이어서 처리합니다.
+포트 **8100**. 모델/제재리스트 ZIP을 받아 검증하고 번들을 관리합니다. 반입 검증과 등록은 HTTP 요청 안에서 완료합니다.
 
 ## 구조·흐름
 
@@ -12,7 +12,7 @@
 | `db.py`, `storage.py` | DB 및 SeaweedFS/S3 저장 (`common.blob` 재사용)             |
 | `tests/`              | 검증·API·복구 테스트와 임시 테스트 자산 생성기              |
 
-**업로드 → 검증 → AI 모델 또는 제재 리스트 등록 → 후보 번들 → validated → C 승인 → D 활성화.**
+**업로드 → 검증 → AI 모델 또는 제재 리스트 등록 → 후보 번들(candidate) → C 추가 검증(validated/validation_failed) → 승인(approved)/반려(rejected) → D 카나리(canary) → 활성화(active)/취소(cancelled).**
 팀 Registry 규약에 따라 검증 통과 후 번들을 자동 생성합니다. 기존 `/approve`는 생성된 번들 ID를 돌려주는 멱등 호환 API입니다.
 
 최초 모델·리스트도 각각 업로드해야 합니다. 둘이 준비되면 `common.contracts.BASELINE_BUNDLE`부터 번호를 부여합니다. 이후에는 활성 번들의 변경 대상만 교체합니다. 초기 번들을 활성화하기 전 새 버전은 거부합니다.
@@ -21,27 +21,33 @@
 
 | 메서드·경로                      | 입력                         | 정상 응답                                                   |
 | -------------------------------- | ---------------------------- | ----------------------------------------------------------- |
-| `POST /imports`                  | multipart `package`: ZIP 1개 | 저장 전 검증 통과 시 202 `{import_id}`, 검증 실패 시 422                                           |
+| `POST /imports`                  | multipart `package`: ZIP 1개 | 검증·등록 완료 시 201 `{import_id, bundle_id}`, 검증 실패 422 / 등록 정책 충돌 409                                           |
 | `GET /imports/{id}`              | —                            | 200 `{status: APPROVED\|REJECTED, reason, bundle_id}` |
 | `POST /imports/{id}/approve`     | 본문 없음                    | 200 `{bundle_id}` (첫 모델·리스트 준비 전 409)              |
 | `GET /bundles`                   | —                            | 번들 목록                                                   |
-| `GET /bundles/active`            | —                            | 현재 활성 번들 (없으면 404)                                 |
+| `GET /bundles/active`            | —                            | 200 `{active: 번들 또는 null, canary: 번들 또는 null}`                                 |
 | `GET /bundles/{id}`              | —                            | 모델·리스트 ID·원본 ZIP URI·상태·생성 시각     |
 | `POST /bundles/{id}/transitions` | `{to, actor, reason}`        | 200 `{from, to, changed_at}`                                |
 | `GET /healthz`                  | —                            | 모듈 준비 상태 확인 (DB/파일 저장소/신뢰 키 장애 시 503) |
 | `GET /metrics`                   | —                            | Prometheus 지표                                             |
 
-B는 하나의 컨테이너에서 API와 검증 워커를 실행하는 모듈입니다. DB·저장소의 수명주기는 상위 관리 프로세스가 담당하며, `/healthz`는 B가 해당 의존성을 사용할 준비가 되었는지만 확인합니다. 별도 `/livez`는 제공하지 않습니다. FastAPI 기본 문서 경로 `/docs`(Swagger UI), `/redoc`(ReDoc), `/openapi.json`(API 명세)을 제공합니다. 정적 명세는 [b_registry.json](docs/openapi/b_registry.json)에 보관하며 `python -m b_registry.cli openapi`로 생성합니다.
+B는 하나의 컨테이너에서 API와 Replay 요청 워커를 실행하는 모듈입니다. DB·저장소의 수명주기는 상위 관리 프로세스가 담당하며, `/healthz`는 B가 해당 의존성을 사용할 준비가 되었는지만 확인합니다. 별도 `/livez`는 제공하지 않습니다. FastAPI 기본 문서 경로 `/docs`(Swagger UI), `/redoc`(ReDoc), `/openapi.json`(API 명세)을 제공합니다. 정적 명세는 [b_registry.json](docs/openapi/b_registry.json)에 보관하며 `python -m b_registry.cli openapi`로 생성합니다.
 
-저장 전 ZIP·서명·manifest 해시·내용 검증을 수행합니다. 실패하면 422로 즉시 거부하며 반입 DB 행과 영구 저장 파일을 생성하지 않습니다. 202는 이 검증을 통과한 ZIP의 접수를 의미하며, 리스트 변경률·버전 충돌·번들 등록은 워커가 처리합니다.
+저장 전에 ZIP·서명·manifest 해시·내용·리스트 변경률·버전 충돌·초기 등록 정책을 모두 검사합니다. 실패 시 Import/모델/리스트/번들을 등록하거나 파일을 저장하지 않습니다. 성공한 요청만 파일·DB 등록을 수행한 뒤 201을 반환합니다. 등록 도중 저장소/DB 오류가 나면 DB 트랜잭션은 롤백됩니다. 파일 저장 후 DB 커밋 실패 시 검증된 ZIP이 저장소에 남을 수 있으며 재요청은 같은 내용 키를 사용합니다.
 
-조회 응답은 기본적으로 `status`, `reason`, `bundle_id`를 포함합니다. 번들이 아직 생성되지 않았거나 등록이 거부된 경우 `bundle_id`는 null입니다. 조회 옵션은 없습니다.
+조회 응답은 `status`, `reason`, `bundle_id`이며 쿼리 옵션은 없습니다. 새 반입은 항상 `APPROVED`, `reason: null`입니다. 최초 모델 또는 리스트만 등록된 경우 `bundle_id`는 null이며, 상대 자산 등록 후 연결됩니다. `completed_at`은 반입 등록 완료 시각이며 추가 성능 검증·배포 완료 시각이 아닙니다. 기존 반려 이력의 `REJECTED`와 사유는 조회 호환성을 위해 보존합니다.
 
-등록 처리 중 조회는 **202, 빈 본문**, `Retry-After: 1`. 동일 ZIP 재전송은 같은 import ID를 반환합니다.
+처리 대기 202 응답은 없습니다. 동일 ZIP 재전송은 같은 import ID를 반환합니다. `GET /bundles/active`는 active와 canary를 함께 반환하며, 각각 없으면 null입니다. 둘 다 없어도 200입니다.
 오류는 공통 `{code, message, target_id}`. `X-Request-ID`를 응답·JSON 로그에 전달하며, 전이의 `X-Actor`를 보내면 본문의 `actor`와 같아야 합니다. 전이 API는 C·D가 호출하는 내부 서비스 인터페이스입니다.
 
-허용 전이: `candidate → validated | validation_failed`, `validated → approved | rejected`, `approved → active | rolled_back`, `active → rolled_back`.
-새 활성화 시 이전 번들은 `superseded`; 롤백하면 이전 활성 번들을 같은 트랜잭션에서 복원합니다. `superseded → active`는 현재 번들의 직전 stable 복원만 허용합니다. 그 외는 409입니다. 저장 전 패키지 검증 실패는 import_id를 발급하지 않습니다. 접수 후 변경률·등록 정책 위반이나 저장 파일 변조가 발견되면 기존 import를 REJECTED로 남깁니다.
+허용 전이:
+- `candidate → validated | validation_failed`: C의 추가 검증 결과. 반입 검증 합격과 구분합니다.
+- `validated → approved | rejected`: 검증 후 배포 승인/반려.
+- `approved → canary | cancelled`: 카나리 시작/배포 전 취소.
+- `canary → active | cancelled`: 전체 승격/카나리 중단.
+- `superseded → active`: 카나리가 없을 때 현재 활성 번들의 직전 stable 복원만 허용.
+
+active와 canary는 각각 최대 하나입니다. 카나리 중단 시 기존 active를 유지합니다. 승격 시 이전 active는 superseded로 바뀝니다. 이전 stable 복원 시 교체되는 현재 번들은 cancelled가 됩니다. B는 rolled_back 상태를 사용하지 않습니다. 상태 변경은 D의 실제 배포 결과 통보이며 B가 트래픽을 직접 전환하지 않습니다.
 
 ## 실행·테스트
 
@@ -61,13 +67,13 @@ B는 하나의 컨테이너에서 API와 검증 워커를 실행하는 모듈입
 
 해시·전자서명 검증은 유지합니다. 파일별 해시는 ZIP 내부 manifest를 사용하고, 저장소는 기존 내용 기반 키(`registry/<sha256>`)를 유지하므로 동일 ZIP 중복 처리와 저장 후 변경 확인에 별도 DB 해시 컬럼이 필요하지 않습니다. 검증 단계별 결과는 검증 함수의 일시적인 결과이며 DB에 보관하지 않습니다.
 
-반입 상태·거부 사유·처리 시각은 비동기 등록과 재시도에, 번들의 `previous_active_id`는 롤백에 필요합니다. 번들은 `bundle_id`, `model_id`, `list_id`, `status`, `previous_active_id`, `created_at` 여섯 컬럼만 저장합니다. 규칙 버전·상태 이력·Replay 제출 상태와 사유는 저장하지 않습니다. 이번 변경은 B에만 적용하며 A의 규칙 처리는 별도 작업으로 유지합니다.
+반입 상태·사유는 기존 이력 조회 호환성을 위해 유지하며 신규 반입은 성공 기록만 남깁니다. 번들의 `previous_active_id`는 카나리 기준 stable 및 이전 stable 복원에 사용합니다. 번들은 `bundle_id`, `model_id`, `list_id`, `status`, `previous_active_id`, `created_at` 여섯 컬럼만 저장합니다. 규칙 버전·상태 이력·Replay 제출 상태와 사유는 저장하지 않습니다. 이번 변경은 B에만 적용하며 A의 규칙 처리는 별도 작업으로 유지합니다.
 
-`WorkflowLock`은 `registry_lock`에 매핑된 내부 잠금 모델입니다. 단일 컨테이너에서도 HTTP 요청과 백그라운드 검증 워커가 동시에 실행되므로 유지합니다. 트랜잭션마다 같은 행을 UPDATE하여 충돌을 막으며, 별도 관리 프로세스가 아닙니다.
+`WorkflowLock`은 `registry_lock`에 매핑된 내부 잠금 모델입니다. 단일 컨테이너에서도 여러 HTTP 등록·상태 변경 요청이 동시에 실행될 수 있으므로 유지합니다. 트랜잭션마다 같은 행을 UPDATE하여 충돌을 막으며, 별도 관리 프로세스가 아닙니다.
 
 번들 API는 `model_id`, `list_id`를 반환합니다. `rules_version`, `history`, `replay` 응답은 제거했습니다. 중첩 `model`은 `model_id`, 중첩 `list`는 `list_id`를 사용합니다. 기존 `*_component_id`와 중첩 `component_id`는 제거했습니다. 중첩 `model`/`list`는 ID와 ZIP `uri`만 반환하며 `version`, `sha256`, `files`는 없습니다. 최상위 중복 `model_version`, `list_version`, `is_active`도 제거했습니다. A·C는 ZIP을 받아 manifest에 따라 파일을 읽어야 합니다.
 
-**DB 적용:** 기존 공통 SQL(00/20)은 동결된 기준 파일이며 수정하지 않습니다. 변경은 `common/schema/50_b_registry_20261114.sql`로 적용합니다. ORM은 테이블 매핑만 담당하며 `create_all()`은 일회용 단위 테스트에서만 사용합니다. 운영 적용 절차는 [MIGRATIONS.md](docs/MIGRATIONS.md)를 따릅니다.
+**DB 적용:** 기존 공통 SQL(00/20)은 동결된 기준 파일이며 수정하지 않습니다. 변경은 `common/schema/50_b_registry_20261114.sql`, `51_b_registry_20261115.sql` 순서로 적용합니다. ORM은 테이블 매핑만 담당하며 `create_all()`은 일회용 단위 테스트에서만 사용합니다. 운영 적용 절차는 [MIGRATIONS.md](docs/MIGRATIONS.md)를 따릅니다.
 
 저장소 루트에서 실행합니다 (Python 3.13, PowerShell).
 
@@ -127,6 +133,6 @@ python -m b_registry.signer corrupt model.zip corrupted.zip
 
 ## 다른 모듈 연결
 
-Replay는 `REPLAY_JOB_TEMPLATE`과 K8s 서비스 계정 권한이 준비되면 `validated` 번들에 대해 Job 생성을 시도합니다. DB에 제출 상태를 저장하지 않고 결정적인 Job 이름과 Kubernetes 응답으로 중복을 확인합니다. 실패는 로그로 남기고 재시도하며, 템플릿이 없으면 실행하지 않습니다. 번들이 validated인 동안 Job을 삭제하면 다시 생성될 수 있으므로 완료 Job은 승인·반려 전까지 유지해야 합니다. Replay 검증 결과는 C가 번들 승인·반려로 반영합니다. Replay 대기 지표는 제거했습니다.
+Replay는 `REPLAY_JOB_TEMPLATE`과 K8s 서비스 계정 권한이 준비되면 `candidate` 번들에 대해 Job 생성을 시도합니다. DB에 제출 상태를 저장하지 않고 결정적인 Job 이름과 Kubernetes 응답으로 중복을 확인합니다. 실패는 로그로 남기고 재시도하며, 템플릿이 없으면 실행하지 않습니다. 번들이 candidate인 동안 Job을 삭제하면 다시 생성될 수 있으므로 완료 Job은 추가 검증 결과 반영 전까지 유지해야 합니다. Replay 검증 결과는 C가 validated/validation_failed로 반영하고, 이후 approved/rejected를 결정합니다. Replay 대기 지표는 제거했습니다.
 
 현재 A의 Registry 조회 연결, C의 실제 Job 템플릿·성능 검증, D의 RBAC·배포 연결은 별도 작업입니다. 공통 계약 반영 목록과 연결 조건은 [INTEGRATION.md](docs/INTEGRATION.md)에 정리했습니다. 연동 계약 변경은 `docs/interfaces.md`에도 기록합니다.

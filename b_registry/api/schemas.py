@@ -6,9 +6,12 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 class ImportAccepted(StrictModel):
+    """Package validation and registration have completed synchronously."""
     import_id: str
+    bundle_id: str | None
 
 class VerificationResult(StrictModel):
+    """New imports are APPROVED; REJECTED/reason are retained for legacy history."""
     status: Literal["APPROVED", "REJECTED"]
     reason: str | None
     bundle_id: str | None
@@ -22,7 +25,7 @@ class ErrorResponse(StrictModel):
     target_id: str | None
 
 class Transition(StrictModel):
-    to: str
+    to: Literal[*BUNDLE_STATUSES]
     actor: str = Field(min_length=1, max_length=100)
     reason: str = Field(min_length=1, max_length=500)
 
@@ -55,9 +58,13 @@ class SanctionsListResult(StrictModel):
 
 class BundleResult(StrictModel):
     bundle_id: str
-    status: str
+    status: Literal[*BUNDLE_STATUSES]
     model_id: str
     list_id: str
     created_at: str
     model: AIModelResult
     list: SanctionsListResult
+
+class ActiveBundles(StrictModel):
+    active: BundleResult | None
+    canary: BundleResult | None

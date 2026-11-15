@@ -16,9 +16,10 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 |---|---|---|---|
 | 공통 에러 형식 | 모든 모듈 | 실패 응답은 `{code, message, target_id}`. code는 `VALIDATION_ERROR`(422), `NOT_FOUND`(404), `CONFLICT`(409), `SERVICE_UNAVAILABLE`(503), `INTERNAL_ERROR`(500) 중 하나 | 1차 |
 | 번들 구성 조회 | B → A·C·D | `GET /bundles/{id}`로 `model_id`, `list_id`, 원본 ZIP URI를 제공한다. 모델/리스트의 중첩 값은 ID와 uri만 포함하며 해시·개별 파일 목록·규칙 버전·이력·Replay 상태는 반환하지 않는다 | 1차 |
-| 상태 전이 | C·D → B | `POST /bundles/{id}/transitions`에 `{to, actor, reason}`을 보내면 B가 `{from, to, changed_at}`을 돌려준다. 허용되지 않는 전이는 409 | 1차 |
+| 활성·카나리 조회 | B → A·C·D | `GET /bundles/active`는 200 `{active, canary}`. 각 값은 번들 객체 또는 null이며 동시에 존재할 수 있다 | 1차 |
+| 상태 전이 | C·D → B | `POST /bundles/{id}/transitions`에 `{to, actor, reason}`을 보내면 B가 `{from, to, changed_at}`을 돌려준다. candidate → validated/validation_failed → approved/rejected → canary → active/cancelled. approved에서도 cancelled 가능. 허용되지 않는 전이는 409 | 1차 |
 | 지표 이름 | 각 모듈 → D | 각 모듈은 `contracts.py`에 정한 이름(`tradeproof_<모듈>_<대상>`, `bundle_id` 라벨 포함)으로 지표를 내보내고, D는 이 이름으로 canary 단계별 분석과 자동 롤백 판단을 한다 | 1차 |
-| 반입 | 운영 화면(A) → B | `POST /imports` (multipart ZIP: manifest.json + 파일 + signature.sig) → 저장 전 서명·해시·내용 검증 통과 시 202, 실패 시 422(영구 저장 없음). `GET /imports/{id}`는 `{status, reason, bundle_id}`를 기본 반환한다(번들 미생성 시 null, 처리 중 202) | 1차 |
+| 반입 | 운영 화면(A) → B | `POST /imports` (multipart ZIP: manifest.json + 파일 + signature.sig) → 모든 반입 검증·등록 완료 시 201 `{import_id, bundle_id}`, 검증 실패 422 / 등록 정책 충돌 409(등록 없음). `GET /imports/{id}`는 `{status, reason, bundle_id}`를 반환하며 신규 반입은 APPROVED·reason=null, 번들 미생성 시 bundle_id=null | 1차 |
 | 검증·승인 | 운영 화면(A) ↔ C | C가 게이트 결과·지표·영향 거래를 제공하고, 화면에서 승인·반려를 C에 보낸다 (`POST /approvals`) | 1차 |
 | 배포 | C → D | 승인되면 `POST /deployments` (`approved`가 아니면 409, 진행 중 배포가 있으면 409) | 1차 |
 | 배포 상태·롤백 | D → C·화면 | `GET /deployments/{id}`, `POST /deployments/{id}/rollback` | 1차 |
@@ -41,7 +42,7 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 과거 거래 적재 | 데이터 → A·D | `dataset/seed/`가 합성 서류를 최초 번들로 A의 평시 경로에 넣어 과거 거래를 만든다. D의 `scripts/reset_demo.sh`가 호출 | 1차 |
 | 시연용 리스트 원본 | 데이터 → B | (이어서, 3순서) 정상(추가)·변조·손상 리스트 원본. 서명·변조 처리는 B의 `signer/`. 그 전까지 리스트는 최초 번들의 한 버전을 그대로 쓴다 | 1차 |
 | 시연용 모델 파일 | **TODO(제공자 미정)** → B | **정상 개선 모델 원본 1개**(S4)부터. 서명은 B의 `signer/`. 성능 저하 모델(S5)과 변조·손상본(S1)은 그다음(2순서) | 1차 |
-| B 스키마 적용 | B → D | 기존 DB에 `common/schema/50_b_registry_20261114.sql`을 적용한다. 모델·리스트는 `ai_models`·`sanctions_lists`, 번들은 `model_id`·`list_id`로 참조한다 | 1차 |
+| B 스키마 적용 | B → D | 기존 DB에 `common/schema/50_b_registry_20261114.sql`, `51_b_registry_20261115.sql`을 순서대로 적용한다. 모델·리스트는 `ai_models`·`sanctions_lists`, 번들은 `model_id`·`list_id`로 참조한다 | 1차 |
 | 배포 이력 | D → B·C | B·C는 D의 `deployments` 테이블을 읽어 현재 stable/canary를 판단할 수 있다 | 1차 |
 
 ## 4. 쿠버네티스
@@ -49,8 +50,8 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 연결 | 방향 | 내용 | 단계 |
 |---|---|---|---|
 | 번들 ID | C → A | C가 배포 레포(`deploy/`)에 적은 번들 ID가 Helm 설정을 거쳐 A의 환경변수 `BUNDLE_ID`로 들어간다 (적용은 D) | 1차 |
-| Replay 시작 | B → C | B가 번들을 검증 통과로 바꾸면 C의 Job 템플릿으로 Replay Job이 만들어진다 | 1차 |
-| 롤백 알림 | D → B | Argo Rollouts 알림이 B의 전이 API를 불러 `rolled_back`을 기록한다 | 1차 |
+| Replay 시작 | B → C | 반입 검증 후 candidate 번들을 만들면 C의 템플릿으로 Replay Job이 만들어진다. C가 추가 검증 결과를 validated/validation_failed로 통보한다 | 1차 |
+| 롤백 알림 | D → B | D가 카나리 시작 canary, 승격 active, 중단 cancelled를 B에 통보한다. 이전 stable 복원은 해당 superseded 번들을 active로 전이하며 현재 번들은 cancelled로 변경한다 | 1차 |
 | A 서비스 구성 | A → D | A는 같은 Dockerfile의 빌드 대상 2개로 뜬다(compose·k3s 공통). `a-screening`(`target: screening-api`, 포트 8000, 지표 `GET :8000/metrics`) + `a-ocr-worker`(`target: ocr-worker`, 포트 없음). 둘 다 DB·`BLOB_*`·`BUNDLE_ID`를 같이 받는다. **TODO(A·D): 워커에 canary를 적용하는 방식과 워커 지표 수집 경로** | 1차 |
 
 ## 5. 메모: 최종 요구사항 문서와 다르게 정한 부분
@@ -68,3 +69,4 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 2026-11-12 | A 지윤아 | `common/contracts.py`·`common/blob.py` 추가, A 테이블 정의(`common/schema/10_a_screening.sql`: transactions·screening_results·screening_jobs), 판정 코드 import 경로 `a_screening.screening.match` |
 | 2026-11-14 | B 박시우 | 번들 조회를 모델·리스트 ID와 원본 ZIP URI 기준으로 변경. 반입 검증 실패는 422, 반입 조회는 쿼리 옵션 없이 `{status, reason, bundle_id}` 반환. D 적용용 B 스키마 마이그레이션 추가 |
 | 2026-11-14 | B 박시우 | `common/contracts.py`에 반입 상태 `IMPORT_*`(A), 번들 상태·전이 `REGISTRY_*`(C·D), 지표 이름 `METRIC_REGISTRY_*`(D) 추가. 기존 A 정의 유지 |
+| 2026-11-15 | B 박시우 | 반입은 전체 검증·등록 후 201 반환. 번들 candidate 이후 C 추가 검증·승인, D canary/active/cancelled로 분리하고 rolled_back 제거. 활성 조회를 {active, canary}로 변경. 51 마이그레이션 추가 |

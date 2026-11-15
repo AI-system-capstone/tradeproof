@@ -1,4 +1,4 @@
-"""Reconcile validated bundles with Kubernetes Jobs; no submission state in DB."""
+"""Reconcile candidate bundles with Kubernetes Jobs; no submission state in DB."""
 import copy
 import json
 import logging
@@ -21,7 +21,7 @@ class ReplayDispatcher:
         if self.template is None:
             return
         with self.db.sessions() as s:
-            ids = list(s.scalars(select(Bundle.bundle_id).where(Bundle.status == "validated")))
+            ids = list(s.scalars(select(Bundle.bundle_id).where(Bundle.status == "candidate")))
         for bid in ids:
             try:
                 self.dispatch(bid)

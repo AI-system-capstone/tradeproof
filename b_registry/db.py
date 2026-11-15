@@ -35,14 +35,16 @@ class Bundle(Base):
     previous_active_id: Mapped[str | None] = mapped_column(ForeignKey("bundles.bundle_id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     __table_args__ = (Index("uq_registry_active", "status", unique=True,
-        postgresql_where=text("status = 'active'"), sqlite_where=text("status = 'active'")),)
+        postgresql_where=text("status = 'active'"), sqlite_where=text("status = 'active'")),
+        Index("uq_registry_canary", "status", unique=True,
+        postgresql_where=text("status = 'canary'"), sqlite_where=text("status = 'canary'")),)
 
 class Import(Base):
     __tablename__ = "imports"
     __table_args__ = (CheckConstraint("model_id IS NULL OR list_id IS NULL", name="ck_import_single_asset"),)
     import_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     artifact_uri: Mapped[str] = mapped_column(String(500), unique=True)
-    status: Mapped[str] = mapped_column(String(30), default=C.IMPORT_RECEIVED)
+    status: Mapped[str] = mapped_column(String(30), default=C.IMPORT_APPROVED)
     reason: Mapped[str | None] = mapped_column(String(500))
     model_id: Mapped[str | None] = mapped_column(ForeignKey("ai_models.model_id"))
     list_id: Mapped[str | None] = mapped_column(ForeignKey("sanctions_lists.list_id"))
@@ -73,6 +75,9 @@ class Database:
             actual = {column["name"] for column in inspector.get_columns(table.name)}
             if actual != set(table.columns.keys()):
                 raise RuntimeError(f"Legacy {table.name} schema detected; apply the B registry migration first")
+        indexes = {index["name"] for index in inspector.get_indexes("bundles") if index["unique"]}
+        if not {"uq_registry_active", "uq_registry_canary"} <= indexes:
+            raise RuntimeError("Missing deployment uniqueness constraints; apply the B registry migration first")
         with self.engine.connect() as conn:
             if conn.scalar(text("SELECT id FROM registry_lock WHERE id=1")) != 1:
                 raise RuntimeError("Missing registry lock; apply the B registry migration first")

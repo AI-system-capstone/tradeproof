@@ -1,4 +1,3 @@
-import time
 from concurrent.futures import ThreadPoolExecutor
 import httpx
 import pytest
@@ -10,11 +9,10 @@ from b_registry.db import Bundle, AIModel, SanctionsList, Database, Import
 from b_registry.storage import StorageUnavailable
 from b_registry.verify.replay import ReplayDispatcher
 from b_registry.verify.workflow import Conflict, ImportService, transition
-from b_registry.verify.worker import VerificationWorker
+from b_registry.verify.validation import ValidationFailure
 
 def upload(service, name):
     imp = service.intake((service.cfg.trust_key.parent / "packages" / name).read_bytes())
-    service.process(imp.import_id)
     return imp.import_id
 
 def baseline(service):
@@ -22,7 +20,7 @@ def baseline(service):
     listing = upload(service, "list-v14.zip")
     bid = service.registered_bundle(listing)
     assert service.registered_bundle(model) == bid
-    for state in ("approved", "active"):
+    for state in ("validated", "approved", "canary", "active"):
         transition(service.db, bid, state, "test", "baseline")
     return bid
 
@@ -39,14 +37,12 @@ def test_http_contract_and_bootstrap(service):
     assert not any(p["in"] == "query" for p in schema["paths"]["/imports/{import_id}"]["get"].get("parameters", []))
     assert "bundle_id" in schema["components"]["schemas"]["VerificationResult"]["required"]
     assert client.get("/healthz").status_code == 200
-    assert client.get("/bundles/active").status_code == 404
+    assert client.get("/bundles/active").json() == {"active": None, "canary": None}
     response = client.post("/imports", files={"package": ("model.zip", (service.cfg.trust_key.parent / "packages/model-v3.zip").read_bytes())},
                            headers={"X-Request-ID": "check-123"})
-    assert response.status_code == 202 and response.headers["X-Request-ID"] == "check-123"
+    assert response.status_code == 201 and response.headers["X-Request-ID"] == "check-123"
     iid = response.json()["import_id"]
     assert response.headers["Location"] == "/imports/" + iid
-    assert client.get("/imports/" + iid).status_code == 202
-    service.process(iid)
     assert client.get("/imports/" + iid).json() == {"status": "APPROVED", "reason": None, "bundle_id": None}
     assert client.post(f"/imports/{iid}/approve").status_code == 409
     listing = upload(service, "list-v14.zip")
@@ -59,7 +55,7 @@ def test_http_contract_and_bootstrap(service):
     assert bundle["model_id"] == bundle["model"]["model_id"] == "model-v3"
     assert bundle["list_id"] == bundle["list"]["list_id"] == "list-v14"
     assert "model_component_id" not in bundle
-    assert bundle["status"] == "validated"
+    assert bundle["status"] == "candidate"
     assert bundle["created_at"].endswith("+00:00")
     assert not {"rules_version", "history", "replay"} & bundle.keys()
     for field, filename in (("model", "model-v3.zip"), ("list", "list-v14.zip")):
@@ -68,36 +64,35 @@ def test_http_contract_and_bootstrap(service):
     assert "is_active" not in bundle and "model_version" not in bundle and "list_version" not in bundle
     assert "bundle_id=" in client.get("/metrics").text
 
-def test_transition_activation_and_rollback(service):
+def test_transition_canary_cancel_and_promotion(service):
     old = baseline(service)
-    iid = upload(service, "model-v4.zip")
-    new = service.registered_bundle(iid)
-    with service.db.sessions() as s:
-        candidate, active = s.get(Bundle, new), s.get(Bundle, old)
-        assert candidate.list_id == active.list_id
+    new = service.registered_bundle(upload(service, "model-v4.zip"))
     client = client_for(service)
     def change(state):
         return client.post(f"/bundles/{new}/transitions", json={"to": state, "actor": "C", "reason": "test"})
     assert change("active").status_code == 409
+    assert change("canary").status_code == 409
+    assert change("validated").status_code == 200
     assert change("approved").status_code == 200
-    response = change("active")
-    assert response.status_code == 200
-    assert set(response.json()) == {"from", "to", "changed_at"}
-    assert client.get("/bundles/" + old).json()["status"] == "superseded"
-    assert client.get("/bundles/active").json()["bundle_id"] == new
-    assert change("rolled_back").status_code == 200
-    assert client.get("/bundles/active").json()["bundle_id"] == old
     assert change("active").status_code == 409
+    assert change("canary").status_code == 200
+    deployed = client.get("/bundles/active").json()
+    assert deployed["active"]["bundle_id"] == old
+    assert deployed["canary"]["bundle_id"] == new
+    assert change("active").status_code == 200
+    assert client.get("/bundles/" + old).json()["status"] == "superseded"
+    assert client.get("/bundles/active").json()["canary"] is None
+    assert change("rolled_back").status_code == 422
 
 @pytest.mark.parametrize("name", ["list-v16-large-change.zip"])
 def test_rejections_leave_active_unchanged(service, name):
     bid = baseline(service)
-    iid = upload(service, name)
-    result = client_for(service).get("/imports/" + iid).json()
-    assert result["status"] == "REJECTED" and result["reason"]
-    assert result["bundle_id"] is None
-    if "large-change" in name:
-        assert "20%" in result["reason"] and "exceeds" in result["reason"]
+    with service.db.sessions() as s:
+        before = len(list(s.scalars(select(Import))))
+    with pytest.raises(ValidationFailure, match="exceeds"):
+        upload(service, name)
+    with service.db.sessions() as s:
+        assert len(list(s.scalars(select(Import)))) == before
     with service.db.sessions() as s:
         assert list(s.scalars(select(Bundle.bundle_id))) == [bid]
         assert len(list(s.scalars(select(AIModel)))) == 1
@@ -109,36 +104,24 @@ def test_intake_and_processing_are_idempotent_across_workers(service):
     with ThreadPoolExecutor(max_workers=4) as pool:
         ids = list(pool.map(lambda _: service.intake(raw).import_id, range(4)))
         assert len(set(ids)) == 1
-        results = list(pool.map(lambda _: service.process(ids[0]), range(4)))
-    assert results == ["APPROVED"] * 4
     with service.db.sessions() as s:
         assert len(list(s.scalars(select(Bundle)))) == 2
 
-def test_storage_failure_retries_after_restart(service, monkeypatch):
-    iid = service.intake((service.cfg.trust_key.parent / "packages/model-v3.zip").read_bytes()).import_id
-    original = service.artifacts.get
-    monkeypatch.setattr(service.artifacts, "get", lambda _: (_ for _ in ()).throw(StorageUnavailable("offline")))
-    VerificationWorker(service).run_once()
+def test_storage_failure_never_registers(service, monkeypatch):
+    monkeypatch.setattr(service.artifacts, "put", lambda _: (_ for _ in ()).throw(StorageUnavailable("offline")))
+    with pytest.raises(StorageUnavailable):
+        upload(service, "model-v3.zip")
     with service.db.sessions() as s:
-        assert s.get(Import, iid).status == "RECEIVED"
-    monkeypatch.setattr(service.artifacts, "get", original)
-    restarted_db = Database(service.cfg.database_url)
-    restarted = ImportService(restarted_db, service.cfg, service.artifacts)
-    VerificationWorker(restarted).run_once()
-    with restarted_db.sessions() as s:
-        assert s.get(Import, iid).status == "APPROVED"
-    restarted_db.engine.dispose()
+        assert list(s.scalars(select(Import))) == []
+        assert list(s.scalars(select(AIModel))) == []
 
-def test_api_lifespan_processes_automatically(service):
+def test_api_returns_only_after_registration(service):
     with client_for(service) as client:
         response = client.post("/imports", files={"package": ("list.zip", (service.cfg.trust_key.parent / "packages/list-v14.zip").read_bytes())})
         iid = response.json()["import_id"]
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            result = client.get("/imports/" + iid)
-            if result.status_code == 200:
-                break
-            time.sleep(0.05)
+        assert response.status_code == 201
+        result = client.get("/imports/" + iid)
+        assert result.status_code == 200
         assert result.json() == {"status": "APPROVED", "reason": None, "bundle_id": None}
 
 def test_errors_readiness_and_size_limit(service, monkeypatch):
@@ -159,18 +142,18 @@ def test_errors_readiness_and_size_limit(service, monkeypatch):
 def test_same_version_different_package_rejected(service, signer):
     raw = signer[1]("model-v3.zip")
     first = service.intake(raw)
-    assert service.process(first.import_id) == "APPROVED"
-    second = service.intake(signer[1]("model-v3.zip", lambda f, m: m.update(issued_at="2026-11-13T00:00:00+00:00")))
-    assert service.process(second.import_id) == "REJECTED"
+    assert first.status == "APPROVED"
+    with pytest.raises(ValidationFailure, match="Another package"):
+        service.intake(signer[1]("model-v3.zip", lambda f, m: m.update(issued_at="2026-11-13T00:00:00+00:00")))
     with service.db.sessions() as s:
         assert len(list(s.scalars(select(AIModel)))) == 1
 
 def test_no_update_before_baseline_activation(service):
     upload(service, "model-v3.zip")
     upload(service, "list-v14.zip")
-    iid = upload(service, "model-v4.zip")
+    with pytest.raises(Conflict):
+        upload(service, "model-v4.zip")
     with service.db.sessions() as s:
-        assert s.get(Import, iid).status == "REJECTED"
         assert s.get(AIModel, "model-v4") is None
 
 def test_replay_job_idempotency_and_retry(service, monkeypatch):
@@ -214,9 +197,9 @@ def test_database_readiness_without_schema(cfg):
 
 def test_model_and_list_have_independent_identifiers(service, signer):
     model = service.intake(signer[1]("model-v3.zip"))
-    assert service.process(model.import_id) == "APPROVED"
+    assert model.status == "APPROVED"
     listing = service.intake(signer[1]("list-v14.zip", lambda f, m: m.update(item_id="model-v3")))
-    assert service.process(listing.import_id) == "APPROVED"
+    assert listing.status == "APPROVED"
     with service.db.sessions() as s:
         assert s.get(AIModel, "model-v3") is not None
         assert s.get(SanctionsList, "model-v3") is not None
@@ -231,17 +214,20 @@ def test_model_and_list_have_independent_identifiers(service, signer):
 def test_restoring_previous_stable_via_transition(service):
     old = baseline(service)
     new = service.registered_bundle(upload(service, "model-v4.zip"))
+    transition(service.db, new, "validated", "C", "passed")
     transition(service.db, new, "approved", "C", "passed")
+    transition(service.db, new, "canary", "D", "start")
     transition(service.db, new, "active", "D", "deploy")
     transition(service.db, old, "active", "D", "rollback")
     with service.db.sessions() as s:
-        assert s.get(Bundle, new).status == "rolled_back"
+        assert s.get(Bundle, new).status == "cancelled"
         assert s.get(Bundle, old).status == "active"
 
 def test_artifact_tampering_is_rejected(service):
     imp = service.intake((service.cfg.trust_key.parent / "packages/model-v3.zip").read_bytes())
     service.artifacts.store._path(imp.artifact_uri).write_bytes(b"tampered")
-    assert service.process(imp.import_id) == "REJECTED"
+    with pytest.raises(StorageUnavailable):
+        upload(service, "model-v3.zip")
 
 
 def test_import_cannot_reference_both_asset_types(service):
@@ -326,3 +312,58 @@ def test_metadata_schema_is_minimal_and_legacy_split_schema_rejected(cfg):
         assert inspect(db.engine).get_table_names() == ["ai_models"]
     finally:
         db.engine.dispose()
+
+
+@pytest.mark.parametrize("outcome", ["validation_failed", "rejected"])
+def test_additional_validation_failure_never_deploys(service, outcome):
+    old = baseline(service)
+    new = service.registered_bundle(upload(service, "model-v4.zip"))
+    if outcome == "rejected":
+        transition(service.db, new, "validated", "C", "passed")
+    transition(service.db, new, outcome, "C", "failed gate")
+    for state in ("canary", "active"):
+        with pytest.raises(Conflict):
+            transition(service.db, new, state, "D", "deploy")
+    assert client_for(service).get("/bundles/active").json()["active"]["bundle_id"] == old
+
+
+def test_canary_cancellation_and_single_canary(service):
+    old = baseline(service)
+    new = service.registered_bundle(upload(service, "model-v4.zip"))
+    other = service.registered_bundle(upload(service, "list-v15.zip"))
+    for bid in (new, other):
+        for state in ("validated", "approved"):
+            transition(service.db, bid, state, "C", "passed")
+    transition(service.db, new, "canary", "D", "start")
+    with pytest.raises(Conflict, match="already running"):
+        transition(service.db, other, "canary", "D", "start")
+    transition(service.db, new, "cancelled", "D", "cancel during canary")
+    result = client_for(service).get("/bundles/active").json()
+    assert result["active"]["bundle_id"] == old and result["canary"] is None
+    with pytest.raises(Conflict):
+        transition(service.db, new, "active", "D", "late callback")
+    transition(service.db, other, "canary", "D", "next")
+
+
+def test_initial_canary_without_stable(service):
+    upload(service, "model-v3.zip")
+    bid = service.registered_bundle(upload(service, "list-v14.zip"))
+    for state in ("validated", "approved", "canary"):
+        transition(service.db, bid, state, "D", "initial")
+    result = client_for(service).get("/bundles/active").json()
+    assert result["active"] is None and result["canary"]["bundle_id"] == bid
+    transition(service.db, bid, "active", "D", "promote")
+
+
+def test_policy_rejection_does_not_write_files_or_rows(service, monkeypatch):
+    baseline(service)
+    writes = []
+    monkeypatch.setattr(service.artifacts, "put", lambda raw: writes.append(raw))
+    raw = (service.cfg.trust_key.parent / "packages/list-v16-large-change.zip").read_bytes()
+    response = client_for(service).post("/imports", files={"package": ("list.zip", raw)})
+    assert response.status_code == 422
+    assert writes == []
+    with service.db.sessions() as s:
+        imports = list(s.scalars(select(Import)))
+        assert len(imports) == 2
+        assert all(imp.status == "APPROVED" and imp.reason is None and imp.completed_at for imp in imports)

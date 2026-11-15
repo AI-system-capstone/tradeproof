@@ -106,7 +106,7 @@
           "required": true
         },
         "responses": {
-          "202": {
+          "201": {
             "description": "Successful Response",
             "content": {
               "application/json": {
@@ -284,9 +284,6 @@
               }
             },
             "description": "Service Unavailable"
-          },
-          "202": {
-            "description": "Pending; empty body, Retry-After: 1"
           }
         }
       }
@@ -492,7 +489,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/BundleResult"
+                  "$ref": "#/components/schemas/ActiveBundles"
                 }
               }
             }
@@ -888,6 +885,37 @@
         ],
         "title": "AIModelResult"
       },
+      "ActiveBundles": {
+        "properties": {
+          "active": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BundleResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "canary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BundleResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "active",
+          "canary"
+        ],
+        "title": "ActiveBundles"
+      },
       "Body_upload_imports_post": {
         "properties": {
           "package": {
@@ -924,6 +952,17 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "candidate",
+              "validated",
+              "validation_failed",
+              "approved",
+              "rejected",
+              "canary",
+              "cancelled",
+              "active",
+              "superseded"
+            ],
             "title": "Status"
           },
           "model_id": {
@@ -994,14 +1033,27 @@
           "import_id": {
             "type": "string",
             "title": "Import Id"
+          },
+          "bundle_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bundle Id"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "import_id"
+          "import_id",
+          "bundle_id"
         ],
-        "title": "ImportAccepted"
+        "title": "ImportAccepted",
+        "description": "Package validation and registration have completed synchronously."
       },
       "SanctionsListResult": {
         "properties": {
@@ -1026,6 +1078,17 @@
         "properties": {
           "to": {
             "type": "string",
+            "enum": [
+              "candidate",
+              "validated",
+              "validation_failed",
+              "approved",
+              "rejected",
+              "canary",
+              "cancelled",
+              "active",
+              "superseded"
+            ],
             "title": "To"
           },
           "actor": {
@@ -1114,7 +1177,8 @@
           "reason",
           "bundle_id"
         ],
-        "title": "VerificationResult"
+        "title": "VerificationResult",
+        "description": "New imports are APPROVED; REJECTED/reason are retained for legacy history."
       }
     }
   }

@@ -13,13 +13,13 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from common import contracts as C
 from b_registry import contracts as B
-from b_registry.api.schemas import BundleResult, ErrorResponse, ImportAccepted, BundleRegistered, Transition, TransitionResult, VerificationResult
+from b_registry.api.schemas import ActiveBundles, BundleResult, ErrorResponse, ImportAccepted, BundleRegistered, Transition, TransitionResult, VerificationResult
 from b_registry.config import Settings
 from b_registry.db import Bundle, AIModel, SanctionsList, Database, Import, iso
 from b_registry.storage import Artifacts, StorageUnavailable, make_store
 from b_registry.verify.replay import ReplayDispatcher
 from b_registry.verify.workflow import Conflict, ImportService, NotFound, transition
-from b_registry.verify.worker import VerificationWorker
+from b_registry.verify.worker import ReplayWorker
 from b_registry.verify.validation import ValidationFailure
 
 logger = logging.getLogger(__name__)
@@ -74,7 +74,7 @@ def create_app(cfg=None, db=None, store=None):
     db = db or Database(cfg.database_url)
     artifacts = Artifacts(store or make_store(cfg))
     service = ImportService(db, cfg, artifacts)
-    worker = VerificationWorker(service, ReplayDispatcher(db))
+    worker = ReplayWorker(ReplayDispatcher(db))
 
     @asynccontextmanager
     async def lifespan(app):
@@ -145,7 +145,7 @@ def create_app(cfg=None, db=None, store=None):
             return error_response(C.ERR_UNAVAILABLE, "Database, artifact storage or trust key unavailable", 503)
         return {"status": "ok"}
 
-    @app.post("/imports", status_code=202, response_model=ImportAccepted)
+    @app.post("/imports", status_code=201, response_model=ImportAccepted)
     async def upload(request: Request, response: Response, package: UploadFile = File(...)):
         form = await request.form()
         if set(form) != {"package"} or len(form.getlist("package")) != 1:
@@ -156,17 +156,14 @@ def create_app(cfg=None, db=None, store=None):
         imp = await run_in_threadpool(service.intake, raw)
         worker.notify()
         response.headers["Location"] = f"/imports/{imp.import_id}"
-        return {"import_id": imp.import_id}
+        return {"import_id": imp.import_id, "bundle_id": imp.bundle_id}
 
-    @app.get("/imports/{import_id}", response_model=VerificationResult,
-             responses={202: {"description": "Pending; empty body, Retry-After: 1"}})
+    @app.get("/imports/{import_id}", response_model=VerificationResult)
     def import_result(import_id: str):
         with db.sessions() as s:
             imp = s.get(Import, import_id)
             if not imp:
                 raise NotFound("Import not found")
-            if imp.status not in (C.IMPORT_APPROVED, C.IMPORT_REJECTED):
-                return Response(status_code=202, headers={"Retry-After": "1"})
             return {"status": imp.status, "reason": imp.reason, "bundle_id": imp.bundle_id}
 
     @app.post("/imports/{import_id}/approve", response_model=BundleRegistered,
@@ -181,13 +178,12 @@ def create_app(cfg=None, db=None, store=None):
         with db.sessions() as s:
             return [bundle_fields(s, b) for b in s.scalars(select(Bundle).order_by(Bundle.created_at))]
 
-    @app.get("/bundles/active", response_model=BundleResult)
+    @app.get("/bundles/active", response_model=ActiveBundles)
     def active_bundle():
         with db.sessions() as s:
-            bundle = s.scalar(select(Bundle).where(Bundle.status == "active"))
-            if not bundle:
-                raise NotFound("No active bundle")
-            return bundle_fields(s, bundle)
+            return {state: bundle_fields(s, bundle) if bundle else None
+                    for state in ("active", "canary")
+                    for bundle in [s.scalar(select(Bundle).where(Bundle.status == state))]}
 
     @app.get("/bundles/{bundle_id}", response_model=BundleResult)
     def get_bundle(bundle_id: str):

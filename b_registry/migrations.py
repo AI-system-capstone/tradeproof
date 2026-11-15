@@ -3,7 +3,8 @@ from pathlib import Path
 
 from sqlalchemy.engine import make_url
 
-MIGRATION = Path(__file__).resolve().parents[1] / "common/schema/50_b_registry_20261114.sql"
+MIGRATIONS = tuple(Path(__file__).resolve().parents[1] / "common/schema" / name for name in (
+    "50_b_registry_20261114.sql", "51_b_registry_20261115.sql"))
 
 
 def migrate(database_url):
@@ -16,4 +17,5 @@ def migrate(database_url):
     params = url.translate_connect_args(username="user", database="dbname")
     params.update(url.query)
     with psycopg.connect(**params, autocommit=True) as conn:
-        conn.execute(MIGRATION.read_text(encoding="utf-8"), prepare=False)
+        for migration in MIGRATIONS:
+            conn.execute(migration.read_text(encoding="utf-8"), prepare=False)
