@@ -3,7 +3,7 @@
   "info": {
     "title": "TradeProof c_replay — 검증 API (M3) + 운영 화면 (M8)",
     "version": "0.1.0-draft",
-    "description": "범위는 결정 0006 기준: C = M3 검증(골든셋 검증 + Replay) + M8 운영 화면. 게이트·승인·배포 요청은 B(M2) 담당이라 여기에 없다.\n\n**검증 한 번(validation)** = 후보 번들 하나를 운영 번들과 비교하는 작업. 골든셋 검증(VAL-01)과 Replay(VAL-02·03)를 함께 수행한다. 검증은 검증 Job이 하고, 이 API는 결과를 **조회만** 한다 (등록 API 없음).\n\n**흐름**\n1. B가 반입 검증을 통과한 번들(`validated`)마다 C의 Job 템플릿(`c_replay/job/job-template.json`)에 `BUNDLE_ID`를 넣어 K8s Job을 만든다.\n2. 검증 Job(`python -m c_replay.job`)이 B의 `GET /bundles/active`로 운영 번들을 확인하고, 검증 행을 만들어(`queued` → `running`) 골든셋 검증·Replay를 한 뒤 `completed` 또는 `failed`로 저장한다.\n3. 끝나면 검증 Job이 B에 완료 알림을 보낸다: `POST /bundles/{bundle_id}/validation-results` `{validation_id, bundle_id, status}` (B가 만들 API, 경로는 가정).\n4. B(M2 게이트)는 이 API의 결과로 통과·실패를 판정하고 승인·반려 전이를 한다. 운영 화면(M8)도 이 API로 결과를 본다.\n\n**공통 규칙**\n- 실패 응답은 모두 `{code, message, target_id}` (contracts.ERROR_FIELDS).\n- 요청 ID는 `X-Request-ID` 헤더 (응답에도 돌려준다).\n- 시각은 ISO 8601 UTC 문자열.\n\n**팀 확인이 필요한 가정**\n- (B) 완료 알림을 받는 게이트 판정 요청 API를 B가 만든다는 것과 그 경로.\n- (B) 게이트 판정은 B가 `GET /validations?bundle_id=`의 최신 `completed` 건을 읽어서 한다는 것.\n- (팀, MTG-06) 미탐·오탐의 정의: 미탐 = 기대 분류가 검토·보류인데 통과 후보로 나온 건, 오탐 = 기대 분류가 통과 후보인데 검토·보류로 나온 건.\n- (팀, MTG-02) 골든셋·과거 거래 건수."
+    "description": "범위는 결정 0006 기준: C = M3 검증(골든셋 검증 + Replay) + M8 운영 화면. 게이트·승인·배포 요청은 B(M2) 담당이라 여기에 없다.\n\n**검증 한 번(validation)** = 후보 번들 하나를 운영 번들과 비교하는 작업. 골든셋 검증(VAL-01)과 Replay(VAL-02·03)를 함께 수행한다. 검증은 검증 Job이 하고, 이 API는 결과를 **조회만** 한다 (등록 API 없음).\n\n**흐름**\n1. B가 반입 검증을 통과한 번들(`validated`)마다 C의 Job 템플릿(`c_replay/job/job-template.json`)에 `BUNDLE_ID`를 넣어 K8s Job을 만든다.\n2. 검증 Job(`python -m c_replay.job`)이 B의 `GET /bundles/active`로 운영 번들을 확인하고, 검증 행을 만들어(`queued` → `running`) 골든셋 검증·Replay를 한 뒤 `completed` 또는 `failed`로 저장한다.\n3. 끝나면 검증 Job이 B에 완료 알림을 보낸다: `POST /bundles/{bundle_id}/validation-results` `{validation_id, bundle_id, status}` (B가 만들 API, 경로는 가정).\n4. B(M2 게이트)는 이 API의 결과로 통과·실패를 판정하고 승인·반려 전이를 한다. 운영 화면(M8)도 이 API로 결과를 본다.\n\n**공통 규칙**\n- 실패 응답은 모두 `{code, message, target_id}` (contracts.ERROR_FIELDS).\n- 요청 ID는 `X-Request-ID` 헤더 (응답에도 돌려준다).\n- 시각은 ISO 8601 UTC 문자열.\n\n**팀 확인이 필요한 가정**\n- (B) 완료 알림을 받는 게이트 판정 요청 API를 B가 만든다는 것과 그 경로.\n- (B) 게이트 판정은 B가 `GET /validations?bundle_id=`의 최신 `completed` 건을 읽어서 한다는 것.\n- (팀, MTG-06) 미탐·오탐의 정의: 미탐 = 기대보다 낮은 위험도로 분류된 건(보류→검토 포함), 오탐 = 기대보다 높은 위험도로 분류된 건. 보류→검토를 미탐에 넣는 이유: rules-v3는 OCR이 불확실하면 검토로 보내므로 저하 모델(S5)이 '보류→통과'가 아니라 '보류→검토'로 나타난다.\n- (팀, MTG-02) 골든셋·과거 거래 건수."
   },
   "servers": [{ "url": "http://localhost:8200", "description": "개발 환경 (compose)" }],
   "tags": [
@@ -153,8 +153,8 @@
           "golden_version": { "type": "string", "description": "사용한 골든셋 (리스트 버전별)", "examples": ["golden-list-v1"] },
           "total": { "type": "integer", "description": "골든셋 건수", "examples": [30] },
           "accuracy": { "allOf": [{ "$ref": "#/components/schemas/Metric" }], "description": "기대 분류와 일치한 비율 (0~1)" },
-          "false_negative": { "allOf": [{ "$ref": "#/components/schemas/Metric" }], "description": "미탐 건수: 기대가 검토·보류인데 통과 후보로 나옴" },
-          "false_positive": { "allOf": [{ "$ref": "#/components/schemas/Metric" }], "description": "오탐 건수: 기대가 통과 후보인데 검토·보류로 나옴" }
+          "false_negative": { "allOf": [{ "$ref": "#/components/schemas/Metric" }], "description": "미탐 건수: 기대보다 낮은 위험도로 분류 (보류→검토, 보류→통과, 검토→통과). 위험도 순서는 PASS_CANDIDATE < MANUAL_REVIEW < HIGH_RISK_HOLD" },
+          "false_positive": { "allOf": [{ "$ref": "#/components/schemas/Metric" }], "description": "오탐 건수: 기대보다 높은 위험도로 분류 (통과→검토, 통과→보류, 검토→보류)" }
         }
       },
       "Metric": {
