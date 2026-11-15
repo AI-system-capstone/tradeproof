@@ -39,26 +39,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from common import contracts as C  # noqa: E402
 from common.blob import make_blob_store  # noqa: E402
 from a_screening.store import PostgresStore, failed_reason  # noqa: E402
-from a_screening.ocr import extract as X  # noqa: E402
-from a_screening.screening.match import is_blank, load_index, screen  # noqa: E402
+from a_screening import pipeline as P  # noqa: E402  (OCR → 판정 경로: C 의 골든셋·Replay 와 같은 함수)
+from a_screening.screening.match import is_blank  # noqa: E402
 
 STALE_CHECK_EVERY = 60.0     # run_forever: 이 간격(초)마다 죽은 워커가 잡고 있던 건을 되돌린다
 DEFAULT_STALE_AFTER = 600.0  # processing 인 채로 이 시간(초)이 지나면 워커가 죽은 것으로 본다
 
-_INDEX: dict = {}
-_INDEX_LOCK = threading.Lock()
-
 
 class PermanentJobError(ValueError):
     """다시 시도해도 결과가 같은 입력 오류. MAX_ATTEMPTS 를 기다리지 않고 바로 give_up (담당자 검토)."""
-
-
-def index_for(list_version: str):
-    """제재 리스트 색인 (버전별 캐시)."""
-    with _INDEX_LOCK:
-        if list_version not in _INDEX:
-            _INDEX[list_version] = load_index(list_version)
-        return _INDEX[list_version]
 
 
 def log(**kw) -> None:
@@ -134,9 +123,8 @@ def _given_fields(job: dict) -> dict:
 
 
 def run_extraction(tx_dir: Path, model_version: str) -> tuple[dict, list]:
-    """OCR + 필드 추출 (ocr/extract.py 그대로). 반환: (extracted_fields, conflicts)"""
-    r = X.extract_transaction(tx_dir, model_version)
-    return r["fields"], r.get("conflicts", [])
+    """OCR + 필드 추출 (pipeline.extract_documents 그대로). 반환: (extracted_fields, conflicts)"""
+    return P.extract_documents(tx_dir, model_version)
 
 
 # ---------------------------------------------------------------- 한 건 처리
@@ -157,24 +145,20 @@ def screen_job(job: dict, blob, workdir: Path, bundle_id: str | None = None, ctx
         else:
             raise PermanentJobError(f"알 수 없는 input.source {src!r} ({list(C.INPUT_SOURCES)} 중 하나)")
     tx_dir = ctx["tx_dir"]
-    b = C.BUNDLES[bid]
+    b = P.bundle_spec(bid)
     model = b["model_version"]
     if tx_dir is None:
         given = ctx["given"]
         extracted = {f: {"value": given.get(f), "source_doc": None, "bbox": None, "confidence": None}
                      for f in C.TX_FIELDS}
-        conflicts, source, ocr = [], C.EXTRACTION_FROM_FIELDS, None
+        conflicts, source, from_ocr = [], C.EXTRACTION_FROM_FIELDS, False
     else:
         cache = ctx.setdefault("ocr", {})
         if model not in cache:
             cache[model] = run_extraction(tx_dir, model)
         extracted, conflicts = cache[model]
-        source = C.extraction_source_ocr(model)
-        # rules-v3 의 OCR 불확실성 규칙(신뢰도 낮음·Invoice/B-L 불일치)용. rules-v2 는 무시한다
-        ocr = {"confidence": {f: (extracted.get(f) or {}).get("confidence") for f in C.TX_FIELDS},
-               "conflicts": conflicts}
-    fields = {f: (extracted.get(f) or {}).get("value") for f in C.TX_FIELDS}
-    res = screen(fields, index_for(b["list_version"]), rules_version=b["rules_version"], ocr=ocr)
+        source, from_ocr = C.extraction_source_ocr(model), True
+    res = P.screen_extracted(extracted, conflicts, b, from_ocr=from_ocr)   # pipeline.screen_documents 와 같은 판정
     return {"bundle_id": bid, "model_version": model, "extracted": extracted, "conflicts": conflicts,
             "source": source, "result": res}
 

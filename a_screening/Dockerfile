@@ -33,6 +33,8 @@ RUN apt-get update \
 COPY a_screening/requirements/ocr.txt a_screening/requirements/
 RUN pip install -r a_screening/requirements/ocr.txt
 COPY a_screening/ocr/ a_screening/ocr/
+# OCR → 판정 경로 (워커와 C 의 골든셋·Replay 가 같이 씀)
+COPY a_screening/pipeline.py a_screening/
 
 # ---------------------------------------------------------------- ocr-worker: 큐(screening_jobs)에서 꺼내 OCR → 판정 → 저장 (상시)
 FROM ocr-base AS ocr-worker

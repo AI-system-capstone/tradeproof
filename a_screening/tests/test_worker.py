@@ -22,6 +22,7 @@ from common import contracts as C  # noqa: E402
 from common.blob import LocalBlobStore  # noqa: E402
 from a_screening.store import MemoryStore, PostgresStore  # noqa: E402
 from a_screening.ocr import worker as W  # noqa: E402
+from a_screening import pipeline as P  # noqa: E402
 
 TEST_DSN = os.environ.get("TEST_DATABASE_URL")
 SAMPLE = "TX-0001"     # exact_match: list-v14/v15 모두 HIGH_RISK_HOLD
@@ -202,7 +203,7 @@ def test_retry_then_manual_review(env, monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("OCR 엔진 응답 없음")
 
-    monkeypatch.setattr(W, "screen", boom)
+    monkeypatch.setattr(P, "screen", boom)
     tx = env.create(fields_input())
     for i in range(1, C.MAX_ATTEMPTS):
         assert env.once(tx)
@@ -322,7 +323,7 @@ def test_stats_shape(env):
 
 
 def test_stats_failed_counted(env, monkeypatch):
-    monkeypatch.setattr(W, "screen", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    monkeypatch.setattr(P, "screen", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
     before = env.store.stats()["failed"].get("B-9", 0)
     env.create(fields_input(), bundle_id="B-9")
     env.run()
@@ -370,7 +371,7 @@ def test_cli_requires_database_url(monkeypatch):
 # ---------------------------------------------------------------- 섀도 격리 (11/08 검증 지적 1)
 def _shadow_raises(monkeypatch, events=None):
     """rules-v3 판정(섀도 B-10)만 실패하게. events 에 판정 순서를 남긴다."""
-    real = W.screen
+    real = P.screen
 
     def fake(fields, index, rules_version=None, ocr=None):
         if events is not None:
@@ -379,7 +380,7 @@ def _shadow_raises(monkeypatch, events=None):
             raise RuntimeError("섀도 판정 엔진 오류")
         return real(fields, index, rules_version=rules_version, ocr=ocr)
 
-    monkeypatch.setattr(W, "screen", fake)
+    monkeypatch.setattr(P, "screen", fake)
 
 
 def test_shadow_failure_does_not_touch_primary(env, monkeypatch):
@@ -439,7 +440,7 @@ def test_fencing_reclaimed_job(env):
 
 def test_fencing_failure_path(env, monkeypatch):
     """회수된 뒤 옛 워커가 실패해도 requeue/give_up 이 새 워커 건을 건드리지 않는다."""
-    monkeypatch.setattr(W, "screen", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    monkeypatch.setattr(P, "screen", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
     tx = env.create(fields_input())
     j1 = env.store.claim("w1", tx_ids=[tx])
     env.store.release_stale(0, tx_ids=[tx])
@@ -534,7 +535,7 @@ def test_list_multi_classification_and_unreviewed_first(env):
 # ---------------------------------------------------------------- 재시도 무의미한 입력 (지적 7, 8)
 @pytest.mark.parametrize("over", [{"vessel_name": None}, {"seller_name": "   "}, {"buyer_name": 123}])
 def test_fields_missing_screening_field_gives_up_now(env, monkeypatch, over):
-    monkeypatch.setattr(W, "screen", lambda *a, **k: pytest.fail("스크리닝 필드가 없으면 판정하지 않음"))
+    monkeypatch.setattr(P, "screen", lambda *a, **k: pytest.fail("스크리닝 필드가 없으면 판정하지 않음"))
     tx = env.create(fields_input(**over))
     assert env.run([tx]) == 1
     rec = env.store.get(tx)
@@ -576,13 +577,13 @@ def test_transient_error_still_retries(env, monkeypatch):
 # ---------------------------------------------------------------- rules-v3 에 OCR 부가 정보 (지적 9)
 def test_rules_v3_gets_ocr_info(env, monkeypatch):
     seen = []
-    real = W.screen
+    real = P.screen
 
     def spy(fields, index, rules_version=None, ocr=None):
         seen.append((rules_version, ocr))
         return real(fields, index, rules_version=rules_version, ocr=ocr)
 
-    monkeypatch.setattr(W, "screen", spy)
+    monkeypatch.setattr(P, "screen", spy)
     tx = env.create(sample_input(), bundle_id="B-10")
     f = env.create(fields_input(), bundle_id="B-10")
     env.run([tx, f])
