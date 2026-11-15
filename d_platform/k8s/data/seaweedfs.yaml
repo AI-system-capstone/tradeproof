@@ -1,0 +1,113 @@
+# 오브젝트 스토리지 (결정 0001): 실체는 SeaweedFS, 서비스 이름은 minio:9000 → BLOB_ENDPOINT 를 그대로 쓴다.
+# S3 계정: Secret seaweedfs-s3 (d_platform/compose/seaweedfs-s3.json, scripts/k3s_data_up.sh 가 만든다)
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  labels: { app.kubernetes.io/part-of: tradeproof }
+spec:
+  selector: { app: seaweedfs }
+  ports:
+    - { name: s3, port: 9000, targetPort: s3 }
+    - { name: master, port: 9333, targetPort: master }        # 버킷 생성 Job 의 weed shell 이 쓴다
+    - { name: master-grpc, port: 19333, targetPort: master-grpc }
+    - { name: filer, port: 8888, targetPort: filer }
+    - { name: filer-grpc, port: 18888, targetPort: filer-grpc }
+    # SeaweedFS 는 자기 주소를 "minio" 로 알린다(-ip=minio). S3 가 파일을 쓸 때 minio:8080(볼륨 서버)로
+    # 다시 붙으므로 이 포트가 Service 에 없으면 업로드가 멈춘다.
+    - { name: volume, port: 8080, targetPort: volume }
+    - { name: volume-grpc, port: 18080, targetPort: volume-grpc }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: seaweedfs
+  labels: { app.kubernetes.io/part-of: tradeproof }
+spec:
+  serviceName: minio
+  replicas: 1
+  selector:
+    matchLabels: { app: seaweedfs }
+  template:
+    metadata:
+      labels: { app: seaweedfs, app.kubernetes.io/part-of: tradeproof }
+    spec:
+      containers:
+        - name: seaweedfs
+          image: chrislusf/seaweedfs:4.18
+          imagePullPolicy: IfNotPresent
+          args:
+            - server
+            - -dir=/data
+            - -ip=minio                 # 다른 파드(버킷 생성 Job)가 이 이름으로 master·filer 에 붙는다
+            - -ip.bind=0.0.0.0
+            - -master.port=9333
+            - -volume.port=8080
+            - -s3
+            - -s3.port=9000
+            - -s3.config=/etc/seaweedfs/s3.json
+          ports:
+            - { name: s3, containerPort: 9000 }
+            - { name: master, containerPort: 9333 }
+            - { name: master-grpc, containerPort: 19333 }
+            - { name: filer, containerPort: 8888 }
+            - { name: filer-grpc, containerPort: 18888 }
+            - { name: volume, containerPort: 8080 }
+            - { name: volume-grpc, containerPort: 18080 }
+          readinessProbe:
+            tcpSocket: { port: s3 }
+            periodSeconds: 5
+            failureThreshold: 12
+          resources:
+            requests: { cpu: 20m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: s3-config, mountPath: /etc/seaweedfs, readOnly: true }
+      volumes:
+        - name: s3-config
+          secret: { secretName: seaweedfs-s3 }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests: { storage: 2Gi }
+---
+# 버킷 생성 (compose 의 minio-init 과 같은 일). 이미 있으면 그대로 두고 성공으로 끝난다.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init
+  labels: { app.kubernetes.io/part-of: tradeproof }
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels: { app: minio-init }
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: init
+          image: chrislusf/seaweedfs:4.18
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              for i in $(seq 1 40); do
+                for b in tradeproof-docs tradeproof-registry; do
+                  echo "s3.bucket.create -name $b" | weed shell -master=minio:9333 >/dev/null 2>&1
+                done
+                list=$(echo "s3.bucket.list" | weed shell -master=minio:9333 2>/dev/null)
+                if echo "$list" | grep -q tradeproof-docs && echo "$list" | grep -q tradeproof-registry; then
+                  echo "buckets ready"; exit 0
+                fi
+                echo "waiting for seaweedfs ($i/40)"; sleep 3
+              done
+              echo "bucket init failed"; exit 1
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }

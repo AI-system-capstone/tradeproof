@@ -1,3 +1,7 @@
-# 의존성은 == 로 버전 고정. 배포 API 의존성(fastapi 등)은 d/deployments-api 에서 채운다.
-minio==7.2.20      # common/blob.py 와 같은 버전 (A의 a_screening/requirements/api.txt)
+# 의존성은 == 로 버전 고정. fastapi·uvicorn·psycopg·minio·pytest·httpx 는 A(a_screening)와 같은 버전.
+fastapi==0.162.2
+uvicorn==0.54.0
+psycopg[binary]==3.3.8
+minio==7.2.20      # common/blob.py 와 같은 버전 (tests/test_blob_smoke.py)
 pytest==9.2.0
+httpx==0.28.1      # FastAPI TestClient
