@@ -23,7 +23,8 @@
 - [x] docker-compose: postgres + SeaweedFS(`minio:9000`) + 버킷 생성, minio 파이썬 클라이언트 smoke test (`tests/test_blob_smoke.py`)
 - [ ] compose에 A 서비스 2개(`a-screening` API, `a-ocr-worker`) 연결 — A 코드가 `BUNDLE_ID`를 읽는 변경이 `main`에 들어온 뒤. 그때까지 A의 번들 목록은 B-7~B-10이라 `BUNDLE_ID=B-1`로는 뜨지 않는다
 - [x] 배포 API: 미승인 409, 진행 중 배포 409, `deployments` 기록 (가짜 드라이버)
-- [ ] k3s + ingress-nginx + Argo Rollouts: `helm/a-screening` 차트, `deploy/values-dev.yaml` → `BUNDLE_ID` 주입, canary 10→50→100 승격·abort·undo (DEP-03·04·05)
+- [x] k3s + ingress-nginx + Argo Rollouts: `helm/a-screening` 차트(더미 이미지), `BUNDLE_ID` 주입, canary 10→50→100 수동 승격·abort·undo 확인 (DEP-03·04·05). 데이터 계층(`k8s/data/`)도 올림
+- [ ] 차트에 A의 실제 이미지 2개(API·워커) 넣기 — A의 `BUNDLE_ID` 변경이 `main`에 들어온 뒤
 - [ ] TODO(A와 확정): 워커 canary — A 제안은 "워커는 하나, 번들은 접수 때 거래마다 고정(`screening_jobs.bundle_id`), canary는 API Rollout만 나눈다". 워커 지표는 A의 API `/metrics`가 DB에서 `bundle_id`별로 집계(`tradeproof_screening_failed_total`, `tradeproof_screening_processing_seconds_avg`)
 - [ ] Prometheus 수집(MON-01), AnalysisTemplate로 단계별 분석 → 기준 초과 시 자동 abort 후 undo(MON-02), 롤백 알림 → B 전이 API
 - [ ] 배포 API 실제 드라이버(Argo Rollouts 조작), 감지 시간·전환 시간 측정
@@ -77,6 +78,40 @@
 - B: 승인 확인(`status == "approved"`)과 전이(`active`, `rolled_back`)는 B의 PR #8 형식에 맞췄다. 가짜 B 서버 테스트만 했고 **실제 B와 붙여 보지는 않았다**
 - B·C: 검증 Job을 누가 어떤 인자로 만드는지 — B는 Job에 `BUNDLE_ID` 환경변수를 넣고, C의 진입점은 `--validation-id`를 받는다(둘이 아직 안 맞음)
 - 상태값·ID 접두사를 `common/contracts.py`·`common/ids.py`로 옮기기
+
+## 시연 환경 (k3s)
+
+k3s(`--disable traefik`) + ingress-nginx + Argo Rollouts가 설치돼 있어야 한다. 네임스페이스는 `tradeproof`.
+Argo Rollouts는 `kubectl apply --server-side`로 설치한다(일반 apply는 `rollouts`·`analysisruns` CRD가 너무 커서 실패).
+
+```bash
+scripts/k3s_data_up.sh        # Postgres + SeaweedFS(minio:9000) + 버킷 + Secret tradeproof-env
+helm upgrade --install a-screening d_platform/helm/a-screening -n tradeproof -f deploy/values-dev.yaml
+curl -H 'Host: tradeproof.local' localhost      # 더미 이미지는 응답 본문이 BUNDLE_ID
+```
+
+**번들 교체 = `BUNDLE_ID` 환경변수 변경.** B가 `deploy/values-dev.yaml`에 번들 ID를 적고 D가 Helm으로 적용한다. `bundle.candidate`에 새 번들이 있으면 파드 템플릿이 바뀌어 canary(10 → 50 → 100)가 시작된다.
+
+```bash
+helm upgrade a-screening d_platform/helm/a-screening -n tradeproof --set bundle.stable=B-7 --set bundle.candidate=B-8
+kubectl argo rollouts get rollout a-screening -n tradeproof      # 10% 에서 멈춤
+kubectl argo rollouts promote a-screening -n tradeproof          # → 50%, 한 번 더 → 100%
+kubectl argo rollouts abort a-screening -n tradeproof            # 롤백 ① 트래픽을 stable 로 (비율 0)
+kubectl argo rollouts undo a-screening -n tradeproof             # 롤백 ② spec 을 직전 번들로 → Healthy
+```
+
+- 롤백은 **abort 후 undo**다. abort는 트래픽만 되돌리고(Rollout은 `Degraded`), undo가 spec을 되돌린다.
+- undo는 Helm 밖에서 일어나므로 Helm이 기억하는 값과 어긋난다. 그 뒤 `helm upgrade`로 값을 실제 상태에 맞춘다(같은 `BUNDLE_ID`면 아무 일도 일어나지 않는다).
+- B도 번들마다 직전 번들(`previous_active_id`)을 기록하고, `rolled_back` 전이를 받으면 그 번들을 다시 `active`로 복원한다.
+
+2026-11-15 측정 (더미 이미지):
+
+| 확인 | 결과 |
+|---|---|
+| 10% / 50% / 100% 단계의 후보 응답 비율 | 9.3% (37/400) / 51% (205/400) / 100% (300/300) |
+| abort | 비율 0까지 0.46초·0.82초, 그 뒤 후보 응답 0건(300건 중), Rollout `Degraded` |
+| undo | `Healthy`, `BUNDLE_ID`가 직전 번들 |
+| abort 후 후보의 마지막 응답 (50% 단계, 3회) | 0.63초 / 5.96초 / 2.26초 — **한 번은 목표 5초 초과.** 측정 도구를 만들어 감시 단계에서 다시 잰다 |
 
 ## 실행·테스트
 

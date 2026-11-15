@@ -1,0 +1,65 @@
+# 클러스터 안에서 부르는 주소 (SCREENING_URL=http://a-screening:8000). stable·canary 구분 없이 Ready 파드 전체.
+apiVersion: v1
+kind: Service
+metadata:
+  name: a-screening
+  labels:
+    app.kubernetes.io/name: a-screening
+    app.kubernetes.io/part-of: tradeproof
+spec:
+  selector:
+    app: a-screening
+  ports:
+    - name: http
+      port: {{ .Values.api.port }}
+      targetPort: http
+---
+# 아래 둘은 selector 가 같지만 Argo Rollouts 가 rollouts-pod-template-hash 를 덧붙여 버전별로 나눈다.
+apiVersion: v1
+kind: Service
+metadata:
+  name: a-screening-stable
+  labels:
+    app.kubernetes.io/part-of: tradeproof
+spec:
+  selector:
+    app: a-screening
+  ports:
+    - name: http
+      port: {{ .Values.api.port }}
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: a-screening-canary
+  labels:
+    app.kubernetes.io/part-of: tradeproof
+spec:
+  selector:
+    app: a-screening
+  ports:
+    - name: http
+      port: {{ .Values.api.port }}
+      targetPort: http
+---
+# 바깥 요청 → stable. canary 비율만큼은 Argo 가 만든 canary Ingress 가 가져간다.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: a-screening
+  labels:
+    app.kubernetes.io/part-of: tradeproof
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: a-screening-stable
+                port:
+                  name: http
