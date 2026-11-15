@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TradeProof 작동 과정 시연</title>
+<!-- 완성 후의 작동 과정을 팀에 보여 주기 위한 시연 화면. 서버를 부르지 않고 가짜 데이터를 시간 간격을 두고 채운다.
+     실제 운영 화면은 admin.html. 외부 라이브러리 없이 한 파일. -->
+<style>
+  :root { --bg:#f4f5f7; --panel:#fff; --text:#1d2330; --muted:#5d6576; --line:#d9dde5;
+          --accent:#2457c5; --accent-bg:#e7eefc; --ok:#1e7a46; --ok-bg:#e3f4ea; --bad:#b3261e; --bad-bg:#fde7e5; --warn:#8a5a00; --warn-bg:#fff2d6; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171d; --panel:#1c2028; --text:#e6e9ef; --muted:#a0a8b8; --line:#343a46;
+            --accent:#7aa2ff; --accent-bg:#232d44; --ok:#6fd39a; --ok-bg:#17321f; --bad:#ff8a80; --bad-bg:#3d1a18; --warn:#f3c25b; --warn-bg:#3a2f12; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px;
+           background: var(--panel); border-bottom: 1px solid var(--line); }
+  h1 { font-size: 16px; margin: 0; flex: 1; }
+  main { max-width: 900px; margin: 0 auto; padding: 16px; display: grid; gap: 14px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  section[hidden] { display: none; }
+  h2 { font-size: 15px; margin: 0 0 8px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  h2 small { font-weight: 400; color: var(--muted); font-size: 12px; }
+  h3 { font-size: 13px; margin: 12px 0 4px; color: var(--muted); }
+  p { margin: 6px 0; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  select, input, button { font: inherit; color: var(--text); background: var(--panel);
+                          border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; max-width: 100%; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--bad); border-color: var(--bad); }
+  input.wide { flex: 1; min-width: 120px; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 400;
+         background: var(--warn-bg); color: var(--warn); white-space: nowrap; }
+  .tag.ok { background: var(--ok-bg); color: var(--ok); }
+  .tag.bad { background: var(--bad-bg); color: var(--bad); }
+  .tag.run { background: var(--accent-bg); color: var(--accent); }
+  .muted { color: var(--muted); }
+
+  /* 진행 단계 */
+  .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; list-style: none; margin: 0; padding: 0; }
+  .steps li { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; border-top-width: 4px; }
+  .steps b { display: block; }
+  .steps small { color: var(--muted); }
+  .steps li[data-s=run]  { border-top-color: var(--accent); background: var(--accent-bg); }
+  .steps li[data-s=ok]   { border-top-color: var(--ok); }
+  .steps li[data-s=bad]  { border-top-color: var(--bad); background: var(--bad-bg); }
+  .steps li[data-s=wait] { border-top-color: var(--warn); background: var(--warn-bg); }
+  .steps li[data-s=skip] { opacity: .45; }
+  @media (max-width: 560px) { .steps { grid-template-columns: repeat(2, 1fr); } }
+
+  .bar { height: 10px; border-radius: 5px; background: var(--line); overflow: hidden; margin: 6px 0; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  .bar i.bad { background: var(--bad); }
+
+  /* 실시간 감시 */
+  .live { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0; }
+  .live div { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .live small { display: block; color: var(--muted); }
+  .live b { font-size: 20px; font-variant-numeric: tabular-nums; }
+  .live b.bad { color: var(--bad); }
+  svg.chart { display: block; width: 100%; height: 90px; border: 1px solid var(--line); border-radius: 8px; }
+  svg.chart polyline { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+  svg.chart polyline.bad { stroke: var(--bad); }
+  svg.chart line { stroke: var(--bad); stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
+</style>
+</head>
+<body>
+<header>
+  <h1>TradeProof 작동 과정 시연</h1>
+  <span class="tag">가짜 데이터 · 서버 호출 없음</span>
+</header>
+<main>
+  <section>
+    <h2>업로드</h2>
+    <div class="row">
+      <input type="file" id="file" accept=".zip" aria-label="반입 ZIP 파일 (선택하지 않아도 진행)">
+      <select id="scenario" aria-label="시나리오">
+        <option value="ok">S4 정상 개선 모델 → 자동 배포</option>
+        <option value="approval">S4 승인 요청 → 관리자 승인·반려</option>
+        <option value="rollback">S4 canary 중 이상 → 자동 롤백</option>
+        <option value="blocked">S5 성능 저하 모델 → 게이트 차단</option>
+        <option value="rejected">S1 변조 파일 → 반입 거부</option>
+      </select>
+      <button class="primary" id="start">업로드</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>진행 상황 <span id="bundle"></span> <span id="summary" aria-live="polite"></span></h2>
+    <ol class="steps" id="steps">
+      <li><b>1. 반입</b><small>B · M1</small></li>
+      <li><b>2. 검증</b><small>C · M3</small></li>
+      <li><b>3. 게이트</b><small>B · M2</small></li>
+      <li><b>4. 배포·감시</b><small>D · M4·M5</small></li>
+    </ol>
+  </section>
+
+  <section id="p0" hidden><h2>1. 반입 <small>B · M1</small></h2><div class="scroll"></div></section>
+  <section id="p1" hidden><h2>2. 검증 <small>C · M3</small></h2><div class="scroll"></div></section>
+  <section id="p2" hidden><h2>3. 게이트 <small>B · M2</small></h2><div class="scroll"></div></section>
+  <section id="p3" hidden><h2>4. 배포·감시 <small>D · M4·M5</small></h2><div class="scroll"></div></section>
+</main>
+
+<script>
+/* 시연 전용: 모든 값은 가짜이고 실제 게이트·롤백 기준(MTG-01·04·05)은 아직 미정이다.
+   STEP_MS 로 전체 속도를 조절한다. */
+const STEP_MS = 700;
+const CONF_MIN = 85;   // 감시 기준 (가짜): OCR 신뢰도 평균이 이 값 아래면 자동 롤백
+
+const SCENARIOS = {
+  ok: {
+    importSteps: [['서명', true], ['해시', true], ['형식', true]],
+    golden: [['정확도(%)', 94.3, 95.7], ['미탐(건)', 0, 0], ['오탐(건)', 2, 1]],
+    changed: [['TX-0012', 'MANUAL_REVIEW', 'PASS_CANDIDATE'], ['TX-0047', 'MANUAL_REVIEW', 'PASS_CANDIDATE']],
+    gate: ['auto_deploy', '자동 배포', '정확도 +1.4%p · 미탐 0 유지 · 달라진 거래 2건'],
+    canary: [[10, [95.8, 96.3, 96.1, 95.9]], [50, [95.6, 96.0, 95.8, 95.7]], [100, [95.9, 96.1, 95.8, 95.9]]],
+  },
+  approval: {
+    importSteps: [['서명', true], ['해시', true], ['형식', true]],
+    golden: [['정확도(%)', 94.3, 95.1], ['미탐(건)', 0, 0], ['오탐(건)', 2, 2]],
+    changed: [['TX-0019', 'HIGH_RISK_HOLD', 'MANUAL_REVIEW'], ['TX-0047', 'MANUAL_REVIEW', 'PASS_CANDIDATE'],
+              ['TX-0063', 'MANUAL_REVIEW', 'PASS_CANDIDATE']],
+    gate: ['needs_approval', '승인 요청', '위험도가 낮아진 거래 1건 (TX-0019)'],
+    canary: [[10, [95.3, 95.6, 95.2, 95.4]], [50, [95.1, 95.5, 95.3, 95.2]], [100, [95.4, 95.2, 95.5, 95.3]]],
+  },
+  rollback: {
+    importSteps: [['서명', true], ['해시', true], ['형식', true]],
+    golden: [['정확도(%)', 94.3, 95.7], ['미탐(건)', 0, 0], ['오탐(건)', 2, 1]],
+    changed: [['TX-0012', 'MANUAL_REVIEW', 'PASS_CANDIDATE'], ['TX-0047', 'MANUAL_REVIEW', 'PASS_CANDIDATE']],
+    gate: ['auto_deploy', '자동 배포', '정확도 +1.4%p · 미탐 0 유지 · 달라진 거래 2건'],
+    canary: [[10, [95.4, 95.0, 95.3, 95.2]], [50, [93.1, 88.4, 82.0, 78.2]]],
+  },
+  blocked: {
+    importSteps: [['서명', true], ['해시', true], ['형식', true]],
+    golden: [['정확도(%)', 94.3, 81.4], ['미탐(건)', 0, 3], ['오탐(건)', 2, 6]],
+    changed: [['TX-0008', 'HIGH_RISK_HOLD', 'PASS_CANDIDATE'], ['TX-0031', 'HIGH_RISK_HOLD', 'MANUAL_REVIEW'],
+              ['TX-0052', 'PASS_CANDIDATE', 'MANUAL_REVIEW'], ['TX-0077', 'HIGH_RISK_HOLD', 'PASS_CANDIDATE']],
+    changedTotal: 14,
+    gate: ['blocked', '차단', '미탐 3건 (기준 0건) · 정확도 -12.9%p'],
+  },
+  rejected: {
+    importSteps: [['서명', true], ['해시', false, 'manifest의 sha256과 model.bin의 실제 해시가 다름']],
+  },
+};
+
+const $ = id => document.getElementById(id);
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const tag = (text, cls = '') => `<span class="tag ${cls}">${esc(text)}</span>`;
+const passTag = ok => tag(ok ? '통과' : '실패', ok ? 'ok' : 'bad');
+const RUNNING = tag('진행 중', 'run');
+const body = i => $('p' + i).lastElementChild;
+const add = (i, html) => body(i).insertAdjacentHTML('beforeend', html);
+
+let runId = 0;                       // 다시 시작하면 이전 진행을 멈추기 위한 번호
+class Stopped extends Error {}
+const wait = (id, n = 1) => new Promise((res, rej) => setTimeout(() => id === runId ? res() : rej(new Stopped()), STEP_MS * n));
+
+function step(i, state) { $('steps').children[i].dataset.s = state; }
+function open(i) { step(i, 'run'); $('p' + i).hidden = false; $('p' + i).scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+function bundle(status) {
+  const cls = { active: 'ok', approved: 'ok', validated: 'ok', rolled_back: 'bad', validation_failed: 'bad', rejected: 'bad' }[status] || 'run';
+  $('bundle').innerHTML = status ? `<span class="tag ${cls}">B-9 · ${status}</span>` : '';
+}
+function finish(text, ok) { $('summary').innerHTML = tag(text, ok ? 'ok' : 'bad'); }
+
+// 관리자가 승인·반려를 누를 때까지 멈춘다. 다시 시작하면 대기를 끝낸다.
+let cancelWait = null;
+function askApproval() {
+  add(2, `<div class="row" id="approve">
+    <input type="text" class="wide" id="reason" placeholder="사유" aria-label="승인·반려 사유">
+    <button class="primary" data-d="approve">승인</button>
+    <button class="danger" data-d="reject">반려</button></div>`);
+  return new Promise((res, rej) => {
+    cancelWait = () => rej(new Stopped());
+    $('approve').onclick = e => {
+      const d = e.target.dataset.d;
+      if (!d) return;
+      const reason = $('reason').value.trim();
+      if (!reason) return $('reason').focus();
+      cancelWait = null;
+      $('approve').outerHTML = `<p>${tag(d === 'approve' ? '승인' : '반려', d === 'approve' ? 'ok' : 'bad')} ${esc(reason)}</p>`;
+      res(d);
+    };
+  });
+}
+
+function reset() {
+  runId++;
+  cancelWait?.(); cancelWait = null;
+  for (let i = 0; i < 4; i++) { delete $('steps').children[i].dataset.s; $('p' + i).hidden = true; body(i).innerHTML = ''; }
+  bundle('');
+}
+
+async function run() {
+  reset();
+  const id = runId, sc = SCENARIOS[$('scenario').value];
+  $('summary').innerHTML = RUNNING;
+
+  // 1. 반입 (B): 검사 단계가 하나씩 끝난다
+  open(0);
+  add(0, '<table><tr><th>단계</th><th>결과</th><th>거부 사유</th></tr></table>');
+  for (const [name, ok, reason] of sc.importSteps) {
+    await wait(id);
+    body(0).querySelector('table').insertAdjacentHTML('beforeend',
+      `<tr><td>${name}</td><td>${passTag(ok)}</td><td>${esc(reason)}</td></tr>`);
+    if (!ok) {
+      add(0, `<p>${tag('등록 거부', 'bad')}</p>`);
+      step(0, 'bad'); [1, 2, 3].forEach(i => step(i, 'skip'));
+      return finish('반입 거부 · 운영 B-7 유지', false);
+    }
+  }
+  await wait(id);
+  add(0, `<p>${tag('등록 완료', 'ok')} 후보 번들 <b>B-9</b></p>`);
+  step(0, 'ok'); bundle('candidate');
+
+  // 2. 검증 (C): 진행 중에는 내용을 보여 주지 않고, 끝나면 결과를 한 번에 보여 준다
+  await wait(id);
+  open(1);
+  body(1).innerHTML = `<p>${RUNNING}</p>`;
+  await wait(id, 5);
+  const total = sc.changedTotal || sc.changed.length;
+  body(1).innerHTML = `<p>${tag('완료', 'ok')}</p>
+    <h3>골든셋</h3>
+    <table><tr><th>지표</th><th>운영 B-7</th><th>후보 B-9</th><th>차이</th></tr>${sc.golden.map(([name, stable, cand]) => {
+      const d = +(cand - stable).toFixed(1);
+      return `<tr><td>${name}</td><td class="num">${stable}</td><td class="num">${cand}</td><td class="num">${d > 0 ? '+' : ''}${d}</td></tr>`;
+    }).join('')}</table>
+    <h3>Replay</h3>
+    <p>처리 100 / 전체 100 ${tag('건수 일치', 'ok')} · 달라진 거래 ${total}건</p>
+    <table><tr><th>거래</th><th>이전 판정</th><th>후보 판정</th></tr>${sc.changed.map(c =>
+      `<tr><td>${c[0]}</td><td>${c[1]}</td><td>${c[2]}</td></tr>`).join('')}</table>
+    ${total > sc.changed.length ? `<p class="muted">외 ${total - sc.changed.length}건</p>` : ''}`;
+  step(1, 'ok'); bundle('validated');
+
+  // 3. 게이트 (B)
+  await wait(id);
+  open(2);
+  body(2).innerHTML = `<p>${RUNNING}</p>`;
+  await wait(id, 2);
+  const [decision, label, reason] = sc.gate;
+  body(2).innerHTML = `<p>${tag(label, { blocked: 'bad', auto_deploy: 'ok' }[decision] || '')} ${esc(reason)}</p>`;
+  if (decision === 'blocked') {
+    step(2, 'bad'); step(3, 'skip'); bundle('validation_failed');
+    return finish('게이트 차단 · 운영 B-7 유지', false);
+  }
+  if (decision === 'needs_approval') {
+    step(2, 'wait'); $('summary').innerHTML = tag('관리자 승인 대기');
+    if (await askApproval() === 'reject') {
+      step(2, 'bad'); step(3, 'skip'); bundle('rejected');
+      return finish('반려 · 운영 B-7 유지', false);
+    }
+    $('summary').innerHTML = RUNNING;
+  }
+  step(2, 'ok'); bundle('approved');
+
+  // 4. 배포·감시 (D): 실제 심사 트래픽을 받는 중이므로 지표가 실시간으로 갱신된다
+  await wait(id);
+  open(3);
+  body(3).innerHTML = `<p id="cstate">${RUNNING}</p>
+    <div class="bar"><i id="cbar"></i></div>
+    <div class="live">
+      <div><small>후보 B-9 트래픽</small><b id="weight">0%</b></div>
+      <div><small>후보 처리 건수</small><b id="count">0</b></div>
+      <div><small>OCR 신뢰도 평균 (기준 ${CONF_MIN})</small><b id="conf">-</b></div>
+    </div>
+    <svg class="chart" viewBox="0 0 110 40" preserveAspectRatio="none" role="img" aria-label="OCR 신뢰도 추이">
+      <line x1="0" x2="110" y1="${100 - CONF_MIN}" y2="${100 - CONF_MIN}"/><polyline id="line"/>
+    </svg>
+    <table><tr><th>단계</th><th>결과</th></tr></table>`;
+  let count = 0; const points = [];
+  for (const [weight, samples] of sc.canary) {
+    await wait(id);
+    $('cbar').style.width = weight + '%'; $('weight').textContent = weight + '%';
+    $('cstate').innerHTML = tag(`${weight}% 단계 감시 중`, 'run');
+    let ok = true;
+    for (const conf of samples) {            // 감시 지표가 주기적으로 들어온다
+      await wait(id);
+      count += Math.round(weight * 0.4);
+      ok = conf >= CONF_MIN;
+      points.push(`${points.length * 10},${(100 - conf).toFixed(1)}`);
+      $('count').textContent = count; $('conf').textContent = conf.toFixed(1);
+      $('conf').className = ok ? '' : 'bad';
+      $('line').setAttribute('points', points.join(' '));
+      if (!ok) break;
+    }
+    body(3).querySelector('table').insertAdjacentHTML('beforeend', `<tr><td>${weight}%</td><td>${passTag(ok)}</td></tr>`);
+    if (!ok) {
+      $('cstate').innerHTML = tag('기준 미달 감지 · 자동 롤백 중', 'bad');
+      $('cbar').classList.add('bad'); $('line').classList.add('bad');
+      await wait(id, 2);
+      $('cbar').style.width = '0%'; $('weight').textContent = '0%';
+      $('cstate').innerHTML = tag('자동 롤백 완료', 'bad');
+      step(3, 'bad'); bundle('rolled_back');
+      return finish('자동 롤백 · 운영 B-7 복귀', false);
+    }
+  }
+  await wait(id);
+  $('cstate').innerHTML = tag('반영 완료', 'ok');
+  step(3, 'ok'); bundle('active');
+  finish('반영 완료 · 운영 B-9', true);
+}
+
+$('start').onclick = () => {
+  $('start').textContent = '다시 시작';
+  run().catch(e => { if (!(e instanceof Stopped)) throw e; });
+};
+</script>
+</body>
+</html>

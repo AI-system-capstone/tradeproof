@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TradeProof 운영 화면</title>
+<!-- M8 운영 화면 (UI-01 반입, UI-02 검증·승인, 배포 상태·롤백).
+     폐쇄망용: 외부 CDN·폰트·라이브러리 없이 HTML+CSS+바닐라 JS 한 파일.
+     A의 담당자 검토 화면(a_screening/ui/review.html)과는 별도. -->
+<style>
+  :root { --bg:#f4f5f7; --panel:#fff; --text:#1d2330; --muted:#5d6576; --line:#d9dde5;
+          --accent:#2457c5; --ok:#1e7a46; --ok-bg:#e3f4ea; --bad:#b3261e; --bad-bg:#fde7e5; --warn:#8a5a00; --warn-bg:#fff2d6; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171d; --panel:#1c2028; --text:#e6e9ef; --muted:#a0a8b8; --line:#343a46;
+            --accent:#7aa2ff; --ok:#6fd39a; --ok-bg:#17321f; --bad:#ff8a80; --bad-bg:#3d1a18; --warn:#f3c25b; --warn-bg:#3a2f12; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 16px;
+           background: var(--panel); border-bottom: 1px solid var(--line); }
+  h1 { font-size: 16px; margin: 0; flex: 1; }
+  main { max-width: 900px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  h3 { font-size: 13px; margin: 14px 0 6px; color: var(--muted); }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  input, button { font: inherit; color: var(--text); background: var(--panel);
+                  border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; }
+  input[type=text] { min-width: 0; width: 180px; }
+  input.wide { flex: 1; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--bad); border-color: var(--bad); }
+  .out { margin-top: 10px; overflow-x: auto; }
+  .out:empty { display: none; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px;
+         background: var(--warn-bg); color: var(--warn); }
+  .tag.ok { background: var(--ok-bg); color: var(--ok); }
+  .tag.bad { background: var(--bad-bg); color: var(--bad); }
+  .err { color: var(--bad); }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>TradeProof 운영 화면</h1>
+  <label class="row muted">담당자 <input type="text" id="actor" placeholder="이름"></label>
+</header>
+<main>
+  <section>
+    <h2>1. 반입</h2>
+    <div class="row">
+      <input type="file" id="importFile" accept=".zip" aria-label="반입 ZIP 파일">
+      <button class="primary" id="btnUpload">업로드</button>
+      <input type="text" id="importId" placeholder="반입 ID" aria-label="반입 ID">
+      <button id="btnImport">조회</button>
+    </div>
+    <div class="out" id="importOut" aria-live="polite"></div>
+  </section>
+
+  <section>
+    <h2>2. 검증·승인</h2>
+    <div class="row">
+      <input type="text" id="bundleId" placeholder="번들 ID (예: B-9)" aria-label="번들 ID">
+      <button id="btnBundle">조회</button>
+    </div>
+    <div class="out" id="bundleOut" aria-live="polite"></div>
+    <div class="row" style="margin-top:10px">
+      <input type="text" class="wide" id="reason" placeholder="승인·반려 사유" aria-label="승인·반려 사유">
+      <button class="primary" id="btnApprove">승인</button>
+      <button class="danger" id="btnReject">반려</button>
+    </div>
+    <div class="out" id="approvalOut" aria-live="polite"></div>
+  </section>
+
+  <section>
+    <h2>3. 배포</h2>
+    <div class="row">
+      <input type="text" id="deployId" placeholder="배포 ID (D 가 알려 줌)" aria-label="배포 ID">
+      <button id="btnDeploy">조회</button>
+      <button class="danger" id="btnRollback">롤백</button>
+    </div>
+    <div class="out" id="deployOut" aria-live="polite"></div>
+  </section>
+</main>
+
+<script>
+/* 호출하는 API. 기준: B = origin/b/registry 의 b_registry/docs/openapi/b_registry.json, D = docs/openapi/d_platform.json,
+   C = docs/openapi/c_replay.json. B 에는 CORS 허용이 없어서 브라우저에서 직접 부르면 막힐 수 있다 (프록시나 B 쪽 설정이 필요).
+   B  POST /imports (multipart: package)   -> 202 {import_id}
+      GET  /imports/{id}                   -> 202 빈 본문 (처리 중) | 200 {status:"APPROVED"|"REJECTED", reason, bundle_id}
+      GET  /bundles/{id}                   -> {bundle_id, status, model_id, list_id, created_at, model:{model_id, uri}, list:{list_id, uri}}
+      POST /bundles/{id}/transitions       <- {to:"approved"|"rejected", actor, reason}  -> {from, to, changed_at}
+      (B 는 게이트 판정과 배포 ID 를 주지 않는다. 화면에도 만들어 넣지 않는다.)
+   C  GET  /validations?bundle_id=…&limit=1 -> {items:[검증]}  가장 최근 검증
+      GET  /validations/{id}/diffs         -> {items:[{tx_id, direction, before:{classification}, after:{classification}}], total}
+   D  GET  /deployments/{id}               -> {deployment_id, bundle_id, status, weight, step_index, ...}
+      POST /deployments/{id}/rollback      <- {actor, reason}
+   주소는 ?b=…&c=…&d=… 로 바꿀 수 있다. ?mock=1 이면 서버 없이 예시 데이터로 화면만 본다. */
+const q = new URLSearchParams(location.search);
+const BASE = {
+  b: q.get('b') || 'http://localhost:8100',
+  c: q.get('c') || (location.protocol === 'file:' ? 'http://localhost:8200' : ''),
+  d: q.get('d') || 'http://localhost:8300',
+};
+const MOCK = !q.has('mock') ? null : {
+  'POST b/imports': { import_id: 'IMP-1' },
+  'GET b/imports': { status: 'APPROVED', reason: null, bundle_id: 'B-9' },
+  'GET b/bundles': { bundle_id: 'B-9', status: 'validated', model_id: 'model-v4', list_id: 'list-v14',
+    created_at: '2026-11-16T09:00:00Z', model: { model_id: 'model-v4', uri: 's3://registry/models/model-v4.zip' },
+    list: { list_id: 'list-v14', uri: 's3://registry/lists/list-v14.zip' } },
+  'POST b/bundles': { from: 'validated', to: 'approved', changed_at: '2026-11-16T10:00:00Z' },
+  'GET c/validations': { total: 1, items: [{ validation_id: 'RP-3f9a1c0b7d2e', bundle_id: 'B-9', baseline_bundle_id: 'B-7',
+    status: 'completed', golden: { golden_version: 'golden-list-v14', total: 100,
+      accuracy: { baseline: 1.0, candidate: 0.95, diff: -0.05 },
+      false_negative: { baseline: 0, candidate: 0, diff: 0 }, false_positive: { baseline: 0, candidate: 0, diff: 0 } },
+    replay: { total: 100, processed: 100, count_match: true, changed: 2, changed_down: 1 } }] },
+  'GET c/validations/diffs': { total: 2, items: [
+    { tx_id: 'TX-0012', direction: 'down', before: { classification: 'HIGH_RISK_HOLD' }, after: { classification: 'MANUAL_REVIEW' } },
+    { tx_id: 'TX-0047', direction: 'up', before: { classification: 'PASS_CANDIDATE' }, after: { classification: 'HIGH_RISK_HOLD' } }] },
+  'GET d/deployments': { deployment_id: 'DP-1', bundle_id: 'B-9', previous_bundle_id: 'B-7', status: 'progressing',
+    weight: 50, step_index: 1, steps: [10, 50, 100], requested_by: 'ops', created_at: '2026-11-16T10:05:00Z' },
+  'POST d/deployments': { deployment_id: 'DP-1', bundle_id: 'B-9', previous_bundle_id: 'B-7', status: 'rolled_back',
+    weight: 0, step_index: 1, steps: [10, 50, 100], rollback_reason: 'manual' },
+};
+
+const $ = id => document.getElementById(id);
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const seg = v => encodeURIComponent(v.trim());
+
+async function api(svc, method, path, body) {
+  if (MOCK) {
+    const segs = path.split('?')[0].split('/').filter(Boolean);
+    return MOCK[`${method} ${svc}/${segs[0]}${segs.at(-1) === 'diffs' ? '/diffs' : ''}`];
+  }
+  const opt = { method };
+  if (body instanceof FormData) opt.body = body;
+  else if (body) { opt.body = JSON.stringify(body); opt.headers = { 'Content-Type': 'application/json' }; }
+  const res = await fetch(BASE[svc] + path, opt);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`${data.code || res.status}: ${data.message || res.statusText}`);  // 공통 에러 형식
+  return data;
+}
+
+// 버튼 동작 공통: 실행 중 표시, 실패하면 사유 표시
+async function run(out, fn) {
+  out.innerHTML = '<span class="muted">불러오는 중…</span>';
+  try { out.innerHTML = await fn(); }
+  catch (e) { out.innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+function need(input) {
+  if (!input.value.trim()) { input.focus(); throw new Error(`${input.getAttribute('aria-label') || input.placeholder}을(를) 입력하세요`); }
+  return input.value.trim();
+}
+
+const tag = (text, cls = '') => `<span class="tag ${cls}">${esc(text)}</span>`;
+const GOOD = ['APPROVED', 'validated', 'approved', 'active', 'completed', 'succeeded'];
+const BAD = ['REJECTED', 'rejected', 'validation_failed', 'rolled_back', 'failed'];
+const statusTag = s => tag(s ?? '-', GOOD.includes(s) ? 'ok' : BAD.includes(s) ? 'bad' : '');
+// 객체의 단순 값만 표로 (응답에 필드가 늘어도 화면을 고치지 않게)
+const kv = o => '<table>' + Object.entries(o).filter(([, v]) => v === null || typeof v !== 'object')
+  .map(([k, v]) => `<tr><th>${esc(k)}</th><td>${k === 'status' ? statusTag(v) : esc(v)}</td></tr>`).join('') + '</table>';
+
+// 1. 반입 (UI-01)
+async function showImport() {
+  const r = await api('b', 'GET', `/imports/${seg(need($('importId')))}`);
+  if (!r.status) return '<p class="muted">처리 중 (B 가 202 로 답함). 잠시 뒤 다시 조회하세요</p>';
+  if (r.bundle_id) $('bundleId').value = r.bundle_id;
+  return `<p>결과 ${statusTag(r.status)} ${r.bundle_id ? `· 번들 <b>${esc(r.bundle_id)}</b>` : ''}</p>
+    ${r.reason ? `<p class="${r.status === 'REJECTED' ? 'err' : 'muted'}">사유: ${esc(r.reason)}</p>` : ''}`;
+}
+$('btnImport').onclick = () => run($('importOut'), showImport);
+$('btnUpload').onclick = () => run($('importOut'), async () => {
+  const file = $('importFile').files[0];
+  if (!file) throw new Error('ZIP 파일을 선택하세요');
+  const form = new FormData();
+  form.append('package', file);
+  $('importId').value = (await api('b', 'POST', '/imports', form)).import_id;
+  return showImport();
+});
+
+// 2. 검증·승인 (UI-02)
+const num = v => typeof v === 'number' ? +v.toFixed(4) : v;
+$('btnBundle').onclick = () => run($('bundleOut'), async () => {
+  const id = seg(need($('bundleId')));
+  const [b, list] = await Promise.all([api('b', 'GET', `/bundles/${id}`), api('c', 'GET', `/validations?bundle_id=${id}&limit=1`)]);
+  return `${kv(b)}
+    <table><tr><th>모델 파일</th><td>${esc(b.model && b.model.uri)}</td></tr><tr><th>리스트 파일</th><td>${esc(b.list && b.list.uri)}</td></tr></table>
+    <h3>게이트</h3><p class="muted">B 미제공 (게이트 판정 API 가 B 에 없음)</p>
+    ${await showValidation((list.items || [])[0])}`;
+});
+// C 검증 결과: 가장 최근 검증 한 건 (검증은 B 가 만든 검증 Job 이 한다)
+const METRICS = [['accuracy', '정확도'], ['false_negative', '미탐'], ['false_positive', '오탐']];
+async function showValidation(v) {
+  if (!v) return '<h3>검증</h3><p class="muted">아직 검증이 없음</p>';
+  const head = `<h3>검증 ${esc(v.validation_id)}</h3><p>${statusTag(v.status)} 기준 ${esc(v.baseline_bundle_id)} → 후보 ${esc(v.bundle_id)}</p>`;
+  if (v.status === 'failed') return `${head}<p class="err">${esc(v.error && v.error.message)}</p>`;
+  if (v.status !== 'completed') return head;
+  const g = v.golden, rp = v.replay;
+  const diffs = (await api('c', 'GET', `/validations/${seg(v.validation_id)}/diffs?limit=200`)).items || [];
+  return `${head}
+    <h3>골든셋 검증 (${esc(g.total)}건)</h3>
+    <table><tr><th>지표</th><th>운영</th><th>후보</th><th>차이</th></tr>${METRICS.map(([k, name]) =>
+      `<tr><td>${name}</td><td class="num">${esc(num(g[k].baseline))}</td><td class="num">${esc(num(g[k].candidate))}</td><td class="num">${esc(num(g[k].diff))}</td></tr>`).join('')}</table>
+    <h3>Replay</h3>
+    <p>처리 ${esc(rp.processed)} / 전체 ${esc(rp.total)} ${tag(rp.count_match ? '건수 일치' : '건수 불일치', rp.count_match ? 'ok' : 'bad')} · 달라진 거래 ${esc(rp.changed)}건 (위험도 낮아짐 ${esc(rp.changed_down)}건)</p>
+    ${diffs.length ? `<table><tr><th>거래</th><th>방향</th><th>이전</th><th>후보</th></tr>${diffs.map(d =>
+      `<tr><td>${esc(d.tx_id)}</td><td>${tag(d.direction === 'down' ? '낮아짐' : '높아짐', d.direction === 'down' ? 'bad' : '')}</td><td>${esc(d.before.classification)}</td><td>${esc(d.after.classification)}</td></tr>`).join('')}</table>` : ''}`;
+}
+const decide = to => run($('approvalOut'), async () => {
+  const id = seg(need($('bundleId')));
+  const body = { to, actor: need($('actor')), reason: need($('reason')) };
+  const r = await api('b', 'POST', `/bundles/${id}/transitions`, body);
+  $('btnBundle').click();
+  return `${tag(to === 'approved' ? '승인됨' : '반려됨', to === 'approved' ? 'ok' : 'bad')} <span class="muted">${esc(r.from)} → ${esc(r.to)}</span>`;
+});
+$('btnApprove').onclick = () => decide('approved');
+$('btnReject').onclick = () => decide('rejected');
+
+// 3. 배포 상태·롤백
+$('btnDeploy').onclick = () => run($('deployOut'), async () => kv(await api('d', 'GET', `/deployments/${seg(need($('deployId')))}`)));
+$('btnRollback').onclick = () => run($('deployOut'), async () => {
+  const id = need($('deployId')), actor = need($('actor'));
+  if (!confirm(`배포 ${id}을(를) 롤백할까요?`)) return '';
+  return kv(await api('d', 'POST', `/deployments/${seg(id)}/rollback`, { actor, reason: $('reason').value.trim() }));
+});
+</script>
+</body>
+</html>
