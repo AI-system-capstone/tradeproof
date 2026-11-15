@@ -83,11 +83,18 @@ services:
   #   env_file: .env
   #   ports: ["8200:8200"]
   #   depends_on: { postgres: { condition: service_healthy } }
-  # d-platform:
-  #   build: { context: ., dockerfile: d_platform/Dockerfile }
-  #   env_file: .env
-  #   ports: ["8300:8300"]
-  #   depends_on: { postgres: { condition: service_healthy } }
+  # 배포 API. 지금은 가짜 드라이버(시간이 지나면 10→50→100)와 가짜 레지스트리로 동작한다.
+  # B 의 API 가 준비되면 REGISTRY_MODE=http 로 바꾼다 (REGISTRY_URL 은 .env).
+  d-platform:
+    build: { context: ., dockerfile: d_platform/Dockerfile }
+    env_file: .env
+    environment:
+      DEPLOY_DRIVER: fake
+      FAKE_STEP_SECONDS: "5"
+      REGISTRY_MODE: fake
+      FAKE_APPROVED_BUNDLES: "B-2,B-3"
+    ports: ["8300:8300"]
+    depends_on: { postgres: { condition: service_healthy } }
 
 volumes:
   pgdata:
