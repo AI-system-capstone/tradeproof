@@ -1,0 +1,61 @@
+# 심사 서비스(A) 차트 기본값 (담당: D)
+#
+#   helm upgrade --install a-screening d_platform/helm/a-screening -n tradeproof -f deploy/values-dev.yaml
+#
+# 번들 교체 = BUNDLE_ID 환경변수 변경. 파드 템플릿이 바뀌므로 Argo Rollouts 가 canary 를 시작한다.
+#   - 처음 설치: BUNDLE_ID = bundle.candidate 가 있으면 candidate, 없으면 stable
+#   - 그 뒤:     배포 API(D)가 Rollout 의 BUNDLE_ID 를 직접 고친다. 차트를 다시 적용해도 떠 있는 값을 유지한다(keepLive).
+#   - 손으로 canary 를 시작하려면: helm upgrade ... --set bundle.keepLive=false --set bundle.candidate=B-8
+
+# deploy/values-dev.yaml 이 덮어쓴다 (B 가 쓰고 D 가 적용). 설치·시연 초기화 때의 기준 번들.
+bundle:
+  stable: B-7        # common/contracts.py 의 BASELINE_BUNDLE
+  candidate: ""
+  keepLive: true     # 이미 떠 있는 Rollout 의 BUNDLE_ID 를 유지
+
+api:
+  # A 이미지를 k3s 에 넣기 전까지는 더미 이미지로 canary 뼈대만 확인한다.
+  # 더미는 어떤 경로든 BUNDLE_ID 를 본문으로 돌려준다 → 어느 번들이 응답했는지 바로 보인다.
+  image: hashicorp/http-echo:0.2.3
+  imagePullPolicy: IfNotPresent
+  args: ["-text=$(BUNDLE_ID)", "-listen=:8000"]
+  # 실제 A 이미지로 바꿀 때:
+  #   image: tradeproof/a-screening:dev   (docker save | sudo k3s ctr images import -)
+  #   imagePullPolicy: Never
+  #   args: []
+  #   probePath: /healthz
+  #   envFromSecret: tradeproof-env
+  port: 8000
+  replicas: 2
+  probePath: /
+  envFromSecret: ""    # DATABASE_URL, BLOB_* 가 든 Secret 이름 (더미는 필요 없음)
+  resources:
+    requests: { cpu: 10m, memory: 16Mi }
+    limits: { memory: 64Mi }
+
+# OCR 워커. 번들은 접수 때 거래마다 고정되고 워커는 그 거래의 번들로 처리하므로(A 제안) 워커는 하나만 둔다.
+# 포트가 없어 canary 대상이 아니다. A 이미지가 준비되면 enabled: true.
+worker:
+  enabled: false
+  image: tradeproof/a-ocr-worker:dev
+  imagePullPolicy: Never
+  replicas: 1
+  envFromSecret: tradeproof-env
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 512Mi }
+
+ingress:
+  className: nginx
+  host: tradeproof.local
+
+canary:
+  # 단계마다 이 비율로 올린 뒤 멈춘다. 마지막 단계를 넘기면 100%.  (MTG-05 제안: 10 → 50 → 100)
+  weights: [10, 50]
+  # 0 이면 사람이 승격할 때까지 멈춘다 (kubectl argo rollouts promote a-screening -n tradeproof).
+  # 초를 적으면 그 시간 뒤 자동으로 다음 단계. 감시(AnalysisTemplate)는 다음 단계에서 붙인다.
+  pauseSeconds: 0
+  # 옛 버전 파드를 내리기 전 기다리는 시간. 이 안에 되돌리면 옛 ReplicaSet 을 그대로 다시 쓴다.
+  scaleDownDelaySeconds: 30
+  # 최근 이만큼의 버전으로 되돌릴 때는 단계 없이 바로 전환한다.
+  rollbackWindowRevisions: 3
