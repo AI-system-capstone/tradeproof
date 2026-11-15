@@ -1,13 +1,14 @@
-"""B(번들 레지스트리)와 주고받는 쪽: 번들이 배포 가능한 상태인지 묻고, 반영 완료·롤백을 알린다.
+"""B(번들 레지스트리)와 주고받는 쪽: 번들이 배포 가능한 상태인지 묻고, 배포 결과를 알린다.
 
-B 의 API (b_registry/README.md, PR #8 기준):
-  GET  /bundles/{id}              -> {..., "status": "candidate|validated|approved|active|..."}
+B 의 API (b/registry 브랜치의 docs/interfaces.md·common/contracts.py REGISTRY_TRANSITIONS, 2026-11-16 기준):
+  GET  /bundles/{id}              -> {..., "status": "candidate|validated|approved|canary|active|..."}
   POST /bundles/{id}/transitions  <- {to, actor, reason}  -> {from, to, changed_at}
-       허용 전이 중 D 가 쓰는 것: approved -> active (반영 완료), approved|active -> rolled_back (롤백)
        X-Actor 헤더를 보내면 본문의 actor 와 같아야 한다. 허용되지 않는 전이는 409.
-       B 는 번들이 active 가 될 때 직전 active 를 bundles.previous_active_id 에 적어 두고,
-       active -> rolled_back 을 받으면 그 번들을 스스로 다시 active 로 복원한다.
-       → D 는 후보 번들에 rolled_back 하나만 보낸다 (직전 번들에 대한 전이는 보내지 않는다).
+D 가 보내는 전이:
+  canary 시작          후보 번들  approved   -> canary     (B 가 이때 직전 active 를 previous_active_id 에 적는다)
+  100% 반영 완료       후보 번들  canary     -> active     (B 가 직전 active 를 superseded 로)
+  진행 중 중단·롤백    후보 번들  canary     -> cancelled
+  100% 반영 뒤 롤백    직전 번들  superseded -> active     (B 가 지금 active 인 번들을 cancelled 로)
 B 가 준비되기 전에는 REGISTRY_MODE=fake 로 FAKE_APPROVED_BUNDLES 목록만 승인된 것으로 본다.
 """
 from __future__ import annotations
@@ -17,8 +18,9 @@ import urllib.error
 import urllib.request
 
 APPROVED = "approved"
+CANARY = "canary"
 ACTIVE = "active"
-ROLLED_BACK = "rolled_back"
+CANCELLED = "cancelled"
 ACTOR = "d-platform"
 
 

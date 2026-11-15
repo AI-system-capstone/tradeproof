@@ -204,33 +204,64 @@ def test_rollback_without_actor_or_mismatch_is_422(client):
 
 
 # ---------------------------------------------------------------- B 번들 상태 반영
-def test_success_marks_bundle_active_in_registry(client, clock):
+def sent(client) -> list[tuple[str, str]]:
+    return [(t["bundle_id"], t["to"]) for t in client.app.state.registry.transitions]
+
+
+def test_start_marks_bundle_canary_then_success_marks_active(client, clock):
     dep_id = start(client, "B-8")["deployment_id"]
+    assert sent(client) == [("B-8", "canary")]
     clock.tick(STEP * 3)
     body = client.get(f"/deployments/{dep_id}").json()
-    reg = client.app.state.registry
     assert body["analysis"]["registry_sync"] == "ok"
-    assert [(t["bundle_id"], t["to"], t["actor"]) for t in reg.transitions] == [("B-8", "active", "d-platform")]
+    assert body["analysis"]["registry_change"]["to"] == "active"
+    assert sent(client) == [("B-8", "canary"), ("B-8", "active")]
+    assert client.app.state.registry.transitions[0]["actor"] == "d-platform"
 
 
-def test_rollbacks_mark_bundle_rolled_back_in_registry(client, clock):
-    reg = client.app.state.registry
+def test_rollback_in_progress_marks_bundle_cancelled(client, clock):
     auto = start(client, "B-9")["deployment_id"]            # 분석 실패 → 자동 롤백
     clock.tick(STEP * 2)
     client.get(f"/deployments/{auto}")
     manual = start(client, "B-8")["deployment_id"]
     client.post(f"/deployments/{manual}/rollback", headers=ACTOR)
-    assert [(t["bundle_id"], t["to"]) for t in reg.transitions] == [("B-9", "rolled_back"), ("B-8", "rolled_back")]
+    assert sent(client) == [("B-9", "canary"), ("B-9", "cancelled"), ("B-8", "canary"), ("B-8", "cancelled")]
+
+
+def test_rollback_after_success_restores_previous_bundle_in_registry(client, clock):
+    """100% 반영 뒤 롤백: 후보가 아니라 직전 번들을 active 로 보낸다 (B 가 지금 번들을 cancelled 로 바꾼다)."""
+    dep_id = start(client, "B-8")["deployment_id"]
+    clock.tick(STEP * 3)
+    client.get(f"/deployments/{dep_id}")
+    body = client.post(f"/deployments/{dep_id}/rollback", headers=ACTOR).json()
+    assert sent(client)[-1] == ("B-7", "active")
+    assert body["analysis"]["registry_change"]["bundle_id"] == "B-7"
+
+
+def test_registry_refusing_canary_does_not_start(client):
+    def reject(bundle_id, to, reason):
+        raise TransitionRejected("registry 409")
+    client.app.state.registry.transition = reject
+    assert_error(client.post("/deployments", json={"bundle_id": "B-8"}, headers=ACTOR), 409, "CONFLICT")
+    assert client.get("/deployments").json()[0]["status"] == "failed"
+
+
+def test_registry_down_at_start_is_503_and_does_not_start(client):
+    def down(bundle_id, to, reason):
+        raise RegistryUnavailable("연결 거부")
+    client.app.state.registry.transition = down
+    assert_error(client.post("/deployments", json={"bundle_id": "B-8"}, headers=ACTOR), 503, "SERVICE_UNAVAILABLE")
+    assert client.get("/deployments").json()[0]["status"] == "failed"
 
 
 def test_registry_down_keeps_result_and_retries_later(client, clock):
     reg = client.app.state.registry
     real = reg.transition
+    dep_id = start(client, "B-8")["deployment_id"]
 
     def down(bundle_id, to, reason):
         raise RegistryUnavailable("연결 거부")
     reg.transition = down
-    dep_id = start(client, "B-8")["deployment_id"]
     clock.tick(STEP * 3)
     body = client.get(f"/deployments/{dep_id}").json()
     assert (body["status"], body["analysis"]["registry_sync"]) == ("succeeded", "pending")   # 트래픽 결과는 확정
@@ -241,10 +272,11 @@ def test_registry_down_keeps_result_and_retries_later(client, clock):
 
 
 def test_registry_rejecting_transition_is_recorded(client, clock):
+    dep_id = start(client, "B-8")["deployment_id"]
+
     def reject(bundle_id, to, reason):
         raise TransitionRejected("registry 409")
     client.app.state.registry.transition = reject
-    dep_id = start(client, "B-8")["deployment_id"]
     clock.tick(STEP * 3)
     assert client.get(f"/deployments/{dep_id}").json()["analysis"]["registry_sync"] == "rejected"
 

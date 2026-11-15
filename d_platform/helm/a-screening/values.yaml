@@ -7,7 +7,7 @@
 #   - 새 번들 반영 시작: candidate 에 새 번들 ID 를 적고 helm upgrade  → canary 시작
 #   - 100% 반영 후:      stable 을 그 번들로, candidate 를 "" 로 고쳐도 BUNDLE_ID 는 그대로라 아무 일도 없다
 
-# deploy/values-dev.yaml 이 덮어쓴다 (B 가 쓰고 D 가 적용)
+# deploy/values-dev.yaml 이 덮어쓴다 (D 의 배포 API 가 쓰고 적용)
 bundle:
   stable: B-7        # common/contracts.py 의 BASELINE_BUNDLE
   candidate: ""
