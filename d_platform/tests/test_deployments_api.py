@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from d_platform.api.drivers import FakeDriver  # noqa: E402
 from d_platform.api.main import create_app  # noqa: E402
-from d_platform.api.registry import FakeRegistry, RegistryUnavailable  # noqa: E402
+from d_platform.api.registry import FakeRegistry, RegistryUnavailable, TransitionRejected  # noqa: E402
 from d_platform.api.store import MemoryStore  # noqa: E402
 
 ACTOR = {"X-Actor": "b-registry"}
@@ -38,14 +38,14 @@ def client(clock):
     app = create_app(
         store=MemoryStore(),
         driver=FakeDriver(step_seconds=STEP, fail_bundles=frozenset({"B-9"})),
-        registry=FakeRegistry(frozenset({"B-2", "B-3", "B-9"})),
+        registry=FakeRegistry(frozenset({"B-8", "B-10", "B-9"})),
         clock=clock,
-        env={"BUNDLE_ID": "B-1"},
+        env={"BUNDLE_ID": "B-7", "CORS_ALLOW_ORIGINS": "http://localhost:8200"},
     )
     return TestClient(app)
 
 
-def start(client, bundle_id="B-2"):
+def start(client, bundle_id="B-8"):
     r = client.post("/deployments", json={"bundle_id": bundle_id}, headers=ACTOR)
     assert r.status_code == 202, r.text
     return r.json()
@@ -61,13 +61,13 @@ def assert_error(r, status, code):
 
 # ---------------------------------------------------------------- POST /deployments
 def test_create_returns_202_and_first_step(client):
-    r = client.post("/deployments", json={"bundle_id": "B-2"}, headers=ACTOR)
+    r = client.post("/deployments", json={"bundle_id": "B-8"}, headers=ACTOR)
     assert r.status_code == 202
     body = r.json()
     assert body["deployment_id"].startswith("DP-")
     assert r.headers["Location"] == f"/deployments/{body['deployment_id']}"
-    assert body["bundle_id"] == "B-2"
-    assert body["previous_bundle_id"] == "B-1"       # 이력이 없으면 BUNDLE_ID 가 stable
+    assert body["bundle_id"] == "B-8"
+    assert body["previous_bundle_id"] == "B-7"       # 이력이 없으면 BUNDLE_ID 가 stable
     assert body["status"] == "pending"
     assert body["steps"] == [10, 50, 100]
     assert body["requested_by"] == "b-registry"
@@ -75,37 +75,36 @@ def test_create_returns_202_and_first_step(client):
 
 
 def test_unapproved_bundle_is_409(client):
-    client.app.state.registry.approved = frozenset()
-    client.app.state.registry.bundle_status = lambda bundle_id: "validated"
-    body = assert_error(client.post("/deployments", json={"bundle_id": "B-2"}, headers=ACTOR), 409, "CONFLICT")
-    assert body["target_id"] == "B-2"
+    client.app.state.registry.statuses["B-8"] = "validated"
+    body = assert_error(client.post("/deployments", json={"bundle_id": "B-8"}, headers=ACTOR), 409, "CONFLICT")
+    assert body["target_id"] == "B-8"
 
 
 def test_unknown_bundle_is_404(client):
-    assert_error(client.post("/deployments", json={"bundle_id": "B-404"}, headers=ACTOR), 404, "NOT_FOUND")
+    assert_error(client.post("/deployments", json={"bundle_id": "B-404X"}, headers=ACTOR), 404, "NOT_FOUND")
 
 
 def test_second_deployment_while_in_progress_is_409(client):
-    first = start(client, "B-2")
-    body = assert_error(client.post("/deployments", json={"bundle_id": "B-3"}, headers=ACTOR), 409, "CONFLICT")
+    first = start(client, "B-8")
+    body = assert_error(client.post("/deployments", json={"bundle_id": "B-10"}, headers=ACTOR), 409, "CONFLICT")
     assert body["target_id"] == first["deployment_id"]
 
 
 def test_new_deployment_allowed_after_previous_finished(client, clock):
-    start(client, "B-2")
+    start(client, "B-8")
     clock.tick(STEP * 3)                               # 10 → 50 → 100 → 완료
-    second = start(client, "B-3")
-    assert second["previous_bundle_id"] == "B-2"       # 방금 반영된 번들이 stable
+    second = start(client, "B-10")
+    assert second["previous_bundle_id"] == "B-8"       # 방금 반영된 번들이 stable
 
 
 def test_already_stable_bundle_is_409(client, clock):
-    start(client, "B-2")
+    start(client, "B-8")
     clock.tick(STEP * 3)
-    assert_error(client.post("/deployments", json={"bundle_id": "B-2"}, headers=ACTOR), 409, "CONFLICT")
+    assert_error(client.post("/deployments", json={"bundle_id": "B-8"}, headers=ACTOR), 409, "CONFLICT")
 
 
 def test_missing_actor_or_body_is_422(client):
-    assert_error(client.post("/deployments", json={"bundle_id": "B-2"}), 422, "VALIDATION_ERROR")
+    assert_error(client.post("/deployments", json={"bundle_id": "B-8"}), 422, "VALIDATION_ERROR")
     assert_error(client.post("/deployments", json={}, headers=ACTOR), 422, "VALIDATION_ERROR")
 
 
@@ -113,7 +112,7 @@ def test_registry_down_is_503(client):
     def down(bundle_id):
         raise RegistryUnavailable("연결 거부")
     client.app.state.registry.bundle_status = down
-    assert_error(client.post("/deployments", json={"bundle_id": "B-2"}, headers=ACTOR), 503, "SERVICE_UNAVAILABLE")
+    assert_error(client.post("/deployments", json={"bundle_id": "B-8"}, headers=ACTOR), 503, "SERVICE_UNAVAILABLE")
 
 
 # ---------------------------------------------------------------- GET /deployments/{id}
@@ -138,7 +137,7 @@ def test_analysis_failure_rolls_back_automatically(client, clock):
     assert body["rollback_reason"] == "analysis_failed"
     assert body["weight"] == 0
     assert body["analysis"]["result"] == "failed"
-    start(client, "B-2")                               # 롤백 뒤에는 새 배포 가능, stable 은 그대로 B-1
+    start(client, "B-8")                               # 롤백 뒤에는 새 배포 가능, stable 은 그대로 B-1
 
 
 def test_get_unknown_is_404(client):
@@ -147,9 +146,9 @@ def test_get_unknown_is_404(client):
 
 
 def test_list_returns_latest_first(client, clock):
-    a = start(client, "B-2")["deployment_id"]
+    a = start(client, "B-8")["deployment_id"]
     clock.tick(STEP * 3)
-    b = start(client, "B-3")["deployment_id"]
+    b = start(client, "B-10")["deployment_id"]
     assert [d["deployment_id"] for d in client.get("/deployments").json()] == [b, a]
 
 
@@ -166,10 +165,10 @@ def test_rollback_in_progress_returns_200(client, clock):
 
 
 def test_rollback_after_success_restores_previous_bundle(client, clock):
-    dep_id = start(client, "B-2")["deployment_id"]
+    dep_id = start(client, "B-8")["deployment_id"]
     clock.tick(STEP * 3)
     assert client.post(f"/deployments/{dep_id}/rollback", headers=ACTOR).status_code == 200
-    assert start(client, "B-3")["previous_bundle_id"] == "B-1"   # stable 이 B-1 로 돌아옴
+    assert start(client, "B-10")["previous_bundle_id"] == "B-7"   # stable 이 B-1 로 돌아옴
 
 
 def test_rollback_twice_is_409(client):
@@ -179,9 +178,9 @@ def test_rollback_twice_is_409(client):
 
 
 def test_rollback_older_success_is_409(client, clock):
-    old = start(client, "B-2")["deployment_id"]
+    old = start(client, "B-8")["deployment_id"]
     clock.tick(STEP * 3)
-    start(client, "B-3")
+    start(client, "B-10")
     clock.tick(STEP * 3)
     assert_error(client.post(f"/deployments/{old}/rollback", headers=ACTOR), 409, "CONFLICT")
 
@@ -190,7 +189,76 @@ def test_rollback_unknown_is_404(client):
     assert_error(client.post("/deployments/DP-nope/rollback", headers=ACTOR), 404, "NOT_FOUND")
 
 
+def test_rollback_accepts_actor_in_body_like_admin_ui(client):
+    dep_id = start(client)["deployment_id"]
+    r = client.post(f"/deployments/{dep_id}/rollback", json={"actor": "admin", "reason": "지표 이상"})
+    assert r.status_code == 200
+    assert r.json()["analysis"]["rollback"] == {"actor": "admin", "reason": "지표 이상"}
+
+
+def test_rollback_without_actor_or_mismatch_is_422(client):
+    dep_id = start(client)["deployment_id"]
+    assert_error(client.post(f"/deployments/{dep_id}/rollback"), 422, "VALIDATION_ERROR")
+    assert_error(client.post(f"/deployments/{dep_id}/rollback", json={"actor": "a"}, headers={"X-Actor": "b"}),
+                 422, "VALIDATION_ERROR")
+
+
+# ---------------------------------------------------------------- B 번들 상태 반영
+def test_success_marks_bundle_active_in_registry(client, clock):
+    dep_id = start(client, "B-8")["deployment_id"]
+    clock.tick(STEP * 3)
+    body = client.get(f"/deployments/{dep_id}").json()
+    reg = client.app.state.registry
+    assert body["analysis"]["registry_sync"] == "ok"
+    assert [(t["bundle_id"], t["to"], t["actor"]) for t in reg.transitions] == [("B-8", "active", "d-platform")]
+
+
+def test_rollbacks_mark_bundle_rolled_back_in_registry(client, clock):
+    reg = client.app.state.registry
+    auto = start(client, "B-9")["deployment_id"]            # 분석 실패 → 자동 롤백
+    clock.tick(STEP * 2)
+    client.get(f"/deployments/{auto}")
+    manual = start(client, "B-8")["deployment_id"]
+    client.post(f"/deployments/{manual}/rollback", headers=ACTOR)
+    assert [(t["bundle_id"], t["to"]) for t in reg.transitions] == [("B-9", "rolled_back"), ("B-8", "rolled_back")]
+
+
+def test_registry_down_keeps_result_and_retries_later(client, clock):
+    reg = client.app.state.registry
+    real = reg.transition
+
+    def down(bundle_id, to, reason):
+        raise RegistryUnavailable("연결 거부")
+    reg.transition = down
+    dep_id = start(client, "B-8")["deployment_id"]
+    clock.tick(STEP * 3)
+    body = client.get(f"/deployments/{dep_id}").json()
+    assert (body["status"], body["analysis"]["registry_sync"]) == ("succeeded", "pending")   # 트래픽 결과는 확정
+
+    reg.transition = real                                    # B 가 돌아오면 다음 조회 때 다시 알린다
+    assert client.get(f"/deployments/{dep_id}").json()["analysis"]["registry_sync"] == "ok"
+    assert reg.statuses["B-8"] == "active"
+
+
+def test_registry_rejecting_transition_is_recorded(client, clock):
+    def reject(bundle_id, to, reason):
+        raise TransitionRejected("registry 409")
+    client.app.state.registry.transition = reject
+    dep_id = start(client, "B-8")["deployment_id"]
+    clock.tick(STEP * 3)
+    assert client.get(f"/deployments/{dep_id}").json()["analysis"]["registry_sync"] == "rejected"
+
+
 # ---------------------------------------------------------------- healthz / livez / metrics / 공통
+def test_cors_allows_admin_ui_origin_only(client):
+    ok = client.options("/deployments/DP-x/rollback", headers={
+        "Origin": "http://localhost:8200", "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type"})
+    assert ok.headers["access-control-allow-origin"] == "http://localhost:8200"
+    other = client.get("/livez", headers={"Origin": "http://evil.example"})
+    assert "access-control-allow-origin" not in other.headers
+
+
 def test_health_endpoints(client):
     assert client.get("/livez").status_code == 200
     assert client.get("/healthz").json()["store"] == "memory"
@@ -204,12 +272,12 @@ def test_healthz_503_when_store_down(client):
 
 
 def test_metrics_names_and_values(client, clock):
-    start(client, "B-2")
+    start(client, "B-8")
     clock.tick(STEP)
     text = client.get("/metrics").text
     assert 'tradeproof_platform_deployments{status="progressing"} 1' in text
-    assert 'tradeproof_platform_canary_weight{bundle_id="B-2"} 50' in text
-    assert 'tradeproof_platform_stable_bundle_info{bundle_id="B-1"} 1' in text
+    assert 'tradeproof_platform_canary_weight{bundle_id="B-8"} 50' in text
+    assert 'tradeproof_platform_stable_bundle_info{bundle_id="B-7"} 1' in text
     for line in text.splitlines():
         assert line.startswith("#") or line.startswith("tradeproof_platform_")
 

@@ -14,7 +14,8 @@
   REGISTRY_MODE          fake (기본) | http
   REGISTRY_URL           http 일 때 B 주소
   FAKE_APPROVED_BUNDLES  fake 일 때 승인된 것으로 볼 번들(쉼표 구분)
-  BUNDLE_ID              배포 이력이 없을 때의 최초 stable 번들 (기본 B-1)
+  BUNDLE_ID              배포 이력이 없을 때의 최초 stable 번들 (기본 B-7 = contracts.BASELINE_BUNDLE)
+  CORS_ALLOW_ORIGINS     브라우저에서 직접 부를 수 있는 출처(쉼표 구분). 운영 화면(C) 용, 기본 없음
   CANARY_STEPS           canary 단계(쉼표 구분), 기본 10,50,100
 """
 from __future__ import annotations
@@ -30,13 +31,15 @@ from typing import Callable
 
 from fastapi import FastAPI, Header, Request, Response
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from d_platform.api import models as M
 from d_platform.api.drivers import make_driver
-from d_platform.api.registry import APPROVED, RegistryUnavailable, make_registry
+from d_platform.api import registry as R
+from d_platform.api.registry import APPROVED, RegistryUnavailable, TransitionRejected, make_registry
 from d_platform.api.store import InProgressExists, finish, make_store
 
 ERR_VALIDATION = "VALIDATION_ERROR"
@@ -69,12 +72,21 @@ def _log(**fields) -> None:
 
 class DeploymentRequest(BaseModel):
     # TODO(B 확인 필요): 요청은 B(M2)가 보낸다. 지금은 bundle_id 만 받는다 (approval_id 등은 정해지면 추가)
-    bundle_id: str = Field(min_length=1, max_length=64, examples=["B-2"])
+    bundle_id: str = Field(min_length=1, max_length=64, examples=["B-8"])
+
+
+class RollbackRequest(BaseModel):
+    """운영 화면(C)은 본문으로 보낸다. X-Actor 헤더만 보내도 된다."""
+    actor: str | None = Field(default=None, min_length=1, max_length=100)
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class Analysis(BaseModel):
     result: str | None = Field(default=None, description="running | passed | failed")
     checks: list[dict] = Field(default_factory=list, description="단계별 분석 결과")
+    registry_sync: str | None = Field(
+        default=None, description="B 번들 상태에 반영했는지: ok | pending(다시 시도 예정) | rejected(B 가 거부)")
+    rollback: dict | None = Field(default=None, description="수동 롤백을 요청한 사람과 사유")
 
 
 class DeploymentResponse(BaseModel):
@@ -111,11 +123,16 @@ def create_app(store=None, driver=None, registry=None,
                                    _csv(env.get("FAKE_FAIL_BUNDLES")))
     registry = registry or make_registry(env.get("REGISTRY_MODE", "fake"), env.get("REGISTRY_URL"),
                                          _csv(env.get("FAKE_APPROVED_BUNDLES")))
-    initial_bundle = env.get("BUNDLE_ID", "B-1")
+    initial_bundle = env.get("BUNDLE_ID", "B-7")
     steps = [int(s) for s in env.get("CANARY_STEPS", "10,50,100").split(",")]
 
     app = FastAPI(title="TradeProof d_platform — 배포 API", version="0.1.0")
     app.state.store, app.state.driver, app.state.registry = store, driver, registry
+
+    origins = sorted(_csv(env.get("CORS_ALLOW_ORIGINS")))
+    if origins:
+        app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST"],
+                           allow_headers=["*"], expose_headers=["X-Request-ID", "Location"])
 
     # ------------------------------------------------------------ 공통: 로그·요청 ID·에러 형식
     @app.middleware("http")
@@ -153,9 +170,37 @@ def create_app(store=None, driver=None, registry=None,
         return _error(e.status_code, code, str(e.detail))
 
     # ------------------------------------------------------------ 상태 맞추기
+    def sync_registry(dep: M.Deployment) -> None:
+        """끝난 배포의 결과를 B 의 번들 상태에 반영한다 (반영 완료 → active, 롤백 → rolled_back).
+
+        B 에 연결이 안 되면 analysis.registry_sync 를 pending 으로 두고, 다음 조회 때 다시 시도한다.
+        트래픽 상태(D 의 status)는 B 와 무관하게 바로 확정한다.
+        """
+        target = {M.SUCCEEDED: R.ACTIVE, M.ROLLED_BACK: R.ROLLED_BACK}.get(dep.status)
+        if target is None:
+            return
+        reason = (f"배포 {dep.deployment_id} 100% 반영 완료" if target == R.ACTIVE
+                  else f"배포 {dep.deployment_id} 롤백 ({dep.rollback_reason})")
+        try:
+            registry.transition(dep.bundle_id, target, reason)
+            result = "ok"
+        except RegistryUnavailable as e:
+            result = "pending"
+            _log(level="warning", event="registry_sync_pending", deployment_id=dep.deployment_id,
+                 bundle_id=dep.bundle_id, to=target, error=str(e))
+        except TransitionRejected as e:
+            result = "rejected"
+            _log(level="error", event="registry_sync_rejected", deployment_id=dep.deployment_id,
+                 bundle_id=dep.bundle_id, to=target, error=str(e))
+        dep.analysis = {**dep.analysis, "registry_sync": result}
+
     def reconcile(dep: M.Deployment) -> M.Deployment:
         """진행 중인 배포를 드라이버가 본 실제 상태에 맞춰 deployments 에 적는다."""
         if not dep.in_progress:
+            if dep.analysis.get("registry_sync") == "pending":      # B 에 못 알린 결과를 다시 알린다
+                sync_registry(dep)
+                if dep.analysis.get("registry_sync") != "pending":
+                    store.save(dep)
             return dep
         obs = driver.observe(dep, clock())
         before = (dep.status, dep.weight, dep.step_index, dep.analysis)
@@ -165,9 +210,10 @@ def create_app(store=None, driver=None, registry=None,
             finish(dep, obs.status, clock())
             if obs.status == M.ROLLED_BACK:
                 driver.rollback(dep)
-            # TODO(B 확인 필요): 반영 완료·자동 롤백을 B 의 POST /bundles/{id}/transitions 로 알린다
+            sync_registry(dep)
             _log(level="info", event="deployment_finished", deployment_id=dep.deployment_id,
-                 bundle_id=dep.bundle_id, status=dep.status, rollback_reason=dep.rollback_reason)
+                 bundle_id=dep.bundle_id, status=dep.status, rollback_reason=dep.rollback_reason,
+                 registry_sync=dep.analysis.get("registry_sync"))
         else:
             dep.status = obs.status
         if before != (dep.status, dep.weight, dep.step_index, dep.analysis):
@@ -234,7 +280,14 @@ def create_app(store=None, driver=None, registry=None,
 
     @app.post("/deployments/{deployment_id}/rollback", response_model=DeploymentResponse,
               responses={404: _ERR, 409: _ERR, 422: _ERR}, summary="직전 번들로 롤백")
-    def rollback(deployment_id: str, x_actor: str = Header(min_length=1)):
+    def rollback(deployment_id: str, body: RollbackRequest | None = None,
+                 x_actor: str | None = Header(default=None, min_length=1)):
+        body_actor = body.actor if body else None
+        if x_actor and body_actor and x_actor != body_actor:
+            raise ApiError(422, ERR_VALIDATION, "X-Actor 헤더와 본문의 actor 가 다름", deployment_id)
+        actor = x_actor or body_actor
+        if not actor:
+            raise ApiError(422, ERR_VALIDATION, "X-Actor 헤더 또는 본문의 actor 가 필요함", deployment_id)
         dep = load(deployment_id)
         if dep.status == M.SUCCEEDED:
             # 반영이 끝난 배포는 "지금 운영 중인 것"일 때만 되돌릴 수 있다 (DEP-05: 직전 번들로)
@@ -247,12 +300,14 @@ def create_app(store=None, driver=None, registry=None,
         driver.rollback(dep)
         dep.weight = 0
         dep.rollback_reason = M.ROLLBACK_MANUAL
-        dep.analysis = {**dep.analysis, "result": dep.analysis.get("result", "running")}
+        dep.analysis = {**dep.analysis, "result": dep.analysis.get("result", "running"),
+                        "rollback": {"actor": actor, "reason": body.reason if body else None}}
         finish(dep, M.ROLLED_BACK, clock())
+        sync_registry(dep)
         store.save(dep)
-        # TODO(B 확인 필요): B 의 POST /bundles/{id}/transitions 로 rolled_back 기록 (k3s 에서는 Argo 알림이 담당)
         _log(level="info", event="deployment_rolled_back", deployment_id=dep.deployment_id,
-             bundle_id=dep.bundle_id, restored_bundle_id=dep.previous_bundle_id, actor=x_actor)
+             bundle_id=dep.bundle_id, restored_bundle_id=dep.previous_bundle_id, actor=actor,
+             registry_sync=dep.analysis.get("registry_sync"))
         return dep.to_json()
 
     # ------------------------------------------------------------ 상태 확인·지표
