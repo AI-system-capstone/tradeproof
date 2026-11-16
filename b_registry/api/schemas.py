@@ -11,7 +11,8 @@ class ImportAccepted(StrictModel):
     bundle_id: str | None
 
 class VerificationResult(StrictModel):
-    """New imports are APPROVED; REJECTED/reason are retained for legacy history."""
+    """Registration result or rejection metadata; rejected files are never stored."""
+    filename: str | None
     status: Literal["APPROVED", "REJECTED"]
     reason: str | None
     bundle_id: str | None
@@ -57,6 +58,8 @@ class SanctionsListResult(StrictModel):
     uri: str
 
 class BundleResult(StrictModel):
+    base_bundle_id: str | None
+    history: list[dict]
     bundle_id: str
     status: Literal[*BUNDLE_STATUSES]
     model_id: str
@@ -68,3 +71,20 @@ class BundleResult(StrictModel):
 class ActiveBundles(StrictModel):
     active: BundleResult | None
     canary: BundleResult | None
+
+
+class DeploymentRequest(StrictModel):
+    actor: str = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("actor", "reason")
+    @classmethod
+    def printable(cls, value):
+        return Transition.printable(value)
+
+
+class DeploymentResult(StrictModel):
+    bundle_id: str
+    status: str
+    deployment_id: str | None = None
+    replacement_bundle_id: str | None = None

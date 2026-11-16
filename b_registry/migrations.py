@@ -4,7 +4,7 @@ from pathlib import Path
 from sqlalchemy.engine import make_url
 
 MIGRATIONS = tuple(Path(__file__).resolve().parents[1] / "common/schema" / name for name in (
-    "50_b_registry_20261114.sql", "51_b_registry_20261115.sql"))
+    "50_b_registry_20261114.sql", "51_b_registry_20261115.sql", "52_b_registry_20261116.sql"))
 
 
 def migrate(database_url):

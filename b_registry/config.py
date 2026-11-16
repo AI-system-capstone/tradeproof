@@ -11,6 +11,7 @@ class Settings:
     storage: Path = field(default_factory=lambda: Path(os.getenv("REGISTRY_DATA_DIR", str(ROOT / "data"))))
     database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
     trust_key: Path = field(default_factory=lambda: Path(os.getenv("TRUST_KEY", str(ROOT / "trust" / "publisher.pub"))))
+    deployment_url: str = field(default_factory=lambda: os.getenv("DEPLOYMENT_URL", "http://d-platform:8300"))
     review_threshold: float = 0.20
     max_zip_bytes: int = C.MAX_UPLOAD_BYTES
     max_file_bytes: int = 16 * 1024 * 1024

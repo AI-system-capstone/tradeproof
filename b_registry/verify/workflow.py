@@ -15,14 +15,49 @@ class NotFound(Exception):
 
 def record(bundle, target, actor, reason):
     result = {"from": bundle.status, "to": target, "changed_at": iso(now())}
+    bundle.history = [*(bundle.history or []), {**result, "actor": actor, "reason": reason}]
     bundle.status = target
     return result
+
+def next_bundle_id(s):
+    numbers = [int(b[2:]) for b in s.scalars(select(Bundle.bundle_id))]
+    first = int(C.BASELINE_BUNDLE.split("-")[1])
+    return f"B-{max(numbers, default=first - 1) + 1}"
+
+
+def rebuild_candidate(s, bundle, active, actor, reason):
+    base = s.get(Bundle, bundle.base_bundle_id) if bundle.base_bundle_id else None
+    if base is None or active is None:
+        raise Conflict("Cannot rebuild a bundle without a known base and current stable bundle")
+    model_changed = bundle.model_id != base.model_id
+    list_changed = bundle.list_id != base.list_id
+    if model_changed == list_changed:
+        raise Conflict("Cannot determine the single imported asset to retain")
+    replacement = Bundle(bundle_id=next_bundle_id(s), status="candidate",
+                         model_id=bundle.model_id if model_changed else active.model_id,
+                         list_id=bundle.list_id if list_changed else active.list_id,
+                         base_bundle_id=active.bundle_id)
+    s.add(replacement)
+    s.flush()
+    result = record(bundle, "cancelled", actor, reason)
+    bundle.history = [*bundle.history[:-1], {**bundle.history[-1],
+        "replacement_bundle_id": replacement.bundle_id}]
+    return {**result, "replacement_bundle_id": replacement.bundle_id}
+
+
+def deployment_attempt(bundle):
+    return next((entry["deployment_request"] for entry in reversed(bundle.history or [])
+                 if "deployment_request" in entry), {})
+
 
 def transition(db, bid, target, actor, reason):
     with db.transaction() as s:
         bundle = s.get(Bundle, bid)
         if not bundle:
             raise NotFound("Bundle not found")
+        if any(deployment_attempt(b).get("state") == "pending"
+               for b in s.scalars(select(Bundle))):
+            raise Conflict("A deployment request is awaiting confirmation")
         if target not in TRANSITIONS.get(bundle.status, set()):
             raise Conflict("Transition is not allowed")
         active = s.scalar(select(Bundle).where(Bundle.status == "active"))
@@ -30,6 +65,8 @@ def transition(db, bid, target, actor, reason):
         if target == "canary":
             if canary:
                 raise Conflict("A canary deployment is already running")
+            if bundle.base_bundle_id != (active.bundle_id if active else None):
+                raise Conflict("Stable bundle changed; request deployment through B")
             bundle.previous_active_id = active.bundle_id if active else None
         if target == "active":
             restoring = bundle.status == "superseded"
@@ -48,8 +85,33 @@ class ImportService:
     def __init__(self, db, cfg, artifacts):
         self.db, self.cfg, self.artifacts = db, cfg, artifacts
 
-    def intake(self, raw):
-        # No registry row or persistent artifact is created before validation passes.
+    def intake(self, raw, filename=None):
+        filename = self._filename(filename)
+        try:
+            return self._intake(raw, filename)
+        except (ValidationFailure, Conflict) as error:
+            # The registration transaction has rolled back before recording metadata.
+            error.import_id = self.reject(filename, str(error))
+            raise
+
+    @staticmethod
+    def _filename(filename):
+        if filename is None:
+            return None
+        return "".join(c for c in filename.replace("\\", "/").rsplit("/", 1)[-1]
+                       if ord(c) >= 32 and ord(c) != 127)[:255]
+
+    def reject(self, filename, reason):
+        with self.db.transaction() as s:
+            imp = Import(import_id=str(uuid.uuid4()), filename=self._filename(filename),
+                         artifact_uri=None, status=C.IMPORT_REJECTED,
+                         reason=reason[:500], completed_at=now())
+            s.add(imp)
+            s.flush()
+            return imp.import_id
+
+    def _intake(self, raw, filename):
+        # Never persist rejected package bytes or register rejected assets.
         try:
             report = validate(raw, self.cfg)
         except OSError as error:
@@ -85,7 +147,7 @@ class ImportService:
                         f"List change ratio {delta['change_ratio']:.0%} exceeds {self.cfg.review_threshold:.0%}")
             uri = self.artifacts.put(raw)
             existing = s.scalar(select(Import).where(Import.artifact_uri == uri))
-            imp = existing or Import(import_id=str(uuid.uuid4()), artifact_uri=uri)
+            imp = existing or Import(import_id=str(uuid.uuid4()), artifact_uri=uri, filename=filename)
             imp.status, imp.reason = C.IMPORT_APPROVED, None
             s.add(imp)
             self._register(s, imp, report)
@@ -138,9 +200,8 @@ class ImportService:
             raise Conflict("Activate the initial bundle before importing an update")
         bundle = s.scalar(select(Bundle).filter_by(**ids).order_by(Bundle.created_at.desc()).limit(1))
         if not bundle:
-            numbers = [int(b[2:]) for b in s.scalars(select(Bundle.bundle_id))]
-            first = int(C.BASELINE_BUNDLE.split("-")[1])
-            bundle = Bundle(bundle_id=f"B-{max(numbers, default=first - 1) + 1}", status="candidate", **ids)
+            bundle = Bundle(bundle_id=next_bundle_id(s), status="candidate",
+                            base_bundle_id=active.bundle_id if active else None, **ids)
             s.add(bundle)
             s.flush()
         imp.bundle_id = bundle.bundle_id

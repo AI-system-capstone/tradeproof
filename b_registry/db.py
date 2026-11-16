@@ -1,7 +1,7 @@
 from common import contracts as C
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, CheckConstraint, inspect, create_engine, event, text, update
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, JSON, CheckConstraint, inspect, create_engine, event, text, update
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 def now():
@@ -32,6 +32,8 @@ class Bundle(Base):
     model_id: Mapped[str] = mapped_column(ForeignKey("ai_models.model_id"))
     list_id: Mapped[str] = mapped_column(ForeignKey("sanctions_lists.list_id"))
     status: Mapped[str] = mapped_column(String(30), default="candidate")
+    base_bundle_id: Mapped[str | None] = mapped_column(ForeignKey("bundles.bundle_id"))
+    history: Mapped[list] = mapped_column(JSON, default=list)
     previous_active_id: Mapped[str | None] = mapped_column(ForeignKey("bundles.bundle_id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     __table_args__ = (Index("uq_registry_active", "status", unique=True,
@@ -43,7 +45,8 @@ class Import(Base):
     __tablename__ = "imports"
     __table_args__ = (CheckConstraint("model_id IS NULL OR list_id IS NULL", name="ck_import_single_asset"),)
     import_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    artifact_uri: Mapped[str] = mapped_column(String(500), unique=True)
+    artifact_uri: Mapped[str | None] = mapped_column(String(500), unique=True)
+    filename: Mapped[str | None] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(30), default=C.IMPORT_APPROVED)
     reason: Mapped[str | None] = mapped_column(String(500))
     model_id: Mapped[str | None] = mapped_column(ForeignKey("ai_models.model_id"))

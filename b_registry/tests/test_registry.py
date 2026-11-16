@@ -43,21 +43,21 @@ def test_http_contract_and_bootstrap(service):
     assert response.status_code == 201 and response.headers["X-Request-ID"] == "check-123"
     iid = response.json()["import_id"]
     assert response.headers["Location"] == "/imports/" + iid
-    assert client.get("/imports/" + iid).json() == {"status": "APPROVED", "reason": None, "bundle_id": None}
+    assert client.get("/imports/" + iid).json() == {"status": "APPROVED", "reason": None, "bundle_id": None, "filename": "model.zip"}
     assert client.post(f"/imports/{iid}/approve").status_code == 409
     listing = upload(service, "list-v14.zip")
     bid = service.registered_bundle(listing)
     assert bid == C.BASELINE_BUNDLE
     assert client.post(f"/imports/{iid}/approve").json() == {"bundle_id": bid}
     result = client.get(f"/imports/{listing}").json()
-    assert result == {"status": "APPROVED", "reason": None, "bundle_id": bid}
+    assert result == {"status": "APPROVED", "reason": None, "bundle_id": bid, "filename": None}
     bundle = client.get("/bundles/" + bid).json()
     assert bundle["model_id"] == bundle["model"]["model_id"] == "model-v3"
     assert bundle["list_id"] == bundle["list"]["list_id"] == "list-v14"
     assert "model_component_id" not in bundle
     assert bundle["status"] == "candidate"
     assert bundle["created_at"].endswith("+00:00")
-    assert not {"rules_version", "history", "replay"} & bundle.keys()
+    assert not {"rules_version", "replay"} & bundle.keys()
     for field, filename in (("model", "model-v3.zip"), ("list", "list-v14.zip")):
         assert set(bundle[field]) == {field + "_id", "uri"}
         assert service.artifacts.get(bundle[field]["uri"]) == (service.cfg.trust_key.parent / "packages" / filename).read_bytes()
@@ -75,7 +75,8 @@ def test_transition_canary_cancel_and_promotion(service):
     assert change("validated").status_code == 200
     assert change("approved").status_code == 200
     assert change("active").status_code == 409
-    assert change("canary").status_code == 200
+    assert change("canary").status_code == 409
+    transition(service.db, new, "canary", "D", "accepted")
     deployed = client.get("/bundles/active").json()
     assert deployed["active"]["bundle_id"] == old
     assert deployed["canary"]["bundle_id"] == new
@@ -92,7 +93,7 @@ def test_rejections_leave_active_unchanged(service, name):
     with pytest.raises(ValidationFailure, match="exceeds"):
         upload(service, name)
     with service.db.sessions() as s:
-        assert len(list(s.scalars(select(Import)))) == before
+        assert len(list(s.scalars(select(Import)))) == before + 1
     with service.db.sessions() as s:
         assert list(s.scalars(select(Bundle.bundle_id))) == [bid]
         assert len(list(s.scalars(select(AIModel)))) == 1
@@ -122,7 +123,7 @@ def test_api_returns_only_after_registration(service):
         assert response.status_code == 201
         result = client.get("/imports/" + iid)
         assert result.status_code == 200
-        assert result.json() == {"status": "APPROVED", "reason": None, "bundle_id": None}
+        assert result.json() == {"status": "APPROVED", "reason": None, "bundle_id": None, "filename": "list.zip"}
 
 def test_errors_readiness_and_size_limit(service, monkeypatch):
     client = client_for(service)
@@ -265,7 +266,7 @@ def test_legacy_schema_is_rejected_without_changes(cfg):
 
 @pytest.mark.parametrize("name", ["model-v4-bad-signature.zip", "list-v15-tampered.zip",
                                    "list-v15-bad-schema.zip", "model-v4-incompatible.zip", None])
-def test_invalid_intake_never_persists(service, monkeypatch, name):
+def test_invalid_intake_records_metadata_without_file(service, monkeypatch, name):
     from b_registry.verify.validation import ValidationFailure
     raw = (service.cfg.trust_key.parent / "packages" / name).read_bytes() if name else b"invalid ZIP"
     writes = []
@@ -277,7 +278,12 @@ def test_invalid_intake_never_persists(service, monkeypatch, name):
     assert response.json()["code"] == C.ERR_VALIDATION
     assert writes == []
     with service.db.sessions() as s:
-        assert list(s.scalars(select(Import))) == []
+        imports = list(s.scalars(select(Import)))
+        assert len(imports) == 2
+        assert all(i.status == "REJECTED" and i.reason and i.artifact_uri is None for i in imports)
+        imp = s.get(Import, response.json()["target_id"])
+        assert imp.filename == "bad.zip" and imp.completed_at
+        assert imp.model_id is None and imp.list_id is None and imp.bundle_id is None
         assert list(s.scalars(select(AIModel))) == []
         assert list(s.scalars(select(SanctionsList))) == []
         assert list(s.scalars(select(Bundle))) == []
@@ -298,7 +304,7 @@ def test_trust_key_unavailable_never_persists(service, monkeypatch):
 def test_metadata_schema_is_minimal_and_legacy_split_schema_rejected(cfg):
     from sqlalchemy import inspect, text
     from b_registry.db import AIModel, SanctionsList, Import, WorkflowLock
-    assert set(Bundle.__table__.columns.keys()) == {"bundle_id", "model_id", "list_id", "status", "previous_active_id", "created_at"}
+    assert set(Bundle.__table__.columns.keys()) == {"bundle_id", "model_id", "list_id", "status", "previous_active_id", "base_bundle_id", "history", "created_at"}
     assert set(AIModel.__table__.columns.keys()) == {"model_id", "artifact_uri", "created_at"}
     assert set(SanctionsList.__table__.columns.keys()) == {"list_id", "artifact_uri", "created_at"}
     assert "package_hash" not in Import.__table__.columns and "steps" not in Import.__table__.columns
@@ -365,5 +371,88 @@ def test_policy_rejection_does_not_write_files_or_rows(service, monkeypatch):
     assert writes == []
     with service.db.sessions() as s:
         imports = list(s.scalars(select(Import)))
-        assert len(imports) == 2
-        assert all(imp.status == "APPROVED" and imp.reason is None and imp.completed_at for imp in imports)
+        assert len(imports) == 3
+        rejected = s.get(Import, response.json()["target_id"])
+        assert rejected.status == "REJECTED" and rejected.reason and rejected.filename == "list.zip"
+        assert rejected.artifact_uri is None
+
+
+def test_stale_model_bundle_cannot_drop_new_list(service):
+    old = baseline(service)
+    list_bundle = service.registered_bundle(upload(service, "list-v15.zip"))
+    model_bundle = service.registered_bundle(upload(service, "model-v4.zip"))
+    for bid in (list_bundle, model_bundle):
+        for state in ("validated", "approved"):
+            transition(service.db, bid, state, "reviewer", "checked")
+    for state in ("canary", "active"):
+        transition(service.db, list_bundle, state, "deployer", "promote list")
+    client = client_for(service)
+    before = client.get(f"/bundles/{model_bundle}").json()
+    assert before["base_bundle_id"] == old
+    response = client.post(f"/bundles/{model_bundle}/deployments",
+                           json={"actor":"deployer", "reason":"promote model"})
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancelled"
+    replacement_id = response.json()["replacement_bundle_id"]
+    after = client.get(f"/bundles/{model_bundle}").json()
+    assert after["status"] == "cancelled"
+    assert after["model_id"] == before["model_id"] and after["list_id"] == before["list_id"]
+    replacement = client.get(f"/bundles/{replacement_id}").json()
+    assert replacement["status"] == "candidate"
+    assert (replacement["model_id"], replacement["list_id"]) == ("model-v4", "list-v15")
+    assert replacement["base_bundle_id"] == list_bundle
+    assert replacement["history"] == []
+    assert after["history"][-1]["replacement_bundle_id"] == replacement_id
+    assert client.get("/bundles/active").json()["canary"] is None
+    assert client.get("/bundles/active").json()["active"]["list_id"] == "list-v15"
+    with pytest.raises(Conflict):
+        transition(service.db, replacement_id, "canary", "D", "must revalidate")
+    for state in ("validated", "approved", "canary", "active"):
+        transition(service.db, replacement_id, state, "test", "new combination passed")
+
+
+def test_transition_history_persists_both_sides_of_restore(service):
+    old = baseline(service)
+    new = service.registered_bundle(upload(service, "model-v4.zip"))
+    for state in ("validated", "approved", "canary", "active"):
+        result = transition(service.db, new, state, "operator-42", "verified rollout")
+    transition(service.db, old, "active", "operator-17", "restore stable")
+    with service.db.sessions() as s:
+        changed, restored = s.get(Bundle, new), s.get(Bundle, old)
+        assert len(changed.history) == 5
+        assert changed.history[3] == {**result, "actor":"operator-42", "reason":"verified rollout"}
+        for bundle in (changed, restored):
+            assert bundle.history[-1]["actor"] == "operator-17"
+            assert bundle.history[-1]["reason"] == "restore stable"
+            assert bundle.history[-1]["changed_at"].endswith("+00:00")
+        assert changed.history[-1]["to"] == "cancelled"
+        assert restored.history[-1]["to"] == "active"
+
+
+def test_rejected_filename_is_metadata_only(service):
+    client = client_for(service)
+    response = client.post("/imports", files={"package": ("../../untrusted.zip", b"not zip")})
+    assert response.status_code == 422
+    result = client.get("/imports/" + response.json()["target_id"])
+    assert result.status_code == 200
+    assert result.json()["filename"] == "untrusted.zip"
+    assert result.json()["status"] == "REJECTED"
+    assert result.json()["reason"]
+
+
+def test_stale_list_bundle_keeps_list_and_uses_current_model(service):
+    baseline(service)
+    listing = service.registered_bundle(upload(service, "list-v15.zip"))
+    model = service.registered_bundle(upload(service, "model-v4.zip"))
+    for bid in (listing, model):
+        for state in ("validated", "approved"):
+            transition(service.db, bid, state, "reviewer", "approved")
+    for state in ("canary", "active"):
+        transition(service.db, model, state, "D", "deploy")
+    from b_registry.verify.deployment import request_deployment
+    result = request_deployment(service.db, listing, "D", "deploy list", None)
+    with service.db.sessions() as s:
+        candidate = s.get(Bundle, result["replacement_bundle_id"])
+        assert (candidate.model_id, candidate.list_id, candidate.base_bundle_id) == ("model-v4", "list-v15", model)
+        assert candidate.status == "candidate"
+        assert s.get(Bundle, listing).status == "cancelled"

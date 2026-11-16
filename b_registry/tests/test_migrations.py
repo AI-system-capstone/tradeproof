@@ -51,7 +51,7 @@ def test_postgresql_forward_migration(legacy):
             script = "\n".join(path.read_text(encoding="utf-8") for path in MIGRATIONS)
             conn.execute(script, prepare=False)
             conn.execute(script, prepare=False)
-            assert conn.execute("SELECT count(*) FROM b_registry_schema_migrations").fetchone()[0] == 2
+            assert conn.execute("SELECT count(*) FROM b_registry_schema_migrations").fetchone()[0] == 3
             assert conn.execute("SELECT id FROM unrelated_data").fetchone()[0] == 42
             from b_registry.db import Base
             for table in Base.metadata.sorted_tables:
@@ -93,6 +93,38 @@ def test_canary_migration_preserves_legacy_history():
             conn.execute("UPDATE bundles SET status='canary' WHERE bundle_id='B-8'")
             with pytest.raises(psycopg.errors.UniqueViolation):
                 conn.execute("UPDATE bundles SET status='canary' WHERE bundle_id='B-9'")
+        finally:
+            conn.execute("ROLLBACK")
+            conn.execute("SET search_path TO public")
+            conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+def test_registry_metadata_migration():
+    dsn = os.getenv("B_REGISTRY_TEST_DATABASE_URL")
+    if not dsn:
+        pytest.skip("B_REGISTRY_TEST_DATABASE_URL required")
+    import psycopg
+    from psycopg import sql
+    schema = "b_migration_test_" + uuid.uuid4().hex
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+        try:
+            conn.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(schema)))
+            for path in MIGRATIONS[:2]:
+                conn.execute(path.read_text(encoding="utf-8"), prepare=False)
+            conn.execute("INSERT INTO ai_models VALUES ('model','file://model',now())")
+            conn.execute("INSERT INTO sanctions_lists VALUES ('list','file://list',now())")
+            conn.execute("INSERT INTO bundles(bundle_id,model_id,list_id,status,created_at) VALUES('B-7','model','list','canary',now())")
+            with pytest.raises(psycopg.errors.RaiseException, match="Finish or cancel"):
+                conn.execute(MIGRATIONS[2].read_text(encoding="utf-8"), prepare=False)
+            conn.execute("ROLLBACK")
+            conn.execute("UPDATE bundles SET status='approved'")
+            for _ in range(2):
+                conn.execute(MIGRATIONS[2].read_text(encoding="utf-8"), prepare=False)
+            assert conn.execute("SELECT base_bundle_id,history FROM bundles").fetchone() == (None, [])
+            for iid in ('rejected-1', 'rejected-2'):
+                conn.execute("INSERT INTO imports(import_id,artifact_uri,filename,status,reason,created_at,completed_at) VALUES(%s,NULL,'bad.zip','REJECTED','bad signature',now(),now())", (iid,))
+            assert conn.execute("SELECT count(*) FROM imports WHERE artifact_uri IS NULL").fetchone()[0] == 2
         finally:
             conn.execute("ROLLBACK")
             conn.execute("SET search_path TO public")

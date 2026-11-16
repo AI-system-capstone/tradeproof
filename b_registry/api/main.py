@@ -13,13 +13,14 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from common import contracts as C
 from b_registry import contracts as B
-from b_registry.api.schemas import ActiveBundles, BundleResult, ErrorResponse, ImportAccepted, BundleRegistered, Transition, TransitionResult, VerificationResult
+from b_registry.api.schemas import DeploymentRequest, DeploymentResult, ActiveBundles, BundleResult, ErrorResponse, ImportAccepted, BundleRegistered, Transition, TransitionResult, VerificationResult
 from b_registry.config import Settings
 from b_registry.db import Bundle, AIModel, SanctionsList, Database, Import, iso
 from b_registry.storage import Artifacts, StorageUnavailable, make_store
 from b_registry.verify.replay import ReplayDispatcher
 from b_registry.verify.workflow import Conflict, ImportService, NotFound, transition
 from b_registry.verify.worker import ReplayWorker
+from b_registry.verify.deployment import DeploymentClient, DeploymentUnavailable, request_deployment
 from b_registry.verify.validation import ValidationFailure
 
 logger = logging.getLogger(__name__)
@@ -61,10 +62,11 @@ def bundle_fields(s, bundle):
     return {"bundle_id": bundle.bundle_id, "status": bundle.status,
             "model_id": bundle.model_id,
             "list_id": bundle.list_id, "created_at": iso(bundle.created_at),
+            "base_bundle_id": bundle.base_bundle_id, "history": bundle.history,
             "model": asset_fields(s.get(AIModel, bundle.model_id), "model_id"),
             "list": asset_fields(s.get(SanctionsList, bundle.list_id), "list_id")}
 
-def create_app(cfg=None, db=None, store=None):
+def create_app(cfg=None, db=None, store=None, deployment_client=None):
     logs = logging.getLogger("b_registry")
     if not logs.handlers:
         logs.addHandler(logging.StreamHandler())
@@ -74,6 +76,7 @@ def create_app(cfg=None, db=None, store=None):
     db = db or Database(cfg.database_url)
     artifacts = Artifacts(store or make_store(cfg))
     service = ImportService(db, cfg, artifacts)
+    deployment_client = deployment_client or DeploymentClient(cfg.deployment_url)
     worker = ReplayWorker(ReplayDispatcher(db))
 
     @asynccontextmanager
@@ -108,11 +111,11 @@ def create_app(cfg=None, db=None, store=None):
 
     @app.exception_handler(ValidationFailure)
     async def invalid_package(request, error):
-        return error_response(C.ERR_VALIDATION, f"{error.code}: {error.message}", 422)
+        return error_response(C.ERR_VALIDATION, f"{error.code}: {error.message}", 422, getattr(error, "import_id", None))
 
     @app.exception_handler(Conflict)
     async def conflict(request, error):
-        return error_response(C.ERR_CONFLICT, str(error), 409, target(request))
+        return error_response(C.ERR_CONFLICT, str(error), 409, getattr(error, "import_id", None) or target(request))
 
     @app.exception_handler(NotFound)
     async def missing(request, error):
@@ -126,6 +129,10 @@ def create_app(cfg=None, db=None, store=None):
     @app.exception_handler(RequestValidationError)
     async def invalid(request, error):
         return error_response(C.ERR_VALIDATION, "Invalid request fields", 422, target(request))
+
+    @app.exception_handler(DeploymentUnavailable)
+    async def deployment_unavailable(request, error):
+        return error_response(C.ERR_UNAVAILABLE, str(error), 503, target(request))
 
     @app.exception_handler(SQLAlchemyError)
     @app.exception_handler(StorageUnavailable)
@@ -152,8 +159,9 @@ def create_app(cfg=None, db=None, store=None):
             raise HTTPException(422, "Upload exactly one package ZIP")
         raw = await package.read(cfg.max_zip_bytes + 1)
         if len(raw) > cfg.max_zip_bytes:
-            raise HTTPException(413, "Package exceeds size limit")
-        imp = await run_in_threadpool(service.intake, raw)
+            iid = await run_in_threadpool(service.reject, package.filename, "Package exceeds size limit")
+            return error_response(C.ERR_VALIDATION, "Package exceeds size limit", 413, iid)
+        imp = await run_in_threadpool(service.intake, raw, package.filename)
         worker.notify()
         response.headers["Location"] = f"/imports/{imp.import_id}"
         return {"import_id": imp.import_id, "bundle_id": imp.bundle_id}
@@ -164,7 +172,7 @@ def create_app(cfg=None, db=None, store=None):
             imp = s.get(Import, import_id)
             if not imp:
                 raise NotFound("Import not found")
-            return {"status": imp.status, "reason": imp.reason, "bundle_id": imp.bundle_id}
+            return {"status": imp.status, "reason": imp.reason, "bundle_id": imp.bundle_id, "filename": imp.filename}
 
     @app.post("/imports/{import_id}/approve", response_model=BundleRegistered,
               summary="Return the registered bundle (idempotent compatibility endpoint)")
@@ -193,12 +201,27 @@ def create_app(cfg=None, db=None, store=None):
                 raise NotFound("Bundle not found")
             return bundle_fields(s, bundle)
 
-    @app.post("/bundles/{bundle_id}/transitions", response_model=TransitionResult)
+    @app.post("/bundles/{bundle_id}/transitions", response_model=TransitionResult, response_model_exclude_none=True)
     def change_state(bundle_id: str, body: Transition, request: Request):
         actor = request.headers.get("X-Actor", body.actor)
         if actor != body.actor:
             raise HTTPException(422, "X-Actor and actor must match")
+        if body.to == "canary":
+            raise Conflict("Use POST /bundles/{id}/deployments to request deployment through B")
         result = transition(db, bundle_id, body.to, actor, body.reason)
+        worker.notify()
+        return result
+
+    @app.post("/bundles/{bundle_id}/deployments", response_model=DeploymentResult,
+              response_model_exclude_none=True, status_code=202,
+              responses={200: {"model": DeploymentResult, "description": "Rebuilt candidate; revalidation required"}})
+    def deploy(bundle_id: str, body: DeploymentRequest, request: Request, response: Response):
+        actor = request.headers.get("X-Actor", body.actor)
+        if actor != body.actor:
+            raise HTTPException(422, "X-Actor and actor must match")
+        result = request_deployment(db, bundle_id, actor, body.reason, deployment_client)
+        if "replacement_bundle_id" in result:
+            response.status_code = 200
         worker.notify()
         return result
 

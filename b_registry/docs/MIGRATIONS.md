@@ -4,7 +4,7 @@
 
 ## 파일과 역할
 
-- 적용 SQL: `common/schema/50_b_registry_20261114.sql` → `51_b_registry_20261115.sql` 순서
+- 적용 SQL: `common/schema/50_b_registry_20261114.sql` → `51_b_registry_20261115.sql` → `52_b_registry_20261116.sql` 순서
 - ORM: `b_registry/db.py` — 매핑과 읽기 전용 `check_schema`, 운영 DDL 없음
 - 적용 명령: `python -m b_registry.cli migrate-db` — 기존 PostgreSQL 연결만 허용
 - 검사 명령: `python -m b_registry.cli check-db` — DDL/데이터 변경 없음
@@ -14,7 +14,7 @@
 
 1. D가 기존 PostgreSQL DB를 백업한다. 제거되는 상세 컬럼이 필요한 경우 백업에서 확인한다.
 2. B API·워커와 B 테이블을 변경하는 외부 작업을 정지한다.
-3. 기존 DB의 `DATABASE_URL`로 `migrate-db`를 실행한다. 또는 psql의 `ON_ERROR_STOP=1`로 두 SQL 파일을 순서대로 실행한다.
+3. 기존 DB의 `DATABASE_URL`로 `migrate-db`를 실행한다. 또는 psql의 `ON_ERROR_STOP=1`로 세 SQL 파일을 순서대로 실행한다.
 4. `check-db`로 매핑을 확인하고 B를 시작한다. 완료된 모델·리스트의 재반입이나 볼륨 초기화는 필요 없다. 구 RECEIVED 반입은 아래 절차대로 ZIP을 재전송한다.
 
 ```powershell
@@ -41,7 +41,7 @@ python -m b_registry.cli check-db
 
 기본 pytest는 외부 PostgreSQL 없이 단위 테스트를 수행한다. 마이그레이션 통합 테스트는 기존 테스트 DB의 `B_REGISTRY_TEST_DATABASE_URL`을 설정하면 실행한다. 각 테스트는 무작위 이름의 독립 스키마를 만들고 끝나면 그 스키마만 제거한다. 운영 DB 주소를 사용하지 않는다.
 
-공통 변경이므로 A/C/D 리뷰와 `contract-change` 라벨이 필요하다. 과거 사용자 요청으로 제거한 B의 livez/번들 이력은 복원하지 않으며 `docs/interfaces.md`에 공통 규약 예외로 기록했다.
+공통 변경이므로 A/C/D 리뷰와 `contract-change` 라벨이 필요하다. B의 livez는 복원하지 않으며 `docs/interfaces.md`에 공통 규약 예외로 기록했다.
 
 ## 2026-11-15 반입·카나리 변경
 
@@ -51,3 +51,9 @@ python -m b_registry.cli check-db
 - 구 RECEIVED는 자동 승인하지 않고 재전송 안내 사유와 함께 REJECTED로 종료한다. 원본 ZIP을 POST /imports로 다시 보내면 전체 검증 후 같은 import ID를 등록 완료 상태로 갱신한다. 이미 반려된 기록은 보존한다.
 - 기존 Replay Job이 남아 있으면 C가 결과를 새 candidate 계약으로 반영해야 한다. Job 이름은 동일하므로 자동으로 두 번째 검증 Job을 만들지 않는다.
 - API 시작은 마이그레이션을 수행하지 않는다. check-db는 active/canary 유일 인덱스도 검사한다.
+
+## 2026-11-16 기준 번들·거부 기록·상태 이력
+
+52 SQL은 기존 테이블만 ALTER합니다. bundles에 base_bundle_id(nullable FK), history(JSON, 기본 [])를 추가하고 imports에 filename(nullable)을 추가하며 artifact_uri를 nullable로 바꿉니다. 새 모델·테이블은 없습니다.
+
+진행 중 canary가 있으면 적용을 거부합니다. 먼저 배포를 완료하거나 취소하고 B를 정지한 뒤 적용합니다. 기존 후보의 생성 기준은 추정하지 않으므로 base_bundle_id=null이며 현재 active가 있으면 카나리 진입이 차단됩니다. 기존 후보를 그대로 승격하지 말고 현재 운영 번들 기준으로 새 후보를 구성·검증해야 합니다. 기존 history는 []로 시작하며 기록되지 않았던 행위자·사유는 복구할 수 없습니다. 기존 Import ID·URI·상태·사유는 보존합니다.
