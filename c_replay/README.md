@@ -17,17 +17,21 @@
 
 ## 검증 흐름
 
-1. B가 반입 검증을 통과한 번들(`validated`)마다 `job/job-template.json`에 `BUNDLE_ID`를 넣어 K8s Job을 만든다.
-2. 검증 Job이 B의 `GET /bundles/active`로 운영 번들을 확인한다.
-3. 검증 Job이 검증 행을 만들고 골든셋 검증·Replay를 한다.
-4. 결과를 `completed` 또는 `failed`로 저장한다.
+B의 PR #17(아직 열림)이 정한 검증 Job 계약을 따른다.
+
+1. B가 검증할 번들마다 검증 ID를 만들고, `job/job-template.json`에 환경변수 5개를 넣어 K8s Job을 만든다.
+   - `VALIDATION_ID`, `BUNDLE_ID`, `BASELINE_BUNDLE_ID`, `REQUESTED_BY`, `VALIDATION_CALLBACK_URL`
+2. 검증 Job이 B가 준 검증 ID로 검증 행을 만들고 골든셋 검증·Replay를 한다.
+3. 결과를 `completed` 또는 `failed`로 저장한다.
    - 시간 제한에 걸리면(SIGTERM) `failed`로 저장한다.
-5. B에 완료 알림을 보낸다: `POST /bundles/{bundle_id}/validation-results` `{validation_id, bundle_id, status}`.
-   - B가 만들 API이고, 경로는 가정이다.
-6. B가 C의 `GET /validations?bundle_id=…`로 결과를 읽고 게이트 판정(승인·반려)을 한다.
+4. `VALIDATION_CALLBACK_URL`로 결과 전체를 보낸다: `{validation_id, bundle_id, baseline_bundle_id, status, golden, replay, error}`.
+   - B가 200을 줄 때까지 간격을 늘려 가며 다시 보낸다(최대 10분). 409·422면 멈춘다.
+   - 끝내 못 보내면 종료 코드 1로 끝나서 Job이 실패로 남는다.
+5. B가 받은 결과로 게이트 판정(통과·차단)을 한다. 달라진 거래 목록은 B에 보내지 않고 C의 `/diffs`로 조회한다.
 
 - 검증 등록 API는 없다. 검증 행은 검증 Job만 만든다.
-- 같은 번들에 진행 중인 검증이 있으면 Job은 아무것도 하지 않고 끝난다(종료 코드 1).
+- 새 Job이 시작되면 같은 번들의 끝나지 않은 이전 검증은 `failed`로 정리한다(B는 번들마다 Job을 하나만 돌린다).
+- 같은 검증 ID가 이미 끝났으면(Job이 다시 실행됨) 다시 계산하지 않고 그 결과를 다시 보낸다.
 
 ## 제공하는 것 / 받는 것
 
@@ -35,9 +39,9 @@
 |---|---|---|---|
 | M8 운영 화면 (`UI-01·UI-02`) | 운영자 | 판정·OCR 코드 (`import`) | A |
 | 검증 결과·지표·영향 거래(diff) 조회 API | B(M2 게이트) · M8(C) | 거래·판정 테이블 · 원문 서류 (읽기) | A |
-| 검증 완료 알림 | B | 골든셋 · `manifest.json` | 데이터 |
-| 검증 Job 양식 (`job/job-template.json`) · 이미지 | B · D | 검증 Job 시작 (K8s Job 생성) | B |
-| | | 운영 번들 조회 (`GET /bundles/active`) · 게이트 판정 요청 API | B |
+| 검증 결과 전송 (`VALIDATION_CALLBACK_URL`) | B | 골든셋 · `manifest.json` | 데이터 |
+| 검증 Job 양식 (`job/job-template.json`) · 이미지 | B · D | 검증 Job 시작 (K8s Job 생성, 환경변수 5개) | B |
+| | | 검증 결과 수신 API (`POST /bundles/{id}/validation-results/{validation_id}`) | B |
 | | | Job 생성 권한(RBAC) · 이미지 배포 · `data/` 볼륨 | D |
 | | | 배포 상태 조회 · 롤백 | D |
 
@@ -50,11 +54,13 @@ pytest c_replay/tests
 검증 Job을 일반 프로세스로 실행하는 예:
 
 ```bash
-BUNDLE_ID=B-9 DATABASE_URL=postgresql://... B_URL=http://localhost:8100 python -m c_replay.job
+BUNDLE_ID=B-9 DATABASE_URL=postgresql://... python -m c_replay.job
 ```
 
-- `B_URL`이 없으면 운영 번들은 `contracts.BASELINE_BUNDLE`(B-7)로 보고, 완료 알림을 보내지 않는다.
-- 종료 코드: 0 = completed, 1 = failed 또는 시작 못 함, 2 = 필수 환경변수 없음.
+- 필수는 `BUNDLE_ID`, `DATABASE_URL` 둘이다.
+- 손으로 돌릴 때 `VALIDATION_ID`가 없으면 C가 만들고, `BASELINE_BUNDLE_ID`가 없으면 `contracts.BASELINE_BUNDLE`(B-7)을 쓴다.
+- `VALIDATION_CALLBACK_URL`이 없으면 결과를 보내지 않고 C의 DB에만 저장한다.
+- 종료 코드: 0 = completed로 저장했고 B가 받음(또는 보낼 곳 없음), 1 = 그 밖의 경우, 2 = 필수 환경변수 없음.
 
 이미지 빌드 (저장소 루트에서):
 

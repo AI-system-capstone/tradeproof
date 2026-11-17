@@ -3,7 +3,7 @@
   "info": {
     "title": "TradeProof c_replay — 검증 API (M3) + 운영 화면 (M8)",
     "version": "0.1.0-draft",
-    "description": "범위는 결정 0006 기준: C = M3 검증(골든셋 검증 + Replay) + M8 운영 화면. 게이트·승인·배포 요청은 B(M2) 담당이라 여기에 없다.\n\n**검증 한 번(validation)** = 후보 번들 하나를 운영 번들과 비교하는 작업. 골든셋 검증(VAL-01)과 Replay(VAL-02·03)를 함께 수행한다. 검증은 검증 Job이 하고, 이 API는 결과를 **조회만** 한다 (등록 API 없음).\n\n**흐름**\n1. B가 반입 검증을 통과한 번들(`validated`)마다 C의 Job 템플릿(`c_replay/job/job-template.json`)에 `BUNDLE_ID`를 넣어 K8s Job을 만든다.\n2. 검증 Job(`python -m c_replay.job`)이 B의 `GET /bundles/active`로 운영 번들을 확인하고, 검증 행을 만들어(`queued` → `running`) 골든셋 검증·Replay를 한 뒤 `completed` 또는 `failed`로 저장한다.\n3. 끝나면 검증 Job이 B에 완료 알림을 보낸다: `POST /bundles/{bundle_id}/validation-results` `{validation_id, bundle_id, status}` (B가 만들 API, 경로는 가정).\n4. B(M2 게이트)는 이 API의 결과로 통과·실패를 판정하고 승인·반려 전이를 한다. 운영 화면(M8)도 이 API로 결과를 본다.\n\n**공통 규칙**\n- 실패 응답은 모두 `{code, message, target_id}` (contracts.ERROR_FIELDS).\n- 요청 ID는 `X-Request-ID` 헤더 (응답에도 돌려준다).\n- 시각은 ISO 8601 UTC 문자열.\n\n**팀 확인이 필요한 가정**\n- (B) 완료 알림을 받는 게이트 판정 요청 API를 B가 만든다는 것과 그 경로.\n- (B) 게이트 판정은 B가 `GET /validations?bundle_id=`의 최신 `completed` 건을 읽어서 한다는 것.\n- (팀, MTG-06) 미탐·오탐의 정의: 미탐 = 기대보다 낮은 위험도로 분류된 건(보류→검토 포함), 오탐 = 기대보다 높은 위험도로 분류된 건. 보류→검토를 미탐에 넣는 이유: rules-v3는 OCR이 불확실하면 검토로 보내므로 저하 모델(S5)이 '보류→통과'가 아니라 '보류→검토'로 나타난다.\n- (팀, MTG-02) 골든셋·과거 거래 건수."
+    "description": "범위는 결정 0006 기준: C = M3 검증(골든셋 검증 + Replay) + M8 운영 화면. 게이트·승인·배포 요청은 B(M2) 담당이라 여기에 없다.\n\n**검증 한 번(validation)** = 후보 번들 하나를 운영 번들과 비교하는 작업. 골든셋 검증(VAL-01)과 Replay(VAL-02·03)를 함께 수행한다. 검증은 검증 Job이 하고, 이 API는 결과를 **조회만** 한다 (등록 API 없음).\n\n**흐름** (B PR #17의 검증 Job 계약)\n1. B(M2)가 검증할 번들마다 검증 ID를 만들고, C의 Job 양식(`c_replay/job/job-template.json`)에 `VALIDATION_ID`, `BUNDLE_ID`, `BASELINE_BUNDLE_ID`, `REQUESTED_BY`, `VALIDATION_CALLBACK_URL`을 넣어 K8s Job을 만든다.\n2. 검증 Job(`python -m c_replay.job`)이 B가 준 검증 ID로 검증 행을 만들어(`queued` → `running`) 골든셋 검증·Replay를 한 뒤 `completed` 또는 `failed`로 저장한다.\n3. 검증 Job이 `VALIDATION_CALLBACK_URL`(B의 `POST /bundles/{bundle_id}/validation-results/{validation_id}`)로 결과 전체(`validation_id, bundle_id, baseline_bundle_id, status, golden, replay, error`)를 보낸다. B가 200을 줄 때까지 다시 보낸다. 달라진 거래 목록은 보내지 않고 이 API의 `/diffs`로 조회한다.\n4. B(M2 게이트)가 받은 결과로 통과·차단을 판정한다. 운영 화면(M8)은 게이트를 B에서, 달라진 거래를 이 API에서 같은 검증 ID로 읽는다.\n\n**공통 규칙**\n- 실패 응답은 모두 `{code, message, target_id}` (contracts.ERROR_FIELDS).\n- 요청 ID는 `X-Request-ID` 헤더 (응답에도 돌려준다).\n- 시각은 ISO 8601 UTC 문자열.\n\n**팀 확인이 필요한 가정**\n- (B) 위 Job 계약은 아직 열린 B PR #17 기준이다. 병합 전에 바뀌면 다시 맞춘다.\n- (팀, MTG-06) 미탐·오탐의 정의: 미탐 = 기대보다 낮은 위험도로 분류된 건(보류→검토 포함), 오탐 = 기대보다 높은 위험도로 분류된 건. 보류→검토를 미탐에 넣는 이유: rules-v3는 OCR이 불확실하면 검토로 보내므로 저하 모델(S5)이 '보류→통과'가 아니라 '보류→검토'로 나타난다.\n- (팀, MTG-02) 골든셋·과거 거래 건수."
   },
   "servers": [{ "url": "http://localhost:8200", "description": "개발 환경 (compose)" }],
   "tags": [
@@ -112,7 +112,7 @@
   },
   "components": {
     "parameters": {
-      "ValidationId": { "name": "validation_id", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^RP-[0-9a-f]{12}$" }, "example": "RP-3f9a1c0b7d2e" },
+      "ValidationId": { "name": "validation_id", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^RP-[0-9a-f]+$" }, "example": "RP-3f9a1c0b7d2e4a5b8c9d0e1f2a3b4c5d" },
       "Limit": { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } },
       "Offset": { "name": "offset", "in": "query", "schema": { "type": "integer", "minimum": 0, "default": 0 } }
     },
@@ -132,7 +132,7 @@
         "type": "object",
         "required": ["validation_id", "bundle_id", "baseline_bundle_id", "status", "golden", "replay", "error", "requested_by", "created_at", "started_at", "finished_at"],
         "properties": {
-          "validation_id": { "type": "string", "description": "RP-<12자리 hex>", "examples": ["RP-3f9a1c0b7d2e"] },
+          "validation_id": { "type": "string", "description": "RP-<hex>. B가 만든 검증 ID (손으로 실행할 때는 C가 만든다)", "examples": ["RP-3f9a1c0b7d2e4a5b8c9d0e1f2a3b4c5d"] },
           "bundle_id": { "type": "string", "description": "후보 번들", "examples": ["B-9"] },
           "baseline_bundle_id": { "type": "string", "description": "비교 기준(운영) 번들", "examples": ["B-7"] },
           "status": { "$ref": "#/components/schemas/ValidationStatus" },

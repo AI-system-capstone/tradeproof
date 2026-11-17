@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from datetime import timedelta
 
 import pytest
 
@@ -237,6 +236,9 @@ def test_read_past_one_row_per_tx(pg):
 
 
 # ---------------------------------------------------------------- 검증 Job
+VID = "RP-" + "a" * 32          # B 가 만드는 검증 ID 모양 (PR #17: "RP-" + uuid4 hex)
+
+
 def _load():
     items = [label("TX-0001", P), label("TX-0002", H)]
     rows = [past("TX-0001", P), past("TX-0002", H)]
@@ -244,10 +246,18 @@ def _load():
     return items, rows, proc
 
 
-def _run(store=None, bundle_id=CAND, baseline=lambda: BASE, load=_load):
-    """run 한 번. 반환: (성공 여부, 저장소, 알림으로 받은 검증 목록)"""
+def _job(bundle_id=CAND, vid=VID):
+    return {"validation_id": vid, "bundle_id": bundle_id, "baseline_bundle_id": BASE, "requested_by": "b-registry"}
+
+
+def _run(store=None, bundle_id=CAND, load=_load, vid=VID, accept=True):
+    """run 한 번. 반환: (성공 여부, 저장소, B 에 보낸 검증 목록). accept=False 면 B 가 받지 못한 것으로 본다."""
     store, sent = store or MemoryStore(), []
-    ok = run(bundle_id, baseline, store, load, notify=sent.append)
+
+    def notify(v, budget):
+        sent.append(v)
+        return accept
+    ok = run(_job(bundle_id, vid), store, load, notify=notify)
     return ok, store, sent
 
 
@@ -257,17 +267,28 @@ def _only(store):
     return items[0]
 
 
-def test_job_creates_validation_and_completes():
+def test_job_saves_result_under_b_validation_id_and_sends_it():
     ok, s, sent = _run()
     v = _only(s)
     assert ok is True
-    assert (v["bundle_id"], v["baseline_bundle_id"], v["requested_by"]) == (CAND, BASE, "b_registry")
+    assert (v["validation_id"], v["bundle_id"], v["baseline_bundle_id"], v["requested_by"]) == (
+        VID, CAND, BASE, "b-registry")
     assert v["status"] == "completed" and v["error"] is None and v["started_at"]
     assert v["replay"] == {"total": 2, "processed": 2, "count_match": True, "changed": 2, "changed_down": 1}
     assert v["golden"]["false_negative"] == {"baseline": 0, "candidate": 1, "diff": 1}
-    items, total = s.diffs(v["validation_id"])
+    items, total = s.diffs(VID)
     assert total == 2 and items[0]["tx_id"] == "TX-0002" and items[0]["direction"] == "down"
-    assert sent == [v]                                            # 끝나면 완료 알림 한 번
+    assert sent == [v]                                            # 끝나면 B 에 한 번 보낸다
+
+
+def test_job_is_not_successful_when_b_did_not_receive():
+    ok, s, sent = _run(accept=False)
+    assert ok is False and _only(s)["status"] == "completed" and len(sent) == 1   # 결과는 C 에 남는다
+
+
+def test_job_without_callback_url_succeeds_on_save_only():
+    s = MemoryStore()
+    assert run(_job(), s, _load) is True and _only(s)["status"] == "completed"
 
 
 def test_job_logs_past_records_made_by_other_bundle(capsys):
@@ -278,13 +299,13 @@ def test_job_logs_past_records_made_by_other_bundle(capsys):
     assert len(line) == 1 and '"count": 1' in line[0] and '"total": 2' in line[0]
 
 
-def test_job_fails_on_exception_and_notifies():
+def test_job_fails_on_exception_and_sends_failure():
     def boom():
         raise RuntimeError("DB 없음")
     ok, s, sent = _run(load=boom)
     v = _only(s)
     assert ok is False and v["status"] == "failed" and v["golden"] is None
-    assert v["error"] == {"code": C.ERR_INTERNAL, "message": "RuntimeError: DB 없음", "target_id": v["validation_id"]}
+    assert v["error"] == {"code": C.ERR_INTERNAL, "message": "RuntimeError: DB 없음", "target_id": VID}
     assert [x["status"] for x in sent] == ["failed"]
 
 
@@ -314,15 +335,6 @@ def test_job_fails_on_unknown_bundle_without_loading():
     v = _only(s)
     assert ok is False and v["status"] == "failed" and v["started_at"] is None
     assert v["error"] == {"code": C.ERR_NOT_FOUND, "message": "번들 B-404 를 찾을 수 없음", "target_id": "B-404"}
-    assert len(sent) == 1
-
-
-def test_job_fails_when_b_is_unreachable():
-    def down():
-        raise OSError("connection refused")
-    ok, s, sent = _run(baseline=down, load=lambda: (_ for _ in ()).throw(AssertionError("읽지 않는다")))
-    v = _only(s)
-    assert ok is False and v["baseline_bundle_id"] == "" and v["error"]["code"] == C.ERR_UNAVAILABLE
     assert len(sent) == 1
 
 
@@ -367,14 +379,23 @@ def test_sigterm_after_result_saved_keeps_completed():
     assert [x["status"] for x in sent] == ["completed"]
 
 
-def test_sigterm_while_notifying_sends_again_and_keeps_result():
+def test_sigterm_uses_short_send_budget():
+    budgets = []
+    s = _KillAt("start")
+    run(_job(), s, _load, notify=lambda v, budget: budgets.append(budget) or True)
+    assert budgets == [J.NOTIFY_BUDGET_ON_TERM]
+
+
+def test_sigterm_while_sending_tries_again_with_short_budget():
     s, calls = MemoryStore(), []
-    def notify(v):
-        calls.append(v["status"])
+    def notify(v, budget):
+        calls.append((v["status"], budget))
         if len(calls) == 1:
             raise Terminated()
-    ok = run(CAND, lambda: BASE, s, _load, notify=notify)
-    assert ok is True and calls == ["completed", "completed"] and _only(s)["status"] == "completed"
+        return True
+    ok = run(_job(), s, _load, notify=notify)
+    assert ok is True and _only(s)["status"] == "completed"
+    assert calls == [("completed", J.NOTIFY_BUDGET), ("completed", J.NOTIFY_BUDGET_ON_TERM)]
 
 
 def test_sigterm_handler_ignores_signals_after_the_first(monkeypatch):
@@ -384,68 +405,41 @@ def test_sigterm_handler_ignores_signals_after_the_first(monkeypatch):
     assert J._on_sigterm(15, None) is None                          # 정리 중 두 번째 신호는 무시
 
 
-def test_notification_fits_in_termination_grace_period():
+def test_send_after_sigterm_fits_in_termination_grace_period():
     import json
     t = json.loads((Path(J.__file__).parent / "job-template.json").read_text(encoding="utf-8"))
-    waits = sum(2 ** i for i in range(J.NOTIFY_TRIES - 1))
-    assert J.NOTIFY_TRIES * J.NOTIFY_TIMEOUT + waits < t["spec"]["template"]["spec"]["terminationGracePeriodSeconds"]
+    assert J.NOTIFY_BUDGET_ON_TERM + J.NOTIFY_TIMEOUT < t["spec"]["template"]["spec"]["terminationGracePeriodSeconds"]
 
 
-def test_job_does_nothing_when_same_bundle_in_progress():
+def test_same_validation_id_already_finished_is_sent_again_without_recomputing():
     s = MemoryStore()
-    s.create(CAND, BASE, "b_registry")
-    ok, s, sent = _run(store=s)
-    assert ok is False and sent == []
-    assert s.list()[1] == 1                                        # 새 행을 만들지 않는다
+    _run(store=s)                                                  # 첫 실행: completed
+    def never():
+        raise AssertionError("이미 끝난 검증은 다시 계산하지 않는다")
+    ok, s, sent = _run(store=s, load=never)
+    v = _only(s)
+    assert ok is True and v["status"] == "completed" and sent == [v]
 
 
-def _age(store, validation_id, seconds):
-    store._rows[validation_id]["created_at"] -= timedelta(seconds=seconds)
-
-
-def test_job_cleans_up_old_running_validation_then_starts():
+def test_new_job_fails_unfinished_validations_of_same_bundle_only():
     s = MemoryStore()
-    old = s.create(CAND, BASE, "b_registry")["validation_id"]
+    old = s.create(CAND, BASE, "b-registry")["validation_id"]     # 앞선 Job 이 죽어서 running 으로 남음
     s.start(old)
-    _age(s, old, J.STALE_AFTER.total_seconds() + 1)
+    other = s.create("B-8", BASE, "b-registry")["validation_id"]
     ok, s, sent = _run(store=s)
-    assert ok is True
-    first, second = s.get(old), _only_other(s, old)
-    assert first["status"] == "failed" and first["finished_at"]
-    assert first["error"]["code"] == C.ERR_INTERNAL and "정리" in first["error"]["message"]
-    assert second["status"] == "completed"
-    assert [x["validation_id"] for x in sent] == [second["validation_id"]]
+    assert ok is True and s.get(VID)["status"] == "completed"
+    assert s.get(old)["status"] == "failed" and "정리" in s.get(old)["error"]["message"]
+    assert s.get(other)["status"] == "queued"                      # 다른 번들은 그대로
+    assert [x["validation_id"] for x in sent] == [VID]
 
 
-def test_job_cleans_up_old_queued_validation_of_same_bundle_only():
+def test_job_restarted_with_same_id_while_running_sends_failure():
+    """같은 ID 가 running 으로 남아 있다 = 그 실행은 죽었다. 실패로 정리하고 그 결과를 보낸다 (다시 계산하지 않는다)."""
     s = MemoryStore()
-    old = s.create(CAND, BASE, "b_registry")["validation_id"]
-    other = s.create("B-8", BASE, "b_registry")["validation_id"]
-    for v in (old, other):
-        _age(s, v, J.STALE_AFTER.total_seconds() + 1)
-    ok, s, _ = _run(store=s)
-    assert ok is True and s.get(old)["status"] == "failed" and s.get(other)["status"] == "queued"
-
-
-def test_job_leaves_recent_running_validation_alone():
-    s = MemoryStore()
-    recent = s.create(CAND, BASE, "b_registry")["validation_id"]
-    s.start(recent)
-    _age(s, recent, J.STALE_AFTER.total_seconds() - 60)
-    ok, s, sent = _run(store=s)
-    assert ok is False and sent == [] and s.get(recent)["status"] == "running" and s.list()[1] == 1
-
-
-def test_stale_limit_is_longer_than_job_deadline():
-    import json
-    from pathlib import Path
-    t = json.loads((Path(J.__file__).parent / "job-template.json").read_text(encoding="utf-8"))
-    assert J.STALE_AFTER.total_seconds() > t["spec"]["activeDeadlineSeconds"]
-
-
-def _only_other(store, validation_id):
-    (v,) = [x for x in store.list()[0] if x["validation_id"] != validation_id]
-    return v
+    s.create(CAND, BASE, "b-registry", validation_id=VID)
+    s.start(VID)
+    ok, s, sent = _run(store=s, load=lambda: (_ for _ in ()).throw(AssertionError("다시 계산하지 않는다")))
+    assert ok is False and [x["status"] for x in sent] == ["failed"]
 
 
 def test_job_main_requires_bundle_id_and_database_url():
@@ -454,40 +448,70 @@ def test_job_main_requires_bundle_id_and_database_url():
     assert job_main({"DATABASE_URL": "postgresql://x"}) == 2
 
 
-def test_active_bundle_without_b_url_is_contracts_baseline():
-    assert J.active_bundle(None) == C.BASELINE_BUNDLE
+def test_callback_body_is_what_b_expects():
+    ok, s, _ = _run()
+    body = J.callback_body(_only(s))
+    # B PR #17 의 ValidationCallback 필드와 같아야 한다 (B 는 모르는 필드를 거부한다)
+    assert set(body) == {"validation_id", "bundle_id", "baseline_bundle_id", "status", "golden", "replay", "error"}
+    assert body["error"] is None and body["golden"]["total"] == 2
+    s2 = MemoryStore()
+    _run(store=s2, load=lambda: (_ for _ in ()).throw(RuntimeError("x")))
+    assert J.callback_body(_only(s2))["error"] == "RuntimeError: x"   # B 는 error 를 문자열로 받는다
 
 
-def test_notifier_posts_and_retries(monkeypatch):
-    calls, waits = [], []
+class _Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+    def sleep(self, s):
+        self.t += s
+
+
+def test_notifier_retries_until_b_accepts(monkeypatch):
+    clock, calls = _Clock(), []
     def fake_http(method, url, body=None, timeout=10):
-        assert timeout == J.NOTIFY_TIMEOUT
-        calls.append((method, url, body))
-        if len(calls) < 3:
+        assert (method, timeout) == ("POST", J.NOTIFY_TIMEOUT)
+        calls.append((url, body))
+        if len(calls) < 4:
             raise OSError("down")
         return {}
     monkeypatch.setattr(J, "_http", fake_http)
-    v = {"validation_id": "RP-000000000001", "bundle_id": CAND, "status": "completed", "golden": None}
-    assert J.notifier("http://b:8100/", sleep=waits.append)(v) is True
-    assert calls[-1] == ("POST", "http://b:8100/bundles/B-9/validation-results",
-                         {"validation_id": "RP-000000000001", "bundle_id": CAND, "status": "completed"})
-    assert len(calls) == 3 and waits == [1, 2]
-    calls.clear()
+    url = f"http://b:8100/bundles/{CAND}/validation-results/{VID}"
+    v = {"validation_id": VID, "bundle_id": CAND, "baseline_bundle_id": BASE, "status": "completed",
+         "golden": {}, "replay": {}, "error": None}
+    assert J.notifier(url, sleep=clock.sleep, clock=clock)(v) is True
+    assert len(calls) == 4 and calls[-1] == (url, J.callback_body(v)) and clock.t == 1 + 2 + 4
+
+
+def test_notifier_stops_on_conflict_and_within_budget(monkeypatch):
+    import urllib.error
+    v = {"validation_id": VID, "bundle_id": CAND, "baseline_bundle_id": BASE, "status": "failed",
+         "golden": None, "replay": None, "error": {"code": "X", "message": "m", "target_id": None}}
+    calls = []
+    def conflict(*a, **k):
+        calls.append(1)
+        raise urllib.error.HTTPError("u", 409, "Conflict", {}, None)
+    monkeypatch.setattr(J, "_http", conflict)
+    clock = _Clock()
+    assert J.notifier("http://b", sleep=clock.sleep, clock=clock)(v) is False and len(calls) == 1   # 다시 보내지 않음
     monkeypatch.setattr(J, "_http", lambda *a, **k: (_ for _ in ()).throw(OSError("down")))
-    assert J.notifier("http://b:8100", sleep=waits.append)(v) is False   # 끝내 실패해도 예외 없음
-    assert J.notifier(None)(v) is False                                   # B 주소가 없으면 보내지 않음
+    clock = _Clock()
+    assert J.notifier("http://b", sleep=clock.sleep, clock=clock)(v, budget=60) is False
+    assert clock.t + J.NOTIFY_TIMEOUT <= 60                                                        # 예산 안에서 멈춘다
 
 
 def test_job_template_is_what_b_expects():
     import json
-    from pathlib import Path
     t = json.loads((Path(J.__file__).parent / "job-template.json").read_text(encoding="utf-8"))
     assert (t["apiVersion"], t["kind"]) == ("batch/v1", "Job")
     assert t["spec"]["backoffLimit"] == 0 and t["spec"]["activeDeadlineSeconds"] > 0
     assert "ttlSecondsAfterFinished" not in t["spec"]                 # 끝난 Job 을 지우면 B 가 다시 만든다
     (c,) = t["spec"]["template"]["spec"]["containers"]
     assert c["command"] == ["python", "-m", "c_replay.job"]
-    assert all(e["name"] != "BUNDLE_ID" for e in c.get("env", []))   # BUNDLE_ID 는 B 가 넣는다
+    assert all(e["name"] not in J.JOB_ENV for e in c.get("env", []))   # 이 값들은 B 가 넣는다
 
 
 # ---------------------------------------------------------------- A 의 처리 경로(pipeline) 연결 (OCR 은 가짜로 바꿔 끼움)
