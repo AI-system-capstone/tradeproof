@@ -126,7 +126,7 @@ const MOCK = !q.has('mock') ? null : {
   'GET c/validations': { total: 1, items: [{ validation_id: 'RP-3f9a1c0b7d2e', bundle_id: 'B-9', baseline_bundle_id: 'B-7',
     status: 'completed', golden: { golden_version: 'golden-list-v14', total: 100,
       accuracy: { baseline: 1.0, candidate: 0.95, diff: -0.05 },
-      false_negative: { baseline: 0, candidate: 0, diff: 0 }, false_positive: { baseline: 0, candidate: 0, diff: 0 } },
+      false_negative: { baseline: 0, candidate: 1, diff: 1 }, false_positive: { baseline: 0, candidate: 0, diff: 0 } },
     replay: { total: 100, processed: 100, count_match: true, changed: 2, changed_down: 1 } }] },
   'GET c/validations/diffs': { total: 2, items: [
     { tx_id: 'TX-0012', direction: 'down', before: { classification: 'HIGH_RISK_HOLD' }, after: { classification: 'MANUAL_REVIEW' } },
