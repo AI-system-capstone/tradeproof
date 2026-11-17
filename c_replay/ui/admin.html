@@ -93,7 +93,7 @@
 <script>
 /* 화면은 C 서버 한 곳만 부른다. B·D 는 C 의 중계(/api/b/…, /api/d/…)를 거친다 (브라우저의 다른 출처 호출·CORS 가 필요 없다).
    검증은 B 가 만든 검증 ID 하나로 따라간다: 번들(B) → 검증·게이트(B) → 달라진 거래(C, 같은 검증 ID) → 배포(D).
-   기준: B = PR #17(origin/b/approve) 의 b_registry/docs/openapi/b_registry.json, C = docs/openapi/c_replay.json, D = docs/openapi/d_platform.json
+   기준: B = b_registry/docs/openapi/b_registry.json, C = docs/openapi/c_replay.json, D = docs/openapi/d_platform.json
    B  POST /imports (multipart: package)   -> 201 {import_id, bundle_id}
       GET  /imports/{id}                   -> {status:"APPROVED"|"REJECTED", reason, bundle_id, filename}
       GET  /bundles/{id}                   -> {bundle_id, status, model_id, list_id, created_at, base_bundle_id, history:[…], model:{model_id, uri}, list:{list_id, uri}}
@@ -253,7 +253,7 @@ async function validationOrError(vRes) {
   }
   return showValidation(vRes.value);
 }
-// B 의 게이트 판정 (PR #17: 정확도 기준 이상 + Replay 전체 처리면 통과)
+// B 의 게이트 판정 (정확도 기준 이상 + Replay 전체 처리면 통과)
 function gateHtml(gate) {
   if (!gate) return '<h3>게이트 (B)</h3><p class="muted">판정 전</p>';
   const ok = gate.decision === 'passed', p = gate.policy || {};
