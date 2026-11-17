@@ -532,7 +532,7 @@ def main(argv: list[str] | None = None) -> int:
         "generated_by": "docs/gen_docs.py",
         "seed": a.seed,
         "count": len(truths),
-        "list_versions": [lists[v]["list_version"] for v in (C.LIST_BASE, C.LIST_NEW)],
+        "list_ids": [lists[v]["list_version"] for v in (C.LIST_BASE, C.LIST_NEW)],
         "rules_version": M.RULES_VERSION,
         "rendered": not a.no_render,
         "summary": {"case_type": summary, "expected": exp_summary},

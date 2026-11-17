@@ -122,15 +122,15 @@ def _given_fields(job: dict) -> dict:
     return given
 
 
-def run_extraction(tx_dir: Path, model_version: str) -> tuple[dict, list]:
+def run_extraction(tx_dir: Path, model_id: str) -> tuple[dict, list]:
     """OCR + 필드 추출 (pipeline.extract_documents 그대로). 반환: (extracted_fields, conflicts)"""
-    return P.extract_documents(tx_dir, model_version)
+    return P.extract_documents(tx_dir, model_id)
 
 
 # ---------------------------------------------------------------- 한 건 처리
 def screen_job(job: dict, blob, workdir: Path, bundle_id: str | None = None, ctx: dict | None = None) -> dict:
     """한 번들 판정 (기본: 주 번들). ctx 를 같이 넘기면 서류 준비·모델별 OCR 결과를 번들끼리 재사용한다.
-    반환: {bundle_id, model_version, extracted, conflicts, source, result}"""
+    반환: {bundle_id, model_id, extracted, conflicts, source, result}"""
     ctx = {} if ctx is None else ctx
     bid = bundle_id or job["bundle_id"]
     if "tx_dir" not in ctx:
@@ -146,7 +146,7 @@ def screen_job(job: dict, blob, workdir: Path, bundle_id: str | None = None, ctx
             raise PermanentJobError(f"알 수 없는 input.source {src!r} ({list(C.INPUT_SOURCES)} 중 하나)")
     tx_dir = ctx["tx_dir"]
     b = P.bundle_spec(bid)
-    model = b["model_version"]
+    model = b["model_id"]
     if tx_dir is None:
         given = ctx["given"]
         extracted = {f: {"value": given.get(f), "source_doc": None, "bbox": None, "confidence": None}
@@ -159,7 +159,7 @@ def screen_job(job: dict, blob, workdir: Path, bundle_id: str | None = None, ctx
         extracted, conflicts = cache[model]
         source, from_ocr = C.extraction_source_ocr(model), True
     res = P.screen_extracted(extracted, conflicts, b, from_ocr=from_ocr)   # pipeline.screen_documents 와 같은 판정
-    return {"bundle_id": bid, "model_version": model, "extracted": extracted, "conflicts": conflicts,
+    return {"bundle_id": bid, "model_id": model, "extracted": extracted, "conflicts": conflicts,
             "source": source, "result": res}
 
 

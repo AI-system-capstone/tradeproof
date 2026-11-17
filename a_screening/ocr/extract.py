@@ -5,7 +5,7 @@ AI(OCR 엔진)는 run_ocr() 한 곳에서만 부른다. 그 뒤(줄 묶기, 라�
 
 출력 (contracts.OCR_DIR 기준, model-v3가 아닌 모델은 하위 폴더 <model>/):
   <tx_id>/<doc>.raw.json   OCR 원본 (image_to_data + 엔진/이미지 정보)
-  <tx_id>/extracted.json   {tx_id, model_version, ocr_engine, extracted_at,
+  <tx_id>/extracted.json   {tx_id, model_id, ocr_engine, extracted_at,
                             fields:{field:{value, source_doc, bbox, confidence}}, conflicts:[...]}
   bbox는 원본 PNG 픽셀 좌표 [x0, y0, x1, y1] (열화 모델이 축소해서 읽어도 원본 좌표로 되돌려 저장).
 
@@ -72,9 +72,9 @@ def field_preference(field: str) -> list[str]:
     return ["bl", "invoice"] if field in BL_PREFERRED else ["invoice", "bl"]
 
 
-def out_dir_for(base: Path | str | None, model_version: str) -> Path:
+def out_dir_for(base: Path | str | None, model_id: str) -> Path:
     """model-v3는 base 그대로, 다른 모델은 base/<model>/ (모델끼리 결과가 섞이지 않게)."""
-    return C.ocr_dir(model_version, base)
+    return C.ocr_dir(model_id, base)
 
 
 def norm_value(s: str | None) -> str:
@@ -110,15 +110,15 @@ def engine_name() -> str:
     return f"tesseract-{pytesseract.get_tesseract_version()}"
 
 
-def run_ocr(image_path: str | Path, model_version: str = DEFAULT_MODEL) -> dict:
+def run_ocr(image_path: str | Path, model_id: str = DEFAULT_MODEL) -> dict:
     """이미지 한 장을 OCR한다. 반환 = image_to_data(DICT) + 엔진/이미지/모델 정보.
 
     좌표(left/top/width/height)는 항상 원본 이미지 픽셀 기준이다.
     엔진을 바꿀 때는 이 함수만 같은 모양으로 돌려주면 된다.
     """
-    if model_version not in MODELS:
-        raise ValueError(f"unknown model_version {model_version!r}; known: {sorted(MODELS)}")
-    spec = MODELS[model_version]
+    if model_id not in MODELS:
+        raise ValueError(f"unknown model_id {model_id!r}; known: {sorted(MODELS)}")
+    spec = MODELS[model_id]
     image_path = Path(image_path)
     raw_bytes = image_path.read_bytes()
     img = Image.open(io.BytesIO(raw_bytes))
@@ -141,7 +141,7 @@ def run_ocr(image_path: str | Path, model_version: str = DEFAULT_MODEL) -> dict:
         "engine": spec["engine"],
         "engine_version": str(pytesseract.get_tesseract_version()),
         "engine_config": {"lang": spec["lang"], "config": spec["config"], "preprocess": pre},
-        "model_version": model_version,
+        "model_id": model_id,
         "image": _rel_data(image_path),
         "image_size": list(orig_size),
         "ocr_image_size": [work.width, work.height],
@@ -290,7 +290,7 @@ def parse_document(raw: dict, doc_type: str) -> dict:
 
 
 # ---------------------------------------------------------------- 거래 단위 병합
-def merge_documents(tx_id: str, parsed: dict[str, dict], model_version: str, ocr_engine: str) -> dict:
+def merge_documents(tx_id: str, parsed: dict[str, dict], model_id: str, ocr_engine: str) -> dict:
     fields = {}
     for f in C.TX_FIELDS:
         chosen = None
@@ -315,7 +315,7 @@ def merge_documents(tx_id: str, parsed: dict[str, dict], model_version: str, ocr
 
     return {
         "tx_id": tx_id,
-        "model_version": model_version,
+        "model_id": model_id,
         "ocr_engine": ocr_engine,
         "extracted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "fields": fields,
@@ -326,14 +326,14 @@ def merge_documents(tx_id: str, parsed: dict[str, dict], model_version: str, ocr
     }
 
 
-def _extract(tx_dir: Path, model_version: str) -> tuple[dict, dict]:
+def _extract(tx_dir: Path, model_id: str) -> tuple[dict, dict]:
     tx_dir = Path(tx_dir)
     raws, parsed = {}, {}
     for doc in C.DOC_TYPES:
         png = tx_dir / f"{doc}.png"
         if not png.exists():
             continue
-        raw = run_ocr(png, model_version)
+        raw = run_ocr(png, model_id)
         raws[doc] = raw
         p = parse_document(raw, doc)
         p["image"], p["image_size"] = _rel_data(png), raw["image_size"]
@@ -341,7 +341,7 @@ def _extract(tx_dir: Path, model_version: str) -> tuple[dict, dict]:
     if not raws:
         raise FileNotFoundError(f"no document images in {tx_dir}")
     engine = next(iter(raws.values()))
-    result = merge_documents(tx_dir.name, parsed, model_version,
+    result = merge_documents(tx_dir.name, parsed, model_id,
                              f"{engine['engine']}-{engine['engine_version']}")
     result["missing_docs"] = [d for d in C.DOC_TYPES if d not in raws]
     result["ocr_seconds"] = {d: r["ocr_seconds"] for d, r in raws.items()}
@@ -357,13 +357,13 @@ def _rel_data(p: Path) -> str:
         return str(p)
 
 
-def extract_transaction(tx_dir: str | Path, model_version: str = DEFAULT_MODEL,
+def extract_transaction(tx_dir: str | Path, model_id: str = DEFAULT_MODEL,
                         out_dir: str | Path | None = None) -> dict:
     """거래 폴더(<tx_id>/{invoice,bl}.png) 하나를 처리해 extracted dict를 돌려준다.
 
     out_dir를 주면 out_dir/<tx_id>/extracted.json 과 <doc>.raw.json 도 저장한다. (향후 POST /screenings용)
     """
-    result, raws = _extract(Path(tx_dir), model_version)
+    result, raws = _extract(Path(tx_dir), model_id)
     if out_dir is not None:
         d = Path(out_dir) / result["tx_id"]
         d.mkdir(parents=True, exist_ok=True)

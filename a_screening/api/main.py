@@ -542,8 +542,8 @@ def healthz(request: Request):
         except Exception as e:  # noqa: BLE001
             raise unavailable(request, name, e) from e
     b = C.BUNDLES[ACTIVE_BUNDLE]
-    return {"status": "ok", "bundle_id": ACTIVE_BUNDLE, "model_version": b["model_version"],
-            "rules_version": b["rules_version"], "list_version": b["list_version"],
+    return {"status": "ok", "bundle_id": ACTIVE_BUNDLE, "model_id": b["model_id"],
+            "rules_version": b["rules_version"], "list_id": b["list_id"],
             "rules_supported": list(C.RULES_VERSIONS), "shadow_bundle_id": shadow_bundle(),
             "storage": STORE.kind, "blob": BLOB.kind}
 
@@ -667,12 +667,12 @@ _INDEX: dict = {}
 _INDEX_LOCK = threading.Lock()
 
 
-def index_for(list_version: str):
+def index_for(list_id: str):
     """제재 리스트 색인 (버전별 캐시, 재판정용)."""
     with _INDEX_LOCK:
-        if list_version not in _INDEX:
-            _INDEX[list_version] = load_index(list_version)
-        return _INDEX[list_version]
+        if list_id not in _INDEX:
+            _INDEX[list_id] = load_index(list_id)
+        return _INDEX[list_id]
 
 
 def rescreen(rec: dict, corrected: dict | None) -> dict | None:
@@ -683,7 +683,7 @@ def rescreen(rec: dict, corrected: dict | None) -> dict | None:
     b = C.BUNDLES[rec["bundle_id"]]
     original = rec.get("fields") or {}
     fields = {f: original.get(f) for f in C.TX_FIELDS} | dict(corrected)
-    res = screen(fields, index_for(b["list_version"]), rules_version=b["rules_version"], ocr=None)
+    res = screen(fields, index_for(b["list_id"]), rules_version=b["rules_version"], ocr=None)
     cls, reasons = res["classification"], list(res["reasons"])
     # 한 번도 읽힌 적 없는 스크리닝 필드가 남아 있으면 (예: 처리 실패 건에서 일부만 정정) 통과로 보지 않는다
     for f in C.SCREENING_FIELDS:

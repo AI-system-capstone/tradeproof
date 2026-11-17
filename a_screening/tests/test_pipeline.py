@@ -22,22 +22,22 @@ have_lists = pytest.mark.skipif(not C.list_path(C.LIST_BASE).exists(), reason="d
 
 def comparable(out: dict) -> dict:
     """시간 값(extracted_at, ocr_seconds)을 뺀, 결과로 비교할 부분."""
-    return {k: out[k] for k in ("bundle_id", "model_version", "fields", "extracted", "conflicts", "source", "result")}
+    return {k: out[k] for k in ("bundle_id", "model_id", "fields", "extracted", "conflicts", "source", "result")}
 
 
 # ---------------------------------------------------------------- 번들 구성
 def test_bundle_spec():
     b = P.bundle_spec(C.BASELINE_BUNDLE)
     want = C.BUNDLES[C.BASELINE_BUNDLE]
-    assert b == {"bundle_id": C.BASELINE_BUNDLE, "model_version": want["model_version"],
-                 "list_version": want["list_version"], "rules_version": want["rules_version"]}
+    assert b == {"bundle_id": C.BASELINE_BUNDLE, "model_id": want["model_id"],
+                 "list_id": want["list_id"], "rules_version": want["rules_version"]}
     with pytest.raises(ValueError):
         P.bundle_spec("B-99")
 
 
 def test_bundle_missing_keys_rejected():
-    with pytest.raises(ValueError, match="model_version"):
-        P.screen_documents("/nonexistent", {"bundle_id": "B-x", "list_version": C.LIST_BASE,
+    with pytest.raises(ValueError, match="model_id"):
+        P.screen_documents("/nonexistent", {"bundle_id": "B-x", "list_id": C.LIST_BASE,
                                             "rules_version": C.RULES_BASE})
 
 
@@ -50,7 +50,7 @@ def test_screen_extracted_without_ocr_matches_match_screen():
     extracted = {f: {"value": v, "source_doc": None, "bbox": None, "confidence": None} for f, v in fields.items()}
     b = P.bundle_spec(C.BASELINE_BUNDLE)
     assert P.screen_extracted(extracted, [], b, from_ocr=False) == \
-        screen(fields, load_index(b["list_version"]), rules_version=b["rules_version"])
+        screen(fields, load_index(b["list_id"]), rules_version=b["rules_version"])
 
 
 # ---------------------------------------------------------------- SVC-04: 같은 입력 → 같은 결과 (3회)
@@ -75,7 +75,7 @@ def test_worker_path_equals_pipeline(bundle_id, tmp_path: Path):
         p = P.screen_documents(C.DOCS_DIR / s, P.bundle_spec(bundle_id))
         assert w["result"] == p["result"]
         assert w["extracted"] == p["extracted"] and w["conflicts"] == p["conflicts"]
-        assert (w["model_version"], w["source"]) == (p["model_version"], p["source"])
+        assert (w["model_id"], w["source"]) == (p["model_id"], p["source"])
 
 
 def test_rules_fixed_for_all_bundles():
@@ -89,5 +89,5 @@ def test_bundle_without_rules_uses_fixed(monkeypatch):
     seen = {}
     monkeypatch.setattr(P, "screen", lambda f, i, rules_version, ocr: seen.setdefault("rv", rules_version) and {})
     monkeypatch.setattr(P, "index_for", lambda v: None)
-    P.screen_extracted({}, [], {"bundle_id": "B-x", "model_version": C.MODEL_BASE, "list_version": C.LIST_BASE})
+    P.screen_extracted({}, [], {"bundle_id": "B-x", "model_id": C.MODEL_BASE, "list_id": C.LIST_BASE})
     assert seen["rv"] == C.RULES_FIXED

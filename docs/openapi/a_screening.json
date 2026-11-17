@@ -56,9 +56,9 @@
                 "example": {
                   "status": "ok",
                   "bundle_id": "B-7",
-                  "model_version": "model-v3",
+                  "model_id": "model-v3",
                   "rules_version": "rules-v3",
-                  "list_version": "list-v14",
+                  "list_id": "list-v14",
                   "rules_supported": [
                     "rules-v2",
                     "rules-v3"
@@ -494,9 +494,9 @@
                   "tx_id": "TX-20261113-639E013E",
                   "status": "completed",
                   "bundle_id": "B-7",
-                  "model_version": "model-v3",
+                  "model_id": "model-v3",
                   "rules_version": "rules-v3",
-                  "list_version": "list-v14",
+                  "list_id": "list-v14",
                   "input": {
                     "source": "upload",
                     "files": {
@@ -858,9 +858,9 @@
                   "tx_id": "TX-20261113-639E013E",
                   "status": "completed",
                   "bundle_id": "B-7",
-                  "model_version": "model-v3",
+                  "model_id": "model-v3",
                   "rules_version": "rules-v3",
-                  "list_version": "list-v14",
+                  "list_id": "list-v14",
                   "input": {
                     "source": "upload",
                     "files": {
@@ -1285,17 +1285,17 @@
             "title": "Bundle Id",
             "description": "지금 접수에 쓰는 번들 (BUNDLE_ID)"
           },
-          "model_version": {
+          "model_id": {
             "type": "string",
-            "title": "Model Version"
+            "title": "Model Id"
           },
           "rules_version": {
             "type": "string",
             "title": "Rules Version"
           },
-          "list_version": {
+          "list_id": {
             "type": "string",
-            "title": "List Version"
+            "title": "List Id"
           },
           "rules_supported": {
             "items": {
@@ -1336,9 +1336,9 @@
         "required": [
           "status",
           "bundle_id",
-          "model_version",
+          "model_id",
           "rules_version",
-          "list_version",
+          "list_id",
           "rules_supported",
           "shadow_bundle_id",
           "storage",
@@ -1685,17 +1685,17 @@
             "type": "string",
             "title": "Bundle Id"
           },
-          "model_version": {
+          "model_id": {
             "type": "string",
-            "title": "Model Version"
+            "title": "Model Id"
           },
           "rules_version": {
             "type": "string",
             "title": "Rules Version"
           },
-          "list_version": {
+          "list_id": {
             "type": "string",
-            "title": "List Version"
+            "title": "List Id"
           },
           "input": {
             "additionalProperties": true,
@@ -1972,9 +1972,9 @@
           "tx_id",
           "status",
           "bundle_id",
-          "model_version",
+          "model_id",
           "rules_version",
-          "list_version",
+          "list_id",
           "input",
           "received_at",
           "submitted_at",
@@ -2021,17 +2021,17 @@
             "type": "string",
             "title": "Bundle Id"
           },
-          "model_version": {
+          "model_id": {
             "type": "string",
-            "title": "Model Version"
+            "title": "Model Id"
           },
           "rules_version": {
             "type": "string",
             "title": "Rules Version"
           },
-          "list_version": {
+          "list_id": {
             "type": "string",
-            "title": "List Version"
+            "title": "List Id"
           },
           "input": {
             "additionalProperties": true,
@@ -2297,9 +2297,9 @@
           "tx_id",
           "status",
           "bundle_id",
-          "model_version",
+          "model_id",
           "rules_version",
-          "list_version",
+          "list_id",
           "input",
           "received_at",
           "submitted_at",

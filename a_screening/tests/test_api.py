@@ -129,8 +129,8 @@ class Down:
 def test_healthz(env):
     r = client.get("/healthz").json()
     assert r["status"] == "ok" and r["storage"] == env.store.kind and r["blob"] == env.blob.kind
-    assert r["bundle_id"] == C.BASELINE_BUNDLE and r["list_version"] == C.LIST_BASE
-    assert r["model_version"] == C.MODEL_BASE and r["rules_version"] == C.RULES_FIXED
+    assert r["bundle_id"] == C.BASELINE_BUNDLE and r["list_id"] == C.LIST_BASE
+    assert r["model_id"] == C.MODEL_BASE and r["rules_version"] == C.RULES_FIXED
     assert r["rules_supported"] == list(C.RULES_VERSIONS) and r["shadow_bundle_id"] is None
 
 
@@ -384,9 +384,9 @@ def test_bundle_fixed_at_submission(env, bundle):
     tx8 = submit(env, json={"fields": new_listing_fields()})["tx_id"]
     env.run()
     rec = get(tx)
-    assert rec["bundle_id"] == "B-7" and rec["list_version"] == C.LIST_BASE and rec["classification"] == C.PASS
+    assert rec["bundle_id"] == "B-7" and rec["list_id"] == C.LIST_BASE and rec["classification"] == C.PASS
     rec = get(tx8)
-    assert rec["bundle_id"] == "B-8" and rec["list_version"] == C.LIST_NEW and rec["classification"] == C.HOLD
+    assert rec["bundle_id"] == "B-8" and rec["list_id"] == C.LIST_NEW and rec["classification"] == C.HOLD
     assert rec["reasons"][0]["entry_id"] == C.NEW_LISTING["entry_id"]
 
 

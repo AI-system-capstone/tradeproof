@@ -516,7 +516,7 @@ function renderDetail() {
 
 function renderHeader(d) {
   const meta = [
-    ["번들", d.bundle_id], ["모델", d.model_version], ["규칙", d.rules_version], ["리스트", d.list_version],
+    ["번들", d.bundle_id], ["모델", d.model_id], ["규칙", d.rules_version], ["리스트", d.list_id],
     ["처리 상태", C.STATUS_LABELS[d.status] || d.status], ["처리 시도", d.attempts],
     ["섀도 번들", d.shadow_bundle_id],
   ];

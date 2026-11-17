@@ -69,3 +69,4 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 2026-11-12 | A 지윤아 | C가 쓸 처리 경로 `a_screening.pipeline.screen_documents(tx_dir, bundle)` (워커와 같은 함수, SVC-04 테스트), A 접수 번들 환경변수 `BUNDLE_ID` |
 | 2026-11-13 | C 강민성 | [결정 0006](decisions/0006-m8-owner-c-and-exclude-s6.md): 모듈 담당 재정비(B: M1·M2 / C: M3·M8 / A: M6), S6 제외, "Replay Job"을 M3 전체(골든셋 검증·Replay)를 포괄하는 "검증 Job" 표현으로 정비 |
 | 2026-11-16 | A 지윤아 | 판정 규칙 버전을 번들과 무관하게 `rules-v3`로 고정(`contracts.RULES_FIXED`). A API 명세서 `docs/openapi/a_screening.json` 추가 |
+| 2026-11-17 | A 지윤아 | A의 번들 필드 이름을 B 레지스트리와 맞춤: `model_version` → `model_id`, `list_version` → `list_id` (값은 그대로, 예: `model-v3`, `list-v14`). A API 응답·`contracts.BUNDLES`·OCR 결과 파일에 적용. 제재 리스트 파일 안의 `list_version` 키는 B 반입 검사가 보므로 그대로 |

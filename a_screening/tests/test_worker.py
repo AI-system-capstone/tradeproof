@@ -95,7 +95,7 @@ def test_sample_b7_hold(env):
     rec = env.store.get(tx)
     assert rec["status"] == C.SCREENING_COMPLETED and rec["attempts"] == 1 and rec["worker_id"] == "w-test"
     assert rec["classification"] == C.HOLD
-    assert rec["extraction_source"] == C.extraction_source_ocr(C.BUNDLES["B-7"]["model_version"])
+    assert rec["extraction_source"] == C.extraction_source_ocr(C.BUNDLES["B-7"]["model_id"])
     assert any(r["rule"] in (C.RULE_PARTY_EXACT, C.RULE_VESSEL_EXACT) for r in rec["reasons"])
     assert_reasons_ok(rec)
     # OCR 결과라 bbox·confidence 가 있다
@@ -136,7 +136,7 @@ def test_upload_png(env):
     rec = env.store.get(tx)
     assert rec["status"] == C.SCREENING_COMPLETED, rec["error"]
     assert rec["classification"] == C.HOLD
-    assert rec["extraction_source"] == C.extraction_source_ocr(C.BUNDLES[C.BASELINE_BUNDLE]["model_version"])
+    assert rec["extraction_source"] == C.extraction_source_ocr(C.BUNDLES[C.BASELINE_BUNDLE]["model_id"])
 
 
 def test_upload_bad_format_goes_to_review(env, tmp_path):
@@ -162,11 +162,11 @@ def test_shadow_b9_runs_ocr_per_model(env, monkeypatch):
     monkeypatch.setattr(W, "run_extraction", spy)
     tx = env.create(sample_input(), bundle_id="B-7", shadow="B-9")
     env.run()
-    assert sorted(calls) == sorted([C.BUNDLES["B-7"]["model_version"], C.BUNDLES["B-9"]["model_version"]])
+    assert sorted(calls) == sorted([C.BUNDLES["B-7"]["model_id"], C.BUNDLES["B-9"]["model_id"]])
     rec = env.store.get(tx)
     assert rec["status"] == C.SCREENING_COMPLETED and rec["bundle_id"] == "B-7" and rec["shadow_bundle_id"] == "B-9"
     assert rec["classification"] == C.HOLD                       # 주 번들 결과만 실제 판정
-    assert rec["extraction_source"] == C.extraction_source_ocr(C.BUNDLES["B-7"]["model_version"])
+    assert rec["extraction_source"] == C.extraction_source_ocr(C.BUNDLES["B-7"]["model_id"])
     assert len(rec["shadow"]) == 1 and rec["shadow"][0]["bundle_id"] == "B-9"
     assert rec["shadow"][0]["classification"] in C.CLASSIFICATIONS
     assert rec["shadow"][0]["error"] is None
@@ -376,8 +376,8 @@ def _shadow_raises(monkeypatch, events=None):
 
     def fake(fields, index, rules_version=None, ocr=None):
         if events is not None:
-            events.append(("screen", index.list_version))
-        if index.list_version == C.LIST_NEW:
+            events.append(("screen", index.list_id))
+        if index.list_id == C.LIST_NEW:
             raise RuntimeError("섀도 판정 엔진 오류")
         return real(fields, index, rules_version=rules_version, ocr=ocr)
 

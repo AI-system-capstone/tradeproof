@@ -96,9 +96,9 @@ class ScreeningDetail(BaseModel):
     tx_id: str
     status: Status
     bundle_id: str
-    model_version: str
+    model_id: str
     rules_version: str
-    list_version: str
+    list_id: str
     input: dict = Field(description="접수 내용 {source: upload|sample|fields, sample_tx_id, fields, files}")
     received_at: str
     submitted_at: str
@@ -154,9 +154,9 @@ class ListResult(BaseModel):
 class Health(BaseModel):
     status: Literal["ok"]
     bundle_id: str = Field(description="지금 접수에 쓰는 번들 (BUNDLE_ID)")
-    model_version: str
+    model_id: str
     rules_version: str
-    list_version: str
+    list_id: str
     rules_supported: list[str]
     shadow_bundle_id: str | None
     storage: Literal["postgres", "memory"]
@@ -183,8 +183,8 @@ _EXTRACTED = {f: {"value": v, "source_doc": "bl" if f in ("bl_no", "port_of_load
 EX_ACCEPTED = {"tx_id": _TX, "status": "queued", "bundle_id": "B-7", "shadow_bundle_id": None,
                "status_url": f"/screenings/{_TX}"}
 EX_DETAIL = {
-    "tx_id": _TX, "status": "completed", "bundle_id": "B-7", "model_version": "model-v3", "rules_version": "rules-v3",
-    "list_version": "list-v14",
+    "tx_id": _TX, "status": "completed", "bundle_id": "B-7", "model_id": "model-v3", "rules_version": "rules-v3",
+    "list_id": "list-v14",
     "input": {"source": "upload", "sample_tx_id": None, "fields": None,
               "files": {"invoice": {"content_type": "application/pdf", "size": 1955},
                         "bl": {"content_type": "application/pdf", "size": 1902}}},
@@ -203,8 +203,8 @@ EX_LIST = {"items": [{"tx_id": _TX, "status": "completed", "bundle_id": "B-7", "
                       "submitted_at": "2026-11-13T05:54:02+00:00", "completed_at": "2026-11-13T05:54:04+00:00",
                       "reviewer_decision": None, "seller_name": "VALERIAN LABS DISTRIBUTION",
                       "buyer_name": "Fuji Coral Electronics LLC", "vessel_name": "EMERALD TRIUMPH"}], "total": 1}
-EX_HEALTH = {"status": "ok", "bundle_id": "B-7", "model_version": "model-v3", "rules_version": "rules-v3",
-             "list_version": "list-v14", "rules_supported": ["rules-v2", "rules-v3"], "shadow_bundle_id": None,
+EX_HEALTH = {"status": "ok", "bundle_id": "B-7", "model_id": "model-v3", "rules_version": "rules-v3",
+             "list_id": "list-v14", "rules_supported": ["rules-v2", "rules-v3"], "shadow_bundle_id": None,
              "storage": "postgres", "blob": "minio"}
 EX_METRICS = """# TYPE tradeproof_screening_results_total counter
 tradeproof_screening_results_total{bundle_id="B-7",classification="HIGH_RISK_HOLD"} 1
