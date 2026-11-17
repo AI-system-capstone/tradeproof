@@ -4,3 +4,8 @@ uvicorn==0.54.0
 psycopg[binary]==3.3.8
 pytest==9.2.0
 httpx==0.28.1      # FastAPI TestClient
+# 검증 Job: A 의 OCR·판정 코드를 import (a_screening/requirements/ocr.txt 와 같은 버전). 시스템 패키지 tesseract-ocr 5.5.0, poppler-utils 필요
+pytesseract==0.3.13
+Pillow==13.0.0
+numpy==2.5.4
+minio==7.2.20      # 업로드 원문 (common.blob, BLOB_ENDPOINT 가 있을 때)

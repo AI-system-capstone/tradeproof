@@ -7,27 +7,71 @@
 
 ## 할 일 (결정 0005·0006 반영: 모델 갱신 경로 우선, M3·M8 담당)
 
-- [ ] 골든셋 검증 (`VAL-01`): 후보·운영 번들의 정확도·미탐·오탐을 나란히 + 차이 계산 (고정 리스트 기준 골든셋 사용)
-- [ ] Replay (`VAL-02·03`): A의 OCR 추출(`a_screening/ocr/extract.py`) 및 판정(`a_screening/screening/match.py`) 코드를 import해 과거 거래 전체를 재처리, 건수 일치, 달라진 거래(diff)와 이전·후보 값 추출
-- [ ] 검증 결과·지표·영향 거래(diff) 저장 및 제공: M8 운영 화면 표시 및 B(M2)의 게이트 판정에 활용
+- [x] 골든셋 검증 (`VAL-01`): 후보·운영 번들의 정확도·미탐·오탐을 나란히 + 차이 계산
+- [x] Replay (`VAL-02·03`): A의 OCR·판정 코드를 import해 과거 거래 전체를 재처리, 건수 일치, 달라진 거래(diff)와 이전·후보 값 추출
+- [x] 검증 결과·지표·영향 거래(diff) 저장 및 조회 API: M8 운영 화면과 B(M2)의 게이트 판정이 읽음
+- [x] `job/`: 검증 Job 진입점. K8s Job과 일반 프로세스 둘 다로 실행 가능
+- [x] `job/job-template.json`: B가 검증 Job을 만들 때 쓰는 K8s Job 양식
 - [ ] `ui/` (M8 관리자 운영 화면): 반입 업로드·결과/거부 사유 확인(`UI-01`, B 연동), 검증 결과·diff·게이트·승인/반려(`UI-02`, C 검증 데이터 + B 승인 API 연동), 배포 상태 확인·롤백(D 연동) — *A의 담당자 거래 검토 화면(`a_screening/ui/review.html`)과는 별도*
-- [ ] `job/`: M3 검증 전체(골든셋 검증·Replay)를 수행하는 검증 Job 진입점. **K8s Job과 일반 프로세스 둘 다로 실행 가능**하게 (compose에는 Job이 없음)
 - [ ] 이어서(3순서): 제재 리스트 갱신 시 후보 리스트 버전별 골든셋 검증·영향 확인(S2) 대응
+
+## 검증 흐름
+
+B가 정한 검증 Job 계약을 따른다 (`b_registry/verify/replay.py`, `docs/interfaces.md` 4절).
+
+1. B가 검증할 번들마다 검증 ID를 만들고, `job/job-template.json`에 환경변수 5개를 넣어 K8s Job을 만든다.
+   - `VALIDATION_ID`, `BUNDLE_ID`, `BASELINE_BUNDLE_ID`, `REQUESTED_BY`, `VALIDATION_CALLBACK_URL`
+2. 검증 Job이 B의 `GET /bundles/{id}`로 두 번들의 `model_id`·`list_id`를 읽고, B가 준 검증 ID로 검증 행을 만들어 골든셋 검증·Replay를 한다.
+   - B 주소는 Job 양식의 `B_URL`. 규칙 버전은 번들에 없고 A가 rules-v3로 고정한다.
+3. 결과를 `completed` 또는 `failed`로 저장한다.
+   - 시간 제한에 걸리면(SIGTERM) `failed`로 저장한다.
+4. `VALIDATION_CALLBACK_URL`로 결과 전체를 보낸다: `{validation_id, bundle_id, baseline_bundle_id, status, golden, replay, error}`.
+   - B가 200을 줄 때까지 간격을 늘려 가며 다시 보낸다(최대 10분). 409·422면 멈춘다.
+   - 끝내 못 보내면 종료 코드 1로 끝나서 Job이 실패로 남는다.
+5. B가 받은 결과로 게이트 판정(통과·차단)을 한다. 달라진 거래 목록은 B에 보내지 않고 C의 `/diffs`로 조회한다.
+
+- 검증 등록 API는 없다. 검증 행은 검증 Job만 만든다.
+- 새 Job이 시작되면 같은 번들의 끝나지 않은 이전 검증은 `failed`로 정리한다(B는 번들마다 Job을 하나만 돌린다).
+- 같은 검증 ID가 이미 끝났으면(Job이 다시 실행됨) 다시 계산하지 않고 그 결과를 다시 보낸다.
 
 ## 제공하는 것 / 받는 것
 
 | 제공 | 받는 쪽 | 받는 것 | 주는 쪽 |
 |---|---|---|---|
 | M8 운영 화면 (`UI-01·UI-02`) | 운영자 | 판정·OCR 코드 (`import`) | A |
-| 검증 결과·지표·영향 거래(diff) | B(M2 게이트) · M8(C) | 거래·판정 테이블 · 원문 서류 (읽기) | A |
-| 검증 완료 상태 전이 요청 | B | 골든셋 · `manifest.json` | 데이터 |
-| | | 번들 구성 · 반입 결과 · 게이트/승인 API | B |
-| | | 검증 Job 시작 | B |
+| 검증 결과·지표·영향 거래(diff) 조회 API | B(M2 게이트) · M8(C) | 거래·판정 테이블 · 원문 서류 (읽기) | A |
+| 검증 결과 전송 (`VALIDATION_CALLBACK_URL`) | B | 골든셋 · `manifest.json` | 데이터 |
+| 검증 Job 양식 (`job/job-template.json`) · 이미지 | B · D | 검증 Job 시작 (K8s Job 생성, 환경변수 5개) | B |
+| | | 검증 결과 수신 API (`POST /bundles/{id}/validation-results/{validation_id}`) | B |
+| | | Job 생성 권한(RBAC) · 이미지 배포 · `data/` 볼륨 | D |
 | | | 배포 상태 조회 · 롤백 | D |
 
 ## 실행·테스트
 
 ```bash
 pytest c_replay/tests
-python -m c_replay.job --replay-id RP-... --index 0 --count 1   # 일반 프로세스 실행 예 (형태는 C가 확정)
 ```
+
+검증 Job을 일반 프로세스로 실행하는 예:
+
+```bash
+BUNDLE_ID=B-9 DATABASE_URL=postgresql://... python -m c_replay.job
+```
+
+- 필수는 `BUNDLE_ID`, `DATABASE_URL` 둘이다.
+- 손으로 돌릴 때 `VALIDATION_ID`가 없으면 C가 만들고, `BASELINE_BUNDLE_ID`가 없으면 `contracts.BASELINE_BUNDLE`(B-7)을 쓴다.
+- `VALIDATION_CALLBACK_URL`이 없으면 결과를 보내지 않고 C의 DB에만 저장한다.
+- `B_URL`이 없으면 번들 구성을 `contracts.BUNDLES`(B-7~B-10)에서 읽는다.
+- 종료 코드: 0 = completed로 저장했고 B가 받음(또는 보낼 곳 없음), 1 = 그 밖의 경우, 2 = 필수 환경변수 없음.
+
+이미지 빌드 (저장소 루트에서):
+
+```bash
+docker build -f c_replay/Dockerfile --target api -t tradeproof/c-replay:dev .
+```
+
+```bash
+docker build -f c_replay/Dockerfile --target job -t tradeproof/c-replay-job:dev .
+```
+
+- 검증 Job 이미지는 실행할 때 `data/sanctions`(제재 리스트)와 `data/docs`(과거 거래 서류)를 `/app/data`에 붙여야 한다.

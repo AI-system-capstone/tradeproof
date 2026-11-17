@@ -8,7 +8,7 @@
 
 -- 검증 1번 = 한 줄: 후보 번들 하나를 운영 번들과 비교 (골든셋 검증 + Replay)
 CREATE TABLE IF NOT EXISTS validations (
-    validation_id       TEXT PRIMARY KEY,           -- RP-<12자리 hex>
+    validation_id       TEXT PRIMARY KEY,           -- RP-<hex>. B 가 만든 검증 ID. 손으로 실행하면 C 가 만든다
     bundle_id           TEXT NOT NULL,              -- 검증할 후보 번들
     baseline_bundle_id  TEXT NOT NULL,              -- 비교 기준(운영) 번들
     status              TEXT NOT NULL CHECK (status IN ('queued','running','completed','failed')),
