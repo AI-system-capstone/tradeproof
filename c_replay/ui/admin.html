@@ -165,8 +165,11 @@ function need(input) {
 
 const tag = (text, cls = '') => `<span class="tag ${cls}">${esc(text)}</span>`;
 const GOOD = ['APPROVED', 'validated', 'approved', 'active', 'completed', 'succeeded'];
-const BAD = ['REJECTED', 'rejected', 'validation_failed', 'rolled_back', 'failed'];
-const statusTag = s => tag(s ?? '-', GOOD.includes(s) ? 'ok' : BAD.includes(s) ? 'bad' : '');
+const BAD = ['REJECTED', 'rejected', 'validation_failed', 'rolled_back', 'failed', 'cancelled'];
+// 번들 상태 풀이 (validated 는 M3 게이트를 통과했고 승인을 기다리는 상태)
+const NOTE = { candidate: '검증 전', validated: '게이트 통과', validation_failed: '게이트 차단', approved: '승인됨', rejected: '반려됨',
+  canary: '일부 트래픽 배포 중', active: '운영 중', cancelled: '취소됨', superseded: '새 번들로 대체됨' };
+const statusTag = s => tag(NOTE[s] ? `${s} · ${NOTE[s]}` : s ?? '-', GOOD.includes(s) ? 'ok' : BAD.includes(s) ? 'bad' : '');
 // 객체의 단순 값만 표로 (응답에 필드가 늘어도 화면을 고치지 않게)
 const kv = o => '<table>' + Object.entries(o).filter(([, v]) => v === null || typeof v !== 'object')
   .map(([k, v]) => `<tr><th>${esc(k)}</th><td>${k === 'status' ? statusTag(v) : esc(v)}</td></tr>`).join('') + '</table>';
