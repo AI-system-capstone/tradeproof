@@ -27,15 +27,15 @@ from common import contracts as C  # noqa: E402
 from a_screening.ocr import extract as X  # noqa: E402
 from a_screening.screening.match import load_index, screen  # noqa: E402
 
-BUNDLE_KEYS = ("model_id", "list_id", "rules_version")
-REQUIRED_KEYS = ("model_id", "list_id")   # rules_version 은 없으면 C.RULES_FIXED
+BUNDLE_KEYS = ("model_id", "list_id")
+REQUIRED_KEYS = BUNDLE_KEYS   # 규칙은 번들에 없음 -> C.RULES_FIXED
 
 _INDEX: dict = {}
 _INDEX_LOCK = threading.Lock()
 
 
 def bundle_spec(bundle_id: str) -> dict:
-    """번들 ID → {bundle_id, model_id, list_id, rules_version}. 지금은 contracts.BUNDLES 에서 찾는다."""
+    """번들 ID → {bundle_id, model_id, list_id}. 지금은 contracts.BUNDLES 에서 찾는다."""
     if bundle_id not in C.BUNDLES:
         raise ValueError(f"bundle_id={bundle_id!r} 는 contracts.BUNDLES 에 없음 ({list(C.BUNDLES)})")
     b = C.BUNDLES[bundle_id]

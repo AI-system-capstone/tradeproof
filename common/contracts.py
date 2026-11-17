@@ -30,11 +30,11 @@ RULES_VERSIONS = (RULES_BASE, RULES_NEW)
 #   미탐 방지가 최우선이라 v3 로 고정 (rules-v2 는 OCR 혼동으로 보류가 검토로 내려가는 경우가 있음)
 RULES_FIXED = RULES_NEW
 BUNDLES = {
-    "B-7": {"model_id": MODEL_BASE, "rules_version": RULES_FIXED, "list_id": LIST_BASE, "status": "active"},     # 현재 활성
-    "B-8": {"model_id": MODEL_BASE, "rules_version": RULES_FIXED, "list_id": LIST_NEW, "status": "candidate"},   # 리스트 갱신 (장면 2)
-    "B-9": {"model_id": MODEL_NEW, "rules_version": RULES_FIXED, "list_id": LIST_NEW, "status": "candidate"},    # 모델 갱신 (장면 4, canary)
+    "B-7": {"model_id": MODEL_BASE, "list_id": LIST_BASE, "status": "active"},     # 현재 활성
+    "B-8": {"model_id": MODEL_BASE, "list_id": LIST_NEW, "status": "candidate"},   # 리스트 갱신 (장면 2)
+    "B-9": {"model_id": MODEL_NEW, "list_id": LIST_NEW, "status": "candidate"},    # 모델 갱신 (장면 4, canary)
     # 11/08 추가: 규칙 갱신 번들. 11/16 규칙 고정 뒤로는 B-8과 구성이 같다 (D 테스트가 ID를 쓰고 있어 남겨 둠)
-    "B-10": {"model_id": MODEL_BASE, "rules_version": RULES_FIXED, "list_id": LIST_NEW, "status": "candidate"},
+    "B-10": {"model_id": MODEL_BASE, "list_id": LIST_NEW, "status": "candidate"},
 }
 BASELINE_BUNDLE = "B-7"
 
