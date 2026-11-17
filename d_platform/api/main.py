@@ -94,6 +94,7 @@ class Analysis(BaseModel):
     registry_change: dict | None = Field(
         default=None, description="B 에 마지막으로 보낸 전이 {bundle_id, to, reason}")
     rollback: dict | None = Field(default=None, description="수동 롤백을 요청한 사람과 사유")
+    initial: bool | None = Field(default=None, description="최초 번들 기록이면 true (canary 없이 succeeded, 롤백 불가)")
     message: str | None = Field(default=None, description="실패·중단 사유 (드라이버가 본 그대로)")
 
 
@@ -258,6 +259,40 @@ def create_app(store=None, driver=None, registry=None,
     def stable_bundle() -> str:
         return store.stable_bundle_id() or initial_bundle
 
+    def start_initial(bundle_id: str, actor: str, response: Response) -> dict:
+        """최초 번들: 배포 이력이 없고, 요청한 번들이 이미 떠 있는 최초 번들(BUNDLE_ID)과 같을 때.
+
+        트래픽은 바꿀 것이 없으므로 canary 없이 바로 succeeded 로 기록하고 202 로 돌려준다.
+        B 는 응답의 status 가 succeeded 이면 스스로 canary → active 로 바꾸므로(B PR #17) D 는 전이를 보내지 않는다.
+        되돌릴 직전 번들이 없어 이 배포는 롤백할 수 없다.
+        """
+        running = driver.running_bundle()
+        if running is not None and running != bundle_id:
+            raise ApiError(409, ERR_CONFLICT,
+                           f"최초 번들이 클러스터에서 돌고 있지 않음 (지금 {running})", bundle_id)
+        now = clock()
+        dep = M.Deployment(
+            deployment_id=M.new_deployment_id(), bundle_id=bundle_id, previous_bundle_id=bundle_id,
+            status=M.PENDING, requested_by=actor, steps=[100],
+            analysis={"result": "passed", "checks": [], "initial": True,
+                      "message": "최초 번들: 이미 운영 중이라 canary 없이 반영 완료로 기록"},
+            created_at=now, updated_at=now,
+        )
+        dep.weight, dep.step_index = 100, 0
+        try:
+            store.create(dep)
+        except InProgressExists:
+            other = store.in_progress()
+            raise ApiError(409, ERR_CONFLICT, "진행 중인 배포가 있음",
+                           other.deployment_id if other else None) from None
+        finish(dep, M.SUCCEEDED, clock())
+        driver.finalize(dep)                # argo: deploy/values-dev.yaml 을 stable=<번들>, candidate="" 로
+        store.save(dep)
+        _log(level="info", event="deployment_initial", deployment_id=dep.deployment_id,
+             bundle_id=bundle_id, actor=actor)
+        response.headers["Location"] = f"/deployments/{dep.deployment_id}"
+        return dep.to_json()
+
     # ------------------------------------------------------------ 배포
     @app.post("/deployments", status_code=202, response_model=DeploymentResponse,
               responses={404: _ERR, 409: _ERR, 422: _ERR, 503: _ERR}, summary="배포 시작")
@@ -278,7 +313,9 @@ def create_app(store=None, driver=None, registry=None,
 
         previous = stable_bundle()
         if previous == body.bundle_id:
-            raise ApiError(409, ERR_CONFLICT, "이미 운영 중인 번들", body.bundle_id)
+            if store.latest(1):
+                raise ApiError(409, ERR_CONFLICT, "이미 운영 중인 번들", body.bundle_id)
+            return start_initial(body.bundle_id, x_actor, response)
 
         now = clock()
         dep = M.Deployment(
@@ -327,6 +364,8 @@ def create_app(store=None, driver=None, registry=None,
             raise ApiError(422, ERR_VALIDATION, "X-Actor 헤더 또는 본문의 actor 가 필요함", deployment_id)
         dep = load(deployment_id)
         was_succeeded = dep.status == M.SUCCEEDED
+        if dep.analysis.get("initial"):
+            raise ApiError(409, ERR_CONFLICT, "최초 번들 배포는 되돌릴 직전 번들이 없음", deployment_id)
         if was_succeeded:
             # 반영이 끝난 배포는 "지금 운영 중인 것"일 때만 되돌릴 수 있다 (DEP-05: 직전 번들로)
             if store.in_progress() is not None or stable_bundle() != dep.bundle_id \

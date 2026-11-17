@@ -55,13 +55,15 @@
 
 | 호출 | 결과 |
 |---|---|
-| `POST /deployments` `{"bundle_id": "B-8"}` | 202 + 배포 정보. 승인되지 않은 번들 409, 진행 중인 배포가 있으면 409(`target_id` = 그 배포), 없는 번들 404, 이미 운영 중인 번들 409 |
+| `POST /deployments` `{"bundle_id": "B-8"}` | 202 + 배포 정보. 승인되지 않은 번들 409, 진행 중인 배포가 있으면 409(`target_id` = 그 배포), 없는 번들 404, 이미 운영 중인 번들 409(최초 번들 예외는 아래) |
 | `GET /deployments/{id}` | `status`, `weight`(후보 번들 비율 %), `step_index`, `steps`, `analysis` |
 | `POST /deployments/{id}/rollback` | 200. 진행 중이면 중단하고 되돌림, 가장 최근에 반영된 배포면 직전 번들로 되돌림. 그 외 409. 행위자는 `X-Actor` 헤더 또는 본문 `{"actor", "reason"}`(운영 화면 방식) |
 | `GET /deployments` | 최근 배포 목록 |
 | `GET /healthz` `/livez` `/metrics` | 지표 이름은 `tradeproof_platform_*` |
 
 `status`: `pending` → `progressing` → `succeeded` 또는 `rolled_back`(`rollback_reason`: `manual` / `analysis_failed`) 또는 `failed`.
+
+**최초 번들:** 배포 이력이 없고 요청한 번들이 `BUNDLE_ID`(지금 떠 있는 최초 번들)와 같으면, canary 없이 바로 `succeeded`(`weight` 100, `analysis.initial: true`)로 기록하고 202를 돌려준다. B는 검증 없이 최초 번들을 승인해 배포를 요청하고(B PR #17), 응답의 `succeeded`를 보고 스스로 `active`로 바꾸므로 D는 전이를 보내지 않는다. `argo` 드라이버는 클러스터의 `BUNDLE_ID`가 그 번들인지 확인하고(아니면 409) `deploy/values-dev.yaml`을 `stable: <번들>`로 맞춘다. 되돌릴 직전 번들이 없어 이 배포는 롤백할 수 없다(409).
 현재 stable 번들 = `succeeded` 중 가장 최근 배포의 `bundle_id` (이력이 없으면 `BUNDLE_ID`).
 
 **B 번들 상태 반영** (`POST /bundles/{id}/transitions`, actor `d-platform`. B의 `b/registry` 브랜치 2026-11-16 계약 기준):
