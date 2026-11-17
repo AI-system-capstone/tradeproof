@@ -83,6 +83,7 @@
     <div class="row">
       <input type="text" id="deployId" placeholder="배포 ID (D 가 알려 줌)" aria-label="배포 ID">
       <button id="btnDeploy">조회</button>
+      <input type="text" id="rollbackReason" placeholder="롤백 사유 (선택)" aria-label="롤백 사유">
       <button class="danger" id="btnRollback">롤백</button>
     </div>
     <div class="out" id="deployOut" aria-live="polite"></div>
@@ -265,9 +266,9 @@ $('btnReject').onclick = () => decide('reject');
 // 3. 배포 상태·롤백
 $('btnDeploy').onclick = () => run($('deployOut'), async () => kv(await api('d', 'GET', `/deployments/${seg(need($('deployId')))}`)));
 $('btnRollback').onclick = () => run($('deployOut'), async () => {
-  const id = need($('deployId')), actor = need($('actor'));
-  if (!confirm(`배포 ${id}을(를) 롤백할까요?`)) return '';
-  return kv(await api('d', 'POST', `/deployments/${seg(id)}/rollback`, { actor, reason: $('reason').value.trim() }));
+  const id = need($('deployId')), actor = need($('actor')), reason = $('rollbackReason').value.trim();
+  if (!confirm(`배포 ${id}을(를) 롤백할까요?\n사유: ${reason || '없음'}`)) return '';
+  return kv(await api('d', 'POST', `/deployments/${seg(id)}/rollback`, { actor, reason }));
 });
 </script>
 </body>
