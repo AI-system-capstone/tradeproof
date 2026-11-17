@@ -546,7 +546,8 @@ def healthz(request: Request):
             raise unavailable(request, name, e) from e
     try:
         b = R.bundle(ACTIVE_BUNDLE)
-        R.list_index(b["list_id"])   # 리스트까지 받아 둬야 판정할 수 있다
+        if R.is_http():
+            R.list_index(b["list_id"])   # B 리스트 ZIP 까지 받아 둬야 판정할 수 있다 (local 은 기존처럼 확인 안 함)
     except (R.RegistryUnavailable, ValueError) as e:
         raise unavailable(request, "번들 레지스트리", e) from e
     return {"status": "ok", "bundle_id": ACTIVE_BUNDLE, "model_id": b["model_id"],
