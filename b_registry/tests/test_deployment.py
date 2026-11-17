@@ -2,9 +2,9 @@ import pytest
 from fastapi.testclient import TestClient
 from b_registry.api.main import create_app
 from b_registry.db import Bundle
-from b_registry.verify.workflow import transition, Conflict, deployment_attempt
+from b_registry.verify.workflow import Conflict, deployment_attempt
 from b_registry.verify.deployment import request_deployment, DeploymentUnavailable, DeploymentRejected, DeploymentClient
-from .test_registry import baseline, upload
+from .test_registry import baseline, upload, transition
 
 
 class Platform:

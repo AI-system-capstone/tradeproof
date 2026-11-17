@@ -33,6 +33,8 @@ class Bundle(Base):
     list_id: Mapped[str] = mapped_column(ForeignKey("sanctions_lists.list_id"))
     status: Mapped[str] = mapped_column(String(30), default="candidate")
     base_bundle_id: Mapped[str | None] = mapped_column(ForeignKey("bundles.bundle_id"))
+    validation_id: Mapped[str | None] = mapped_column(String(80))
+    validation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     history: Mapped[list] = mapped_column(JSON, default=list)
     previous_active_id: Mapped[str | None] = mapped_column(ForeignKey("bundles.bundle_id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

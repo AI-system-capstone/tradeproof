@@ -12,6 +12,10 @@ class Settings:
     database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
     trust_key: Path = field(default_factory=lambda: Path(os.getenv("TRUST_KEY", str(ROOT / "trust" / "publisher.pub"))))
     deployment_url: str = field(default_factory=lambda: os.getenv("DEPLOYMENT_URL", "http://d-platform:8300"))
+    validation_callback_base_url: str = field(default_factory=lambda: os.getenv("VALIDATION_CALLBACK_BASE_URL", "http://b-registry:8100"))
+    validation_runner: str = field(default_factory=lambda: os.getenv("VALIDATION_RUNNER", "kubernetes"))
+    validation_template: str | None = field(default_factory=lambda: os.getenv("VALIDATION_JOB_TEMPLATE"))
+    validation_timeout_seconds: int = 3600
     review_threshold: float = 0.20
     max_zip_bytes: int = C.MAX_UPLOAD_BYTES
     max_file_bytes: int = 16 * 1024 * 1024

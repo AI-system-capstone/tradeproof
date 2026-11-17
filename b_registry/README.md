@@ -1,4 +1,4 @@
-# B — 패키지 검증·번들 Registry
+# B — 반입 검증(M1)·릴리스 관리(M2)
 
 포트 **8100**. 모델/제재리스트 ZIP을 받아 검증하고 번들을 관리합니다. 반입 검증과 등록은 HTTP 요청 안에서 완료합니다.
 
@@ -12,7 +12,7 @@
 | `db.py`, `storage.py` | DB 및 SeaweedFS/S3 저장 (`common.blob` 재사용)             |
 | `tests/`              | 검증·API·복구 테스트와 임시 테스트 자산 생성기              |
 
-**업로드 → 검증 → AI 모델 또는 제재 리스트 등록 → 후보 번들(candidate) → C 추가 검증(validated/validation_failed) → 승인(approved)/반려(rejected) → D 카나리(canary) → 활성화(active)/취소(cancelled).**
+**업로드 → 검증 → AI 모델 또는 제재 리스트 등록 → 후보 번들(candidate) → C 골든셋·Replay 검증 → B 게이트(validated/validation_failed) → B 승인(approved)/반려(rejected) → D 카나리(canary) → 활성화(active)/취소(cancelled).**
 팀 Registry 규약에 따라 검증 통과 후 번들을 자동 생성합니다. 기존 `/approve`는 생성된 번들 ID를 돌려주는 멱등 호환 API입니다.
 
 최초 모델·리스트도 각각 업로드해야 합니다. 둘이 준비되면 `common.contracts.BASELINE_BUNDLE`부터 번호를 부여합니다. 이후에는 활성 번들의 변경 대상만 교체합니다. 초기 번들을 활성화하기 전 새 버전은 거부합니다.
@@ -28,11 +28,14 @@
 | `GET /bundles/active`            | —                            | 200 `{active: 번들 또는 null, canary: 번들 또는 null}`                                 |
 | `GET /bundles/{id}`              | —                            | 모델·리스트 ID·원본 ZIP URI·상태·생성 시각     |
 | `POST /bundles/{id}/transitions` | `{to, actor, reason}`        | 200 `{from, to, changed_at}`                                |
+| `POST /bundles/{id}/validation-results/{validation_id}` | C 완료/실패 결과 (아래 명세) | 200 저장된 검증·게이트 결과; 불일치 409, 잘못된 결과 422 |
+| `GET /bundles/{id}/validation` | — | 200 검증 상태·결과 요약·게이트 판정 / 실행 등록 전·최초 검증 생략 시 404 |
+| `POST /approvals` | `{bundle_id, decision: approve/reject, actor, reason}` | 승인: 202 카나리 접수 / 200 재조합 후보, 반려: 200 상태 전이 |
 | `POST /bundles/{id}/deployments` | `{actor, reason}` | D 접수 확인 시 202 `{bundle_id, status, deployment_id}` / 재조합 시 200 `{bundle_id, status: cancelled, replacement_bundle_id}` |
 | `GET /healthz`                  | —                            | 모듈 준비 상태 확인 (DB/파일 저장소/신뢰 키 장애 시 503) |
 | `GET /metrics`                   | —                            | Prometheus 지표                                             |
 
-B는 하나의 컨테이너에서 API와 Replay 요청 워커를 실행하는 모듈입니다. DB·저장소의 수명주기는 상위 관리 프로세스가 담당하며, `/healthz`는 B가 해당 의존성을 사용할 준비가 되었는지만 확인합니다. 별도 `/livez`는 제공하지 않습니다. FastAPI 기본 문서 경로 `/docs`(Swagger UI), `/redoc`(ReDoc), `/openapi.json`(API 명세)을 제공합니다. 정적 명세는 [b_registry.json](docs/openapi/b_registry.json)에 보관하며 `python -m b_registry.cli openapi`로 생성합니다.
+B는 하나의 컨테이너에서 API와 검증 Job 실행 워커를 실행하는 모듈입니다. DB·저장소의 수명주기는 상위 관리 프로세스가 담당하며, `/healthz`는 B가 해당 의존성을 사용할 준비가 되었는지만 확인합니다. 별도 `/livez`는 기존 사용자 결정대로 제공하지 않습니다. FastAPI 기본 문서 경로 `/docs`(Swagger UI), `/redoc`(ReDoc), `/openapi.json`(API 명세)을 제공합니다. 정적 명세는 [b_registry.json](docs/openapi/b_registry.json)에 보관하며 `python -m b_registry.cli openapi`로 생성합니다.
 
 저장 전에 ZIP·서명·manifest 해시·내용·리스트 변경률·버전 충돌·초기 등록 정책을 모두 검사합니다. 검증·등록 정책 실패 시 파일과 자산·번들을 저장하지 않고 Import에 REJECTED, 파일명, 사유, 완료 시각만 기록합니다. 오류 응답의 target_id는 이 import_id이며 GET /imports/{id}로 조회할 수 있습니다. 성공한 요청만 파일·DB 등록을 수행한 뒤 201을 반환합니다. 등록 도중 저장소/DB 오류가 나면 DB 트랜잭션은 롤백됩니다. 파일 저장 후 DB 커밋 실패 시 검증된 ZIP이 저장소에 남을 수 있으며 재요청은 같은 내용 키를 사용합니다.
 
@@ -68,13 +71,13 @@ active와 canary는 각각 최대 하나입니다. 카나리 중단 시 기존 a
 
 해시·전자서명 검증은 유지합니다. 파일별 해시는 ZIP 내부 manifest를 사용하고, 저장소는 기존 내용 기반 키(`registry/<sha256>`)를 유지하므로 동일 ZIP 중복 처리와 저장 후 변경 확인에 별도 DB 해시 컬럼이 필요하지 않습니다. 검증 단계별 결과는 검증 함수의 일시적인 결과이며 DB에 보관하지 않습니다.
 
-반입은 성공과 거부 메타데이터를 남기며 거부된 행의 artifact_uri와 자산·번들 참조는 null입니다. 번들의 `previous_active_id`는 카나리 기준 stable 및 이전 stable 복원에 사용합니다. 번들에는 생성 당시 운영 번들 `base_bundle_id`와 상태 변경 `history`를 추가합니다. B 배포 요청 시 base_bundle_id와 현재 active ID가 다르면 반입한 자산을 유지하고 나머지를 현재 active에서 가져온 새 candidate를 생성합니다. 기존 후보는 cancelled로 바꾸고 200 응답의 replacement_bundle_id로 새 ID를 반환합니다. 새 후보는 면밀 검증·승인을 다시 받아야 합니다. 기존 번들의 구성과 Import 연결은 변경하지 않습니다. 기준 정보가 없어 변경 자산을 식별할 수 없으면 409입니다. history는 `{from, to, actor, reason, changed_at}` 목록이며 자동 교체·복원되는 양쪽 번들 모두 같은 트랜잭션으로 기록합니다. actor는 호출자가 전달한 식별자이며 사용자 인증을 대신하지 않습니다. 규칙 버전·Replay 제출 상태는 저장하지 않습니다. 이번 변경은 B에만 적용하며 A의 규칙 처리는 별도 작업으로 유지합니다.
+반입은 성공과 거부 메타데이터를 남기며 거부된 행의 artifact_uri와 자산·번들 참조는 null입니다. 번들의 `previous_active_id`는 카나리 기준 stable 및 이전 stable 복원에 사용합니다. 번들에는 생성 당시 운영 번들 `base_bundle_id`와 상태 변경 `history`를 추가합니다. B 배포 요청 시 base_bundle_id와 현재 active ID가 다르면 반입한 자산을 유지하고 나머지를 현재 active에서 가져온 새 candidate를 생성합니다. 기존 후보는 cancelled로 바꾸고 200 응답의 replacement_bundle_id로 새 ID를 반환합니다. 새 후보는 골든셋·Replay 검증·승인을 다시 받아야 합니다. 기존 번들의 구성과 Import 연결은 변경하지 않습니다. 기준 정보가 없어 변경 자산을 식별할 수 없으면 409입니다. history는 `{from, to, actor, reason, changed_at}` 목록이며 자동 교체·복원되는 양쪽 번들 모두 같은 트랜잭션으로 기록합니다. actor는 호출자가 전달한 식별자이며 사용자 인증을 대신하지 않습니다. 규칙 버전·Replay 제출 상태는 저장하지 않습니다. 이번 변경은 B에만 적용하며 A의 규칙 처리는 별도 작업으로 유지합니다.
 
 `WorkflowLock`은 `registry_lock`에 매핑된 내부 잠금 모델입니다. 단일 컨테이너에서도 여러 HTTP 등록·상태 변경 요청이 동시에 실행될 수 있으므로 유지합니다. 트랜잭션마다 같은 행을 UPDATE하여 충돌을 막으며, 별도 관리 프로세스가 아닙니다.
 
 번들 API는 `model_id`, `list_id`를 반환합니다. `rules_version`, `replay` 응답은 제거했으며 `base_bundle_id`, `history`는 조회 응답에 포함합니다. 중첩 `model`은 `model_id`, 중첩 `list`는 `list_id`를 사용합니다. 기존 `*_component_id`와 중첩 `component_id`는 제거했습니다. 중첩 `model`/`list`는 ID와 ZIP `uri`만 반환하며 `version`, `sha256`, `files`는 없습니다. 최상위 중복 `model_version`, `list_version`, `is_active`도 제거했습니다. A·C는 ZIP을 받아 manifest에 따라 파일을 읽어야 합니다.
 
-**DB 적용:** 기존 공통 SQL(00/20)은 동결된 기준 파일이며 수정하지 않습니다. 변경은 `common/schema/50_b_registry_20261114.sql`, `51_b_registry_20261115.sql`, `52_b_registry_20261116.sql` 순서로 적용합니다. ORM은 테이블 매핑만 담당하며 `create_all()`은 일회용 단위 테스트에서만 사용합니다. 운영 적용 절차는 [MIGRATIONS.md](docs/MIGRATIONS.md)를 따릅니다.
+**DB 적용:** 기존 공통 SQL(00/20)은 동결된 기준 파일이며 수정하지 않습니다. 변경은 `common/schema/50_b_registry_20261114.sql`, `51_b_registry_20261115.sql`, `52_b_registry_20261116.sql`, `53_b_registry_20261117.sql` 순서로 적용합니다. ORM은 테이블 매핑만 담당하며 `create_all()`은 일회용 단위 테스트에서만 사용합니다. 운영 적용 절차는 [MIGRATIONS.md](docs/MIGRATIONS.md)를 따릅니다.
 
 저장소 루트에서 실행합니다 (Python 3.13, PowerShell).
 
@@ -118,7 +121,7 @@ ZIP: `manifest.json + signature.sig + payload/*`. 기존 `manifest.sig`도 허�
 | 리스트 `TRADEPROOF_JSON` | `payload/sanctions.json`: 공통 `ENTRY_FIELDS` 및 버전·수집일·건수   |
 | 리스트 `SYNTHETIC_TEST`  | 기존 합성 CSV 테스트 형식                                           |
 
-설정 패키지는 엔진 바이너리를 포함하지 않습니다. B는 형식·무결성을 검증하며 **OCR 품질/개선 여부는 C의 Replay에서 판단**합니다. 기존 NPZ/CSV ZIP은 독립 검증 테스트용이며 A의 실제 입력으로 사용하지 않습니다.
+설정 패키지는 엔진 바이너리를 포함하지 않습니다. B는 형식·무결성을 검증하며 **OCR 품질/개선 여부는 C의 골든셋·Replay 검증에서 판단**합니다. 기존 NPZ/CSV ZIP은 독립 검증 테스트용이며 A의 실제 입력으로 사용하지 않습니다.
 
 공급자 CLI:
 
@@ -134,18 +137,61 @@ python -m b_registry.signer corrupt model.zip corrupted.zip
 
 ## 다른 모듈 연결
 
-Replay는 `REPLAY_JOB_TEMPLATE`과 K8s 서비스 계정 권한이 준비되면 `candidate` 번들에 대해 Job 생성을 시도합니다. DB에 제출 상태를 저장하지 않고 결정적인 Job 이름과 Kubernetes 응답으로 중복을 확인합니다. 실패는 로그로 남기고 재시도하며, 템플릿이 없으면 실행하지 않습니다. 번들이 candidate인 동안 Job을 삭제하면 다시 생성될 수 있으므로 완료 Job은 추가 검증 결과 반영 전까지 유지해야 합니다. Replay 검증 결과는 C가 validated/validation_failed로 반영하고, 이후 approved/rejected를 결정합니다. Replay 대기 지표는 제거했습니다.
-
-현재 A의 Registry 조회 연결, C의 실제 Job 템플릿·성능 검증, D의 RBAC·배포 연결은 별도 작업입니다. 공통 계약 반영 목록과 연결 조건은 [INTEGRATION.md](docs/INTEGRATION.md)에 정리했습니다. 연동 계약 변경은 `docs/interfaces.md`에도 기록합니다.
-
-파일 필드가 파싱되기 전의 잘못된 multipart 요청이나 HTTP 전체 크기 제한 거부는 Import를 생성하지 않습니다. 신뢰 키·DB·저장소 장애(503)는 파일 검증 불합격으로 기록하지 않습니다.
+B는 C의 `POST /validations`를 호출하지 않습니다. 자동 검증 Job 실행과 C 완료 통보 수신는 아래 M2 절차를 사용합니다. 운영 클러스터의 Job 이미지·RBAC와 C 검증 실행 진입점은 C·D가 제공해야 합니다. A·C·D 코드는 이 변경에서 수정하지 않습니다.
 
 ## B에서 D로 배포 요청
 
-면밀 검증과 승인을 마쳐 approved가 된 번들에 `POST /bundles/{id}/deployments`로 `{actor, reason}`을 보냅니다. B가 기준 번들을 확인합니다. 기준이 바뀌면 새 candidate를 만들고 기존 후보를 cancelled로 바꾸며 D는 호출하지 않습니다. 반환한 replacement_bundle_id를 다시 검증·승인해야 합니다.
+운영 화면에서 `POST /approvals`로 배포를 승인하면 B가 같은 요청 안에서 D 배포 요청까지 진행합니다. `POST /bundles/{id}/deployments`는 기존 approved 건의 배포 재요청·접수 확인용으로 유지합니다. B가 기준 번들을 확인합니다. 기준이 바뀌면 새 candidate를 만들고 기존 후보를 cancelled로 바꾸며 D는 호출하지 않습니다. 반환한 replacement_bundle_id를 다시 검증·승인해야 합니다.
 
 기준이 같으면 B가 `DEPLOYMENT_URL`(기본 `http://d-platform:8300`)의 `POST /deployments`에 `{bundle_id}`와 `X-Actor`를 보냅니다. D는 이때 B에서 approved 상태를 조회할 수 있습니다. D의 202 접수를 확인한 뒤 B가 canary로 전이하고 deployment_id를 반환합니다. `POST /bundles/{id}/transitions`의 직접 canary 요청은 409로 막습니다. D의 완료(active)·중단(cancelled) 통보는 기존 transitions API를 사용합니다.
 
 요청 대기는 기존 history에 deployment_request로 기록합니다. D의 명시적 4xx 거절은 B 409이며 approved를 유지합니다. 타임아웃·5xx·응답 오류는 503이며 결과 미확인 요청으로 남깁니다. 같은 배포 요청을 다시 보내면 POST를 반복하지 않고 D의 최근 배포 목록에서 결과를 찾습니다. 미확인 상태에서는 다른 배포와 상태 전이를 막습니다. 최근 100건에서 결과가 없거나 중복되면 자동 재요청하지 않으므로 D 상태를 확인하는 운영 조치가 필요합니다.
 
-D의 구 rolled_back 콜백은 현재 B 상태 계약과 다르며 D 담당자 연동 작업이 필요합니다. 이번 변경은 D 코드를 수정하지 않습니다. 검증 결과 수집·게이트 판정 자체는 이번 배포 요청 API와 별도입니다.
+D의 구 rolled_back 콜백은 현재 B 상태 계약과 다르며 D 담당자 연동 작업이 필요합니다. 이번 변경은 D 코드를 수정하지 않습니다. 검증 결과 수집·게이트·승인은 아래 M2 API가 담당합니다.
+
+## M2 검증·게이트·승인
+
+1. 모델·리스트 ZIP 반입 검증 후 Import와 새 candidate를 저장하면 B 워커가 자동으로 C 검증 Job을 실행합니다. 별도 운영 화면 검증 요청은 없습니다. 등록된 후보를 DB에서 찾아 처리하므로 B 재시작 직전 생성된 후보도 복구합니다.
+2. 최초 번들은 비교·운영 이력이 없으면 검증을 생략하며 운영 화면의 배포 승인을 기다립니다. 기존 운영 이력이나 누락된 게이트 결과를 이 예외로 우회할 수 없습니다.
+3. C Job은 검증을 마치면 전달된 `VALIDATION_CALLBACK_URL`로 완료/실패 결과를 POST합니다. B는 C 결과 API를 반복 조회하지 않습니다. Job 생성 접수 오류만 동일 이름으로 재시도하고, 실행 접수 후에는 콜백을 기다립니다.
+4. B는 검증·후보·기준 ID와 지표 정합성을 확인합니다. 골든셋 정확도 `candidate >= 0.90` 및 Replay 전체 처리(`processed == total`, count_match=true)가 합격 조건입니다. 합격은 validated, 기준 미달은 validation_failed입니다.
+5. 운영 화면은 `GET /bundles/{id}/validation`으로 진행 상태·C 결과·게이트 사유를 조회합니다. C 실행 실패·콜백 대기 시간 초과는 validation.status=failed로 남으며 배포를 허용하지 않습니다. 잘못된 콜백은 422, 다른 실행/기준 ID 또는 확정 결과 변경은 409입니다. 동일 결과 재전송은 200으로 처리합니다.
+6. `POST /approvals`에 `{bundle_id, decision: "approve", actor, reason}`을 보내면 승인 기록 후 D에 배포 요청합니다. D 접수 확인 시 canary로 전이하고 202 `{bundle_id, status, deployment_id}`를 반환합니다. decision=reject는 validated 번들을 rejected로 바꾸고 200 `{from, to, changed_at}`를 반환합니다.
+7. 배포 승인 시 운영 기준이 바뀌었으면 새 candidate를 재조합하고 200 `{bundle_id, status, replacement_bundle_id}`를 반환합니다. 새 후보도 자동 검증하며, 결과 확인 후 다시 배포 승인해야 합니다. 기존 검증·승인은 복사하지 않습니다.
+
+### C 결과 통보 계약
+
+`POST /bundles/{bundle_id}/validation-results/{validation_id}`는 C Job이 호출하는 내부 연동 API입니다. D가 네트워크 정책으로 호출 경로를 제한해야 하며 X-Actor 자체는 인증 수단이 아닙니다. 요청 예시:
+
+```json
+{
+  "validation_id": "RP-실행ID",
+  "bundle_id": "B-8",
+  "baseline_bundle_id": "B-7",
+  "status": "completed",
+  "golden": {
+    "golden_version": "golden-v1", "total": 100,
+    "accuracy": {"baseline": 0.90, "candidate": 0.95, "diff": 0.05},
+    "false_negative": {"baseline": 5, "candidate": 2, "diff": -3},
+    "false_positive": {"baseline": 5, "candidate": 3, "diff": -2}
+  },
+  "replay": {"total": 100, "processed": 100, "count_match": true, "changed": 5, "changed_down": 2},
+  "error": null
+}
+```
+
+실행 실패는 동일한 세 ID와 `status: "failed"`, `error: "실패 사유"`를 보냅니다(golden/replay 생략 가능). 정확도는 0..1 비율, 미탐·오탐은 건수입니다. C는 결과를 보존하고 B의 200 응답을 확인할 때까지 동일 결과를 재전송해야 합니다. 전체 거래 diff를 본문에 넣지 않으며 기존 C 상세 조회에서 제공합니다. B 콜백 본문 한도는 64 KiB입니다.
+
+기존 Bundle에 validation_id와 validation JSON만 추가합니다. 별도 사용자·승인·검증 테이블은 만들지 않습니다. validation JSON은 진행 상태, 실행 요청자, 생성 시각, 정책, C 결과, 게이트 사유를 담으며 판정 시 관측값·정책·검증 ID를 history에도 보존합니다.
+
+### 검증 실행 설정
+
+- `VALIDATION_CALLBACK_BASE_URL`: C Job에서 접근 가능한 B 주소. 기본 http://b-registry:8100. B가 실행별 결과 수신 URL을 생성합니다.
+- `VALIDATION_RUNNER`: kubernetes(기본) 또는 docker(로컬 호스트 실행).
+- `VALIDATION_JOB_TEMPLATE`: 실행 템플릿 JSON 파일의 절대 경로. 미설정 시 반입은 유지하고 검증은 queued 및 RunnerUnavailable로 남습니다. 대기 제한 시간 내에 설정을 갖춰 B를 재시작하면 같은 실행 ID로 처리합니다.
+- Kubernetes: batch/v1 Job JSON을 제공합니다. C 이미지·실행 명령·DB/스토리지 접근 환경·볼륨은 템플릿에 설정합니다. `VALIDATION_NAMESPACE` 또는 서비스 계정 namespace를 사용합니다. D가 Job get/create RBAC를 제공해야 합니다.
+- 로컬 Docker: `{image, command: [...], env: {...}, network?, mounts?: [...]}` JSON을 제공합니다. mounts는 docker --mount 형식 문자열 배열입니다. Docker CLI와 엔진이 있는 호스트에서 B를 실행해야 합니다. B 운영 이미지에 Docker CLI를 추가하지 않습니다.
+- B가 VALIDATION_ID, BUNDLE_ID, BASELINE_BUNDLE_ID, REQUESTED_BY, VALIDATION_CALLBACK_URL을 설정합니다. API로 임의 실행 명령이나 이미지를 받지 않습니다. 컨테이너/Job 이름은 검증 ID로 고정하여 응답 유실 시 같은 실행을 확인합니다.
+- 기본 결과 대기 제한은 3600초입니다. 완료 Job/컨테이너는 C 결과와 B 처리가 끝날 때까지 유지합니다. B는 실행물을 자동 삭제하지 않습니다.
+
+현재 저장소의 C에는 이 환경변수를 받는 Job 진입점이 없습니다. C가 전달된 VALIDATION_ID로 실행하고 완료/실패 결과를 B 콜백으로 보내는 연결이 필요합니다. D도 최초 B-7을 이미 운영 중인 번들로 간주하는 기본 동작과 구 rolled_back 통보를 점검해야 합니다. 따라서 B 테스트 통과가 실제 클러스터 전체 연동 완료를 뜻하지 않습니다.

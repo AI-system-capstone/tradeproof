@@ -17,11 +17,11 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 공통 에러 형식 | 모든 모듈 | 실패 응답은 `{code, message, target_id}`. code는 `VALIDATION_ERROR`(422), `NOT_FOUND`(404), `CONFLICT`(409), `SERVICE_UNAVAILABLE`(503), `INTERNAL_ERROR`(500) 중 하나 | 1차 |
 | 번들 구성 조회 | B → A·C·D | `GET /bundles/{id}`로 `model_id`, `list_id`, 원본 ZIP URI를 제공한다. 모델/리스트의 중첩 값은 ID와 uri만 포함하며 해시·개별 파일 목록·규칙 버전·Replay 상태는 반환하지 않는다. 생성 기준 base_bundle_id와 상태 변경 history를 포함한다 | 1차 |
 | 활성·카나리 조회 | B → A·C·D | `GET /bundles/active`는 200 `{active, canary}`. 각 값은 번들 객체 또는 null이며 동시에 존재할 수 있다 | 1차 |
-| 상태 전이 | C·D → B | `POST /bundles/{id}/transitions`에 `{to, actor, reason}` 요청, `{from, to, changed_at}` 반환. 직접 canary 요청은 409이며 B 배포 요청 API를 사용한다. D는 완료 active·중단 cancelled를 통보한다 | 1차 |
+| 상태 전이 | C·D → B | `POST /bundles/{id}/transitions`에 `{to, actor, reason}` 요청, `{from, to, changed_at}` 반환. 직접 검증·승인·canary 전이는 409이며 B의 M2 API를 사용한다. D는 완료 active·중단 cancelled를 통보한다 | 1차 |
 | 지표 이름 | 각 모듈 → D | 각 모듈은 `contracts.py`에 정한 이름(`tradeproof_<모듈>_<대상>`, `bundle_id` 라벨 포함)으로 지표를 내보내고, D는 이 이름으로 canary 단계별 분석과 자동 롤백 판단을 한다 | 1차 |
 | 반입 | 운영 화면(C) → B | `POST /imports` (multipart ZIP: manifest.json + 파일 + signature.sig) → 모든 반입 검증·등록 완료 시 201 `{import_id, bundle_id}`, 검증 실패 422 / 등록 정책 충돌 409(거부 메타데이터만 기록, 파일 저장 없음). `GET /imports/{id}`는 `{status, reason, bundle_id, filename}`를 반환하며 성공 APPROVED·reason=null, 거부 REJECTED·사유 기록. 오류 응답 target_id로 반입 기록 조회 가능, 번들 미생성 시 bundle_id=null | 1차 |
-| 검증 결과 | C(M3) → 운영 화면(C) · B(M2) | C(M3)가 골든셋·Replay 검증 결과, 지표, 영향 거래(diff)를 제공하여 운영 화면(C) 조회 및 B(M2) 게이트 판정에 사용한다 | 1차 |
-| 게이트·승인 | 운영 화면(C) ↔ B(M2) | B(M2)가 게이트 결과를 제공하고, 운영 화면(C)에서 승인·반려를 B에 보낸다 (`POST /approvals`) | 1차 |
+| 검증 결과 | C(M3) → B(M2) · 운영 화면(C) | C가 POST /bundles/{id}/validation-results/{validation_id}로 세 ID·status(completed/failed)·golden·replay·error 통보. B가 결과 저장·게이트 판정 후 200 반환, ID/확정 결과 충돌 409·잘못된 결과 422. 운영 화면은 B 결과 조회, 거래 diff는 기존 C 조회 사용. 내부 통보 API 접근 제한은 D 네트워크 정책으로 적용 | 1차 |
+| 게이트·승인 | 운영 화면(C) ↔ B(M2) | 반입 후 자동 검증. GET /bundles/{id}/validation으로 결과·게이트 조회. POST /approvals 승인 시 D 배포 요청까지 진행(202 카나리 접수, 기준 변경 시 200 재조합 후보·자동 재검증), 반려 시 200 상태 전이. 정확도 90% 이상·Replay 전체 처리 기준. 최초 번들은 검증 생략 후 배포 승인 | 1차 |
 | 배포 | 운영 화면(C) → B(M2) → D | B `POST /bundles/{id}/deployments`에 `{actor, reason}`. 기준 변경 시 재조합 후 200 replacement_bundle_id 반환·재검증 필요. 일치하면 B가 D `POST /deployments`에 `{bundle_id}`와 X-Actor를 보내고 접수 확인 후 canary로 변경, 202 deployment_id 반환 | 1차 |
 | 배포 상태·롤백 | D → B · 운영 화면(C) | `GET /deployments/{id}`, `POST /deployments/{id}/rollback` | 1차 |
 
@@ -43,7 +43,7 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 과거 거래 적재 | 데이터 → A·D | `dataset/seed/`가 합성 서류를 최초 번들로 A의 평시 경로에 넣어 과거 거래를 만든다. D의 `scripts/reset_demo.sh`가 호출 | 1차 |
 | 시연용 리스트 원본 | 데이터 → B | (이어서, 3순서) 정상(추가)·변조·손상 리스트 원본. 서명·변조 처리는 B의 `signer/`. 그 전까지 리스트는 최초 번들의 한 버전을 그대로 쓴다 | 1차 |
 | 시연용 모델 파일 | **TODO(제공자 미정)** → B | **정상 개선 모델 원본 1개**(S4)부터. 서명은 B의 `signer/`. 성능 저하 모델(S5)과 변조·손상본(S1)은 그다음(2순서) | 1차 |
-| B 스키마 적용 | B → D | 기존 DB에 `common/schema/50_b_registry_20261114.sql`, `51_b_registry_20261115.sql`, `52_b_registry_20261116.sql`을 순서대로 적용한다. 모델·리스트는 `ai_models`·`sanctions_lists`, 번들은 `model_id`·`list_id`로 참조한다 | 1차 |
+| B 스키마 적용 | B → D | 기존 DB에 `common/schema/50_b_registry_20261114.sql`, `51_b_registry_20261115.sql`, `52_b_registry_20261116.sql`, `53_b_registry_20261117.sql`을 순서대로 적용한다. 모델·리스트는 `ai_models`·`sanctions_lists`, 번들은 `model_id`·`list_id`로 참조한다 | 1차 |
 | 배포 이력 | D → B·C | B·C는 D의 `deployments` 테이블을 읽어 현재 stable/canary를 판단할 수 있다 | 1차 |
 
 ## 4. 쿠버네티스
@@ -51,7 +51,7 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 연결 | 방향 | 내용 | 단계 |
 |---|---|---|---|
 | 번들 ID | D → A | D가 배포 레포(`deploy/`)에 적은 번들 ID가 Helm 설정을 거쳐 A의 환경변수 `BUNDLE_ID`로 들어간다 (적용은 D) | 1차 |
-| 검증 Job 시작 | B → C | 반입 검증 후 candidate 번들을 만들면 C의 템플릿으로 M3 검증 Job(골든셋 검증·Replay)을 시작한다. 추가 검증 결과를 validated/validation_failed로 반영한다 | 1차 |
+| 검증 Job 시작 | B → C | 후보 등록 후 자동 Job 생성. VALIDATION_ID·BUNDLE_ID·BASELINE_BUNDLE_ID·REQUESTED_BY·VALIDATION_CALLBACK_URL 전달. C POST /validations 및 결과 폴링 미사용. C는 완료/실패 시 콜백 URL에 POST하고 B 200까지 동일 결과 재전송(현재 C 진입점·통보 구현 필요) | 1차 |
 | 배포 결과 알림 | D → B | B가 D 접수 확인 후 canary로 변경하며 D는 승격 active·중단 cancelled를 통보한다. 승격 후 복원은 직전 superseded 번들을 active로 전이하며 현재 번들은 cancelled로 변경한다 | 1차 |
 | A 서비스 구성 | A → D | A는 같은 Dockerfile의 빌드 대상 2개로 뜬다(compose·k3s 공통). `a-screening`(`target: screening-api`, 포트 8000, 지표 `GET :8000/metrics`) + `a-ocr-worker`(`target: ocr-worker`, 포트 없음). 둘 다 DB·`BLOB_*`·`BUNDLE_ID`를 같이 받는다. **TODO(A·D): 워커에 canary를 적용하는 방식과 워커 지표 수집 경로** | 1차 |
 
@@ -79,3 +79,4 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 2026-11-16 | A 지윤아 | 판정 규칙 버전을 번들과 무관하게 `rules-v3`로 고정(`contracts.RULES_FIXED`). A API 명세서 `docs/openapi/a_screening.json` 추가 |
 | 2026-11-17 | A 지윤아 | A의 번들 필드 이름을 B 레지스트리와 맞춤: `model_version` → `model_id`, `list_version` → `list_id` (값은 그대로, 예: `model-v3`, `list-v14`). A API 응답·`contracts.BUNDLES`·OCR 결과 파일에 적용. 제재 리스트 파일 안의 `list_version` 키는 B 반입 검사가 보므로 그대로 |
 | 2026-11-17 | B 박시우 | 재조합을 B 배포 요청 단계로 이동. B가 D POST /deployments를 호출하고 접수 확인 후 canary로 전이. 직접 canary 전이 차단, 결과 미확인 시 재호출은 D 조회로 확인 |
+| 2026-11-17 | B 박시우 | M2 후보 등록 후 자동 검증 Job 실행·C 완료 콜백·90% 게이트·배포 승인 API 추가. C 결과 폴링과 운영 화면 검증 요청 제거. 승인 시 D 배포 요청, 최초 번들은 검증 생략. 콜백 URL 환경변수·결과 통보 계약과 53 ALTER SQL 추가(C/D 연동 확인 필요) |
