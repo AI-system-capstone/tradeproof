@@ -149,7 +149,12 @@ async function api(svc, method, path, body) {
   const opt = { method };
   if (body instanceof FormData) opt.body = body;
   else if (body) { opt.body = JSON.stringify(body); opt.headers = { 'Content-Type': 'application/json' }; }
-  const res = await fetch(BASE[svc] + path, opt);
+  let res;
+  try { res = await fetch(BASE[svc] + path, opt); }
+  catch (e) {  // 브라우저는 서버 꺼짐과 CORS 거부를 구분해 주지 않는다
+    throw new Error(`${svc.toUpperCase()} 서버(${BASE[svc] || location.origin})에 연결하지 못했습니다. 서버가 켜져 있는지, 주소(?${svc}=…)가 맞는지, CORS 허용이 되어 있는지 확인하세요`
+      + (svc === 'b' ? ' (B 는 CORS 설정이 없을 수 있음)' : ''));
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`${data.code || res.status}: ${data.message || res.statusText}`);  // 공통 에러 형식
   return data;
