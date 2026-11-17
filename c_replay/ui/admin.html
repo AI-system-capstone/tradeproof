@@ -155,11 +155,14 @@ async function api(svc, method, path, body) {
   return data;
 }
 
-// 버튼 동작 공통: 실행 중 표시, 실패하면 사유 표시
+// 버튼 동작 공통: 실행 중 표시, 실패하면 사유 표시. 실행 중에는 같은 구역의 버튼을 잠가서 두 번 눌리지 않게 한다
 async function run(out, fn) {
+  const buttons = out.closest('section').querySelectorAll('button');
+  buttons.forEach(b => { b.disabled = true; });
   out.innerHTML = '<span class="muted">불러오는 중…</span>';
   try { out.innerHTML = await fn(); }
   catch (e) { out.innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+  finally { buttons.forEach(b => { b.disabled = false; }); }
 }
 function need(input) {
   if (!input.value.trim()) { input.focus(); throw new Error(`${input.getAttribute('aria-label') || input.placeholder}을(를) 입력하세요`); }
@@ -235,18 +238,22 @@ async function showValidation(v) {
     ${diffs.length ? `<table><tr><th>거래</th><th>방향</th><th>이전</th><th>후보</th></tr>${diffs.map(d =>
       `<tr><td>${esc(d.tx_id)}</td><td>${tag(d.direction === 'down' ? '낮아짐' : '높아짐', d.direction === 'down' ? 'bad' : '')}</td><td>${esc(d.before.classification)}</td><td>${esc(d.after.classification)}</td></tr>`).join('')}</table>` : ''}`;
 }
-const decide = decision => run($('approvalOut'), async () => {
-  const body = { bundle_id: need($('bundleId')), decision, actor: need($('actor')), reason: need($('reason')) };
-  const ask = decision === 'approve' ? `번들 ${body.bundle_id}을(를) 승인할까요?\n승인하면 D 에 배포가 바로 요청됩니다` : `번들 ${body.bundle_id}을(를) 반려할까요?`;
-  if (!confirm(ask)) return '';
-  const r = await api('b', 'POST', '/approvals', body);
-  $('btnBundle').click();
-  if (decision === 'reject') return `${tag('반려됨', 'bad')} <span class="muted">${esc(r.from)} → ${esc(r.to)}</span>`;
-  if (r.replacement_bundle_id) return `${tag('배포 안 됨', 'bad')} <span class="muted">운영 번들이 바뀌어 이 번들은 ${esc(r.status)} 처리됨</span>
-    <p>대체 번들 <b>${esc(r.replacement_bundle_id)}</b> 이(가) 만들어짐. 다시 검증하고 승인해야 함</p>`;
-  $('deployId').value = r.deployment_id;
-  return `${tag('승인됨', 'ok')} 배포 요청함 · 배포 ID <b>${esc(r.deployment_id)}</b> <span class="muted">번들 상태 ${esc(r.status)}</span>`;
-});
+const decide = async decision => {
+  let sent = false;
+  await run($('approvalOut'), async () => {
+    const body = { bundle_id: need($('bundleId')), decision, actor: need($('actor')), reason: need($('reason')) };
+    const ask = decision === 'approve' ? `번들 ${body.bundle_id}을(를) 승인할까요?\n승인하면 D 에 배포가 바로 요청됩니다` : `번들 ${body.bundle_id}을(를) 반려할까요?`;
+    if (!confirm(ask)) return '';
+    const r = await api('b', 'POST', '/approvals', body);
+    sent = true;
+    if (decision === 'reject') return `${tag('반려됨', 'bad')} <span class="muted">${esc(r.from)} → ${esc(r.to)}</span>`;
+    if (r.replacement_bundle_id) return `${tag('배포 안 됨', 'bad')} <span class="muted">운영 번들이 바뀌어 이 번들은 ${esc(r.status)} 처리됨</span>
+      <p>대체 번들 <b>${esc(r.replacement_bundle_id)}</b> 이(가) 만들어짐. 다시 검증하고 승인해야 함</p>`;
+    $('deployId').value = r.deployment_id;
+    return `${tag('승인됨', 'ok')} 배포 요청함 · 배포 ID <b>${esc(r.deployment_id)}</b> <span class="muted">번들 상태 ${esc(r.status)}</span>`;
+  });
+  if (sent) $('btnBundle').click();  // 버튼 잠금이 풀린 뒤에 번들을 다시 조회
+};
 $('btnApprove').onclick = () => decide('approve');
 $('btnReject').onclick = () => decide('reject');
 
