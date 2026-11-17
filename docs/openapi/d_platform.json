@@ -379,6 +379,18 @@
             "title": "Rollback",
             "description": "수동 롤백을 요청한 사람과 사유"
           },
+          "initial": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Initial",
+            "description": "최초 번들 기록이면 true (canary 없이 succeeded, 롤백 불가)"
+          },
           "message": {
             "anyOf": [
               {

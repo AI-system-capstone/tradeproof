@@ -56,6 +56,9 @@ class FakeDriver:
     def finalize(self, dep: M.Deployment) -> None:
         return None  # 100% 반영이 끝났을 때 한 번 불린다
 
+    def running_bundle(self) -> str | None:
+        return None  # 가짜는 실제로 도는 번들을 모른다 → 확인하지 않는다
+
     def observe(self, dep: M.Deployment, now: datetime) -> Observation:
         steps = dep.steps
         elapsed = max(0.0, (now - dep.created_at).total_seconds())
@@ -195,6 +198,10 @@ class ArgoDriver:
 
     def finalize(self, dep: M.Deployment) -> None:
         write_bundle_values(self.bundle_values, dep.bundle_id, "")
+
+    def running_bundle(self) -> str | None:
+        """클러스터에서 지금 도는 번들 (Rollout 의 BUNDLE_ID). 진행 중인 canary 가 있으면 그 후보다."""
+        return _bundle_of(self._get())
 
     def rollback(self, dep: M.Deployment) -> None:
         previous = dep.previous_bundle_id

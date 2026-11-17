@@ -243,3 +243,31 @@ def test_api_cluster_unreachable_while_observing_is_503():
     kube.fail = "kubectl"
     r = client.get(f"/deployments/{dep_id}")
     assert r.status_code == 503 and r.json()["code"] == "SERVICE_UNAVAILABLE"
+
+
+# ---------------------------------------------------------------- 최초 번들
+def _first_client(kube: Kube):
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from d_platform.api.main import create_app
+    from d_platform.api.registry import FakeRegistry
+    from d_platform.api.store import MemoryStore
+
+    app = create_app(store=MemoryStore(), driver=driver(kube), registry=FakeRegistry(frozenset({"B-7"})),
+                     env={"BUNDLE_ID": "B-7"})
+    return TestClient(app)
+
+
+def test_initial_bundle_checks_cluster_and_writes_values_file(values_file):
+    kube = Kube(rollout(bundle="B-7", phase="Healthy", weight=0, stable="aaa", current="aaa"))
+    r = _first_client(kube).post("/deployments", json={"bundle_id": "B-7"}, headers={"X-Actor": "b"})
+    assert r.status_code == 202 and r.json()["status"] == M.SUCCEEDED
+    assert kube.calls == []                       # helm·kubectl 조작 없음 (조회만)
+    assert values_file.read_text(encoding="utf-8").endswith('bundle:\n  stable: "B-7"\n  candidate: ""\n')
+
+
+def test_initial_bundle_not_running_in_cluster_is_409():
+    kube = Kube(rollout(bundle="B-8", phase="Healthy", weight=0, stable="aaa", current="aaa"))
+    r = _first_client(kube).post("/deployments", json={"bundle_id": "B-7"}, headers={"X-Actor": "b"})
+    assert r.status_code == 409 and "B-8" in r.json()["message"]
