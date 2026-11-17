@@ -22,6 +22,13 @@ spec:
         - name: worker
           image: {{ .Values.worker.image | quote }}
           imagePullPolicy: {{ .Values.worker.imagePullPolicy }}
+          {{- with .Values.worker.env }}
+          env:
+            {{- range $k, $v := . }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- end }}
           {{- if .Values.worker.envFromSecret }}
           envFrom:
             - secretRef:

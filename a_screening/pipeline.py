@@ -9,7 +9,8 @@ DB·원문 저장소는 쓰지 않는다 (입력은 서류 폴더, 출력은 dic
   out["result"]["reasons"]             # [{rule, field, value, entry_id, matched_name, score, classification}]
   out["fields"]                        # {필드: 값} (contracts.TX_FIELDS 13개)
 
-  # 번들 구성을 직접 줄 수도 있다 (B 의 GET /bundles/{id} 결과로 채우면 됨)
+  # 번들 구성은 REGISTRY_MODE=http 면 B 의 GET /bundles/{id}, 아니면 contracts.BUNDLES (a_screening/registry.py)
+  # 번들 구성을 직접 줄 수도 있다
   # rules_version 은 B 번들에 없으므로 빼면 A 가 고정한 contracts.RULES_FIXED(rules-v3)를 쓴다
   screen_documents(tx_dir, {"bundle_id": "B-9", "model_id": "model-v4", "list_id": "list-v15"})
 
@@ -19,27 +20,23 @@ DB·원문 저장소는 쓰지 않는다 (입력은 서류 폴더, 출력은 dic
 from __future__ import annotations
 
 import sys
-import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import contracts as C  # noqa: E402
 from a_screening.ocr import extract as X  # noqa: E402
-from a_screening.screening.match import load_index, screen  # noqa: E402
+from a_screening import registry as R  # noqa: E402
+from a_screening.screening.match import screen  # noqa: E402
 
 BUNDLE_KEYS = ("model_id", "list_id")
 REQUIRED_KEYS = BUNDLE_KEYS   # 규칙은 번들에 없음 -> C.RULES_FIXED
 
-_INDEX: dict = {}
-_INDEX_LOCK = threading.Lock()
 
 
 def bundle_spec(bundle_id: str) -> dict:
-    """번들 ID → {bundle_id, model_id, list_id}. 지금은 contracts.BUNDLES 에서 찾는다."""
-    if bundle_id not in C.BUNDLES:
-        raise ValueError(f"bundle_id={bundle_id!r} 는 contracts.BUNDLES 에 없음 ({list(C.BUNDLES)})")
-    b = C.BUNDLES[bundle_id]
-    return {"bundle_id": bundle_id, **{k: b[k] for k in BUNDLE_KEYS}}
+    """번들 ID → {bundle_id, model_id, list_id}. REGISTRY_MODE=http 면 B 의 GET /bundles/{id}, 아니면 contracts.BUNDLES.
+    없는 번들이면 ValueError (registry.BundleNotFound), B 연결 실패면 registry.RegistryUnavailable."""
+    return R.bundle(bundle_id)
 
 
 def _check_bundle(bundle: dict) -> None:
@@ -48,12 +45,15 @@ def _check_bundle(bundle: dict) -> None:
         raise ValueError(f"번들 구성에 {missing} 없음: {bundle}")
 
 
+_INDEX: dict = {}   # list_id -> ListIndex. 테스트(C 포함)가 바꿔 끼울 수 있게 남겨 둔다
+
+
 def index_for(list_id: str):
-    """제재 리스트 색인 (버전별 캐시, 스레드 안전)."""
-    with _INDEX_LOCK:
-        if list_id not in _INDEX:
-            _INDEX[list_id] = load_index(list_id)
-        return _INDEX[list_id]
+    """제재 리스트 색인 (리스트별 캐시, 스레드 안전). REGISTRY_MODE=http 면 B 리스트 ZIP 에서 읽는다."""
+    idx = _INDEX.get(list_id)
+    if idx is None:
+        idx = _INDEX.setdefault(list_id, R.list_index(list_id))
+    return idx
 
 
 def extract_documents(tx_dir: str | Path, model_id: str) -> tuple[dict, list]:

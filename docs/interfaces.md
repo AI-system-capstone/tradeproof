@@ -84,3 +84,4 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 2026-11-17 | A 지윤아 | `contracts.BUNDLES` 에서 `rules_version` 제거 (B 번들과 같은 모양: `model_id`, `list_id`). 규칙은 A가 `contracts.RULES_FIXED`(rules-v3)로 고정. A 응답의 `rules_version` 은 그대로(어떤 규칙으로 판정했는지 표시) |
 | 2026-11-17 | C 강민성 | 검증 Job 구현 반영(4절): B가 준 검증 ID로 저장, 콜백 URL로 결과 재전송, Job 양식의 `B_URL`로 번들 구성(`model_id`·`list_id`) 조회 |
 | 2026-11-17 | C 강민성 | 1절에 운영 화면 중계(C → B·D) 추가 |
+| 2026-11-17 | A 지윤아 | A가 번들 구성을 B에서 받음: `REGISTRY_MODE=http` 면 `GET /bundles/{id}` → 모델·리스트 ZIP(`payload/model_config.json`, `payload/sanctions.json`). 기본 `local` 은 기존처럼 `contracts.BUNDLES`. D 차트 `a-screening` 을 A 실제 이미지로 바꾸고 `REGISTRY_MODE=http` 설정 (k3s 에 B 가 있어야 함) |

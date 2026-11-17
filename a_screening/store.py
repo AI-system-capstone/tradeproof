@@ -30,6 +30,7 @@ from itertools import count
 from threading import Lock
 
 from common import contracts as C
+from a_screening import registry as R
 from a_screening.db_values import amount_value, date_value
 
 _SEVERITY = {C.PASS: 0, C.REVIEW: 1, C.HOLD: 2}
@@ -46,11 +47,10 @@ def _iso(v):
 
 
 def _check_bundles(bundle_id: str, shadow_bundle_id: str | None) -> None:
-    if bundle_id not in C.BUNDLES:
-        raise ValueError(f"bundle_id={bundle_id!r} 는 contracts.BUNDLES 에 없음")
+    """없는 번들이면 ValueError (registry.bundle: contracts.BUNDLES 또는 B 레지스트리)."""
+    R.bundle(bundle_id)
     if shadow_bundle_id is not None:
-        if shadow_bundle_id not in C.BUNDLES:
-            raise ValueError(f"shadow_bundle_id={shadow_bundle_id!r} 는 contracts.BUNDLES 에 없음")
+        R.bundle(shadow_bundle_id)
         if shadow_bundle_id == bundle_id:
             raise ValueError("shadow_bundle_id 는 주 번들과 달라야 함 (screening_results 가 (tx_id, bundle_id) 한 줄)")
 
@@ -79,7 +79,7 @@ def _classifications(classification) -> list[str] | None:
 def _check_filters(status, classification, bundle_id) -> list[str] | None:
     if status is not None and status not in C.SCREENING_STATUSES:
         raise ValueError(f"status 는 {C.SCREENING_STATUSES} 중 하나")
-    if bundle_id is not None and bundle_id not in C.BUNDLES:
+    if bundle_id is not None and not R.is_http() and bundle_id not in C.BUNDLES:
         raise ValueError(f"bundle_id 는 {list(C.BUNDLES)} 중 하나")
     return _classifications(classification)
 
@@ -121,7 +121,7 @@ def _record(tx_id: str, bundle_id: str, status: str, input_: dict, *, submitted_
             reviewer_decision=None, reviewer=None, reviewer_note=None, corrected_fields=None, reviewed_at=None,
             attempts=0, worker_id=None, shadow_bundle_id=None, shadow=None) -> dict:
     """API 응답 한 건. 두 저장소가 같이 쓴다."""
-    b = C.BUNDLES[bundle_id]
+    b = R.bundle(bundle_id)
     fields = None
     if extracted_fields:
         fields = {f: (extracted_fields.get(f) or {}).get("value") for f in C.TX_FIELDS}
