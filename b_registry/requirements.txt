@@ -1,2 +1,10 @@
-# 의존성은 == 로 버전 고정 (예: fastapi==X.Y.Z). 담당자가 채웁니다.
-# common/ 이 쓰는 psycopg, minio 도 여기에 포함하세요.
+fastapi==0.162.2
+uvicorn==0.54.0
+SQLAlchemy==2.1.8
+psycopg[binary]==3.3.8
+python-multipart==0.0.33
+cryptography==50.0.2
+numpy==2.5.4
+minio==7.2.20
+httpx==0.28.1
+pytest==9.2.0

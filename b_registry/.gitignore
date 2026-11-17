@@ -1,0 +1,10 @@
+data/
+.venv/
+.pytest_cache/
+__pycache__/
+*.pem
+*.key
+
+# Local import packages, samples and test keys are generated, never committed.
+tests/fixtures/
+trust/
