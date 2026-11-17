@@ -24,6 +24,7 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 게이트·승인 | 운영 화면(C) ↔ B(M2) | 반입 후 자동 검증. GET /bundles/{id}/validation으로 결과·게이트 조회. POST /approvals 승인 시 D 배포 요청까지 진행(202 카나리 접수, 기준 변경 시 200 재조합 후보·자동 재검증), 반려 시 200 상태 전이. 정확도 90% 이상·Replay 전체 처리 기준. 최초 번들은 검증 생략 후 배포 승인 | 1차 |
 | 배포 | 운영 화면(C) → B(M2) → D | B `POST /bundles/{id}/deployments`에 `{actor, reason}`. 기준 변경 시 재조합 후 200 replacement_bundle_id 반환·재검증 필요. 일치하면 B가 D `POST /deployments`에 `{bundle_id}`와 X-Actor를 보내고 접수 확인 후 canary로 변경, 202 deployment_id 반환 | 1차 |
 | 배포 상태·롤백 | D → B · 운영 화면(C) | `GET /deployments/{id}`, `POST /deployments/{id}/rollback` | 1차 |
+| 운영 화면 중계 | 운영 화면(C) → C → B·D | 운영 화면은 C 서버 한 곳만 부르고, C의 `/api/b/…`, `/api/d/…`가 정해 둔 경로만 B·D에 그대로 전달한다(B·D의 CORS 불필요). C에 환경변수 `B_URL`·`D_URL` 필요 | 1차 |
 
 ## 2. 코드 (import)
 
@@ -82,3 +83,4 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 2026-11-17 | B 박시우 | M2 후보 등록 후 자동 검증 Job 실행·C 완료 콜백·90% 게이트·배포 승인 API 추가. C 결과 폴링과 운영 화면 검증 요청 제거. 승인 시 D 배포 요청, 최초 번들은 검증 생략. 콜백 URL 환경변수·결과 통보 계약과 53 ALTER SQL 추가(C/D 연동 확인 필요) |
 | 2026-11-17 | A 지윤아 | `contracts.BUNDLES` 에서 `rules_version` 제거 (B 번들과 같은 모양: `model_id`, `list_id`). 규칙은 A가 `contracts.RULES_FIXED`(rules-v3)로 고정. A 응답의 `rules_version` 은 그대로(어떤 규칙으로 판정했는지 표시) |
 | 2026-11-17 | C 강민성 | 검증 Job 구현 반영(4절): B가 준 검증 ID로 저장, 콜백 URL로 결과 재전송, Job 양식의 `B_URL`로 번들 구성(`model_id`·`list_id`) 조회 |
+| 2026-11-17 | C 강민성 | 1절에 운영 화면 중계(C → B·D) 추가 |

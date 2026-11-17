@@ -86,9 +86,29 @@
       "get": {
         "tags": ["ui"],
         "summary": "운영 화면 (M8)",
-        "description": "`c_replay/ui/admin.html`을 그대로 내보낸다. 화면은 브라우저에서 B(반입·번들·게이트·승인), C(검증 결과), D(배포 상태·롤백)의 API를 부른다 (UI-01·UI-02).",
+        "description": "`c_replay/ui/admin.html`을 그대로 내보낸다. 화면은 C 서버 한 곳만 부른다. B(반입·번들·게이트·승인)와 D(배포 상태·롤백)는 `/api/{service}/{path}` 중계를 거친다 (UI-01·UI-02).",
         "operationId": "adminPage",
         "responses": { "200": { "description": "HTML", "content": { "text/html": { "schema": { "type": "string" } } } } }
+      }
+    },
+    "/api/{service}/{path}": {
+      "parameters": [
+        { "name": "service", "in": "path", "required": true, "schema": { "type": "string", "enum": ["b", "d"] } },
+        { "name": "path", "in": "path", "required": true, "schema": { "type": "string" }, "example": "bundles/B-9/validation" }
+      ],
+      "get": {
+        "tags": ["ui"],
+        "summary": "운영 화면용 B·D 중계 (조회)",
+        "description": "환경변수 `B_URL`·`D_URL`의 서버로 그대로 전달하고 응답(상태 코드·본문)을 그대로 돌려준다. 허용 경로: B `imports/{id}`, `bundles/{id}`, `bundles/{id}/validation`, D `deployments/{id}`. 넘기는 헤더는 `Content-Type`, `X-Actor`, `X-Request-ID`만.",
+        "operationId": "proxyGet",
+        "responses": { "200": { "description": "B·D 응답 그대로" }, "404": { "$ref": "#/components/responses/NotFound" }, "503": { "$ref": "#/components/responses/Unavailable" } }
+      },
+      "post": {
+        "tags": ["ui"],
+        "summary": "운영 화면용 B·D 중계 (요청)",
+        "description": "허용 경로: B `imports`(반입 업로드), `approvals`(승인·반려), D `deployments/{id}/rollback`. 그 밖의 경로는 404. B·D에 연결할 수 없거나 주소가 설정되지 않으면 503.",
+        "operationId": "proxyPost",
+        "responses": { "200": { "description": "B·D 응답 그대로" }, "404": { "$ref": "#/components/responses/NotFound" }, "503": { "$ref": "#/components/responses/Unavailable" } }
       }
     },
     "/healthz": {
