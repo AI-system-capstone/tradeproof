@@ -45,9 +45,15 @@ def _check_bundle(bundle: dict) -> None:
         raise ValueError(f"번들 구성에 {missing} 없음: {bundle}")
 
 
+_INDEX: dict = {}   # list_id -> ListIndex. 테스트(C 포함)가 바꿔 끼울 수 있게 남겨 둔다
+
+
 def index_for(list_id: str):
     """제재 리스트 색인 (리스트별 캐시, 스레드 안전). REGISTRY_MODE=http 면 B 리스트 ZIP 에서 읽는다."""
-    return R.list_index(list_id)
+    idx = _INDEX.get(list_id)
+    if idx is None:
+        idx = _INDEX.setdefault(list_id, R.list_index(list_id))
+    return idx
 
 
 def extract_documents(tx_dir: str | Path, model_id: str) -> tuple[dict, list]:

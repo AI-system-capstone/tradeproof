@@ -310,3 +310,52 @@ def test_metrics_names_and_values(client, clock):
 def test_request_id_is_echoed_or_generated(client):
     assert client.get("/livez", headers={"X-Request-ID": "rid-1"}).headers["X-Request-ID"] == "rid-1"
     assert client.get("/livez").headers["X-Request-ID"]
+
+
+# ---------------------------------------------------------------- 최초 번들 (B 가 검증 없이 처음 보내는 번들)
+@pytest.fixture
+def first(clock):
+    """배포 이력이 없고 BUNDLE_ID=B-7 이 떠 있는 상태. B 가 B-7 을 승인해 보낸다."""
+    app = create_app(store=MemoryStore(), driver=FakeDriver(step_seconds=STEP),
+                     registry=FakeRegistry(frozenset({"B-7", "B-8"})), clock=clock, env={"BUNDLE_ID": "B-7"})
+    return TestClient(app)
+
+
+def test_initial_bundle_is_recorded_as_succeeded_without_canary(first):
+    r = first.post("/deployments", json={"bundle_id": "B-7"}, headers=ACTOR)
+    assert r.status_code == 202
+    body = r.json()
+    assert (body["status"], body["weight"], body["previous_bundle_id"]) == ("succeeded", 100, "B-7")
+    assert body["analysis"]["initial"] is True and body["finished_at"]
+    assert r.headers["Location"] == f"/deployments/{body['deployment_id']}"
+    # B 가 응답을 보고 스스로 active 로 바꾸므로 D 는 전이를 보내지 않는다
+    assert first.app.state.registry.transitions == []
+    assert first.get(f"/deployments/{body['deployment_id']}").json()["status"] == "succeeded"
+
+
+def test_initial_bundle_twice_is_409(first):
+    assert first.post("/deployments", json={"bundle_id": "B-7"}, headers=ACTOR).status_code == 202
+    assert_error(first.post("/deployments", json={"bundle_id": "B-7"}, headers=ACTOR), 409, "CONFLICT")
+
+
+def test_initial_bundle_cannot_be_rolled_back(first):
+    dep_id = first.post("/deployments", json={"bundle_id": "B-7"}, headers=ACTOR).json()["deployment_id"]
+    assert_error(first.post(f"/deployments/{dep_id}/rollback", headers=ACTOR), 409, "CONFLICT")
+
+
+def test_next_deployment_after_initial_uses_it_as_previous(first, clock):
+    first.post("/deployments", json={"bundle_id": "B-7"}, headers=ACTOR)
+    clock.tick(1)
+    body = first.post("/deployments", json={"bundle_id": "B-8"}, headers=ACTOR).json()
+    assert (body["status"], body["previous_bundle_id"]) == ("pending", "B-7")
+    clock.tick(STEP * 3)
+    assert first.get(f"/deployments/{body['deployment_id']}").json()["status"] == "succeeded"
+    assert first.post(f"/deployments/{body['deployment_id']}/rollback", headers=ACTOR).json()["status"] == "rolled_back"
+
+
+def test_unapproved_initial_bundle_is_still_409(clock):
+    app = create_app(store=MemoryStore(), driver=FakeDriver(step_seconds=STEP),
+                     registry=FakeRegistry(frozenset()), clock=clock, env={"BUNDLE_ID": "B-7"})
+    client = TestClient(app)
+    client.app.state.registry.statuses["B-7"] = "candidate"
+    assert_error(client.post("/deployments", json={"bundle_id": "B-7"}, headers=ACTOR), 409, "CONFLICT")

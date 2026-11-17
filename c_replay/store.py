@@ -4,6 +4,7 @@ Postgres 에 쓰는 곳 (common/schema/30_c_replay.sql): validations, validation
 
   API       get() / list() / diffs() / stats() / ping()          (조회만)
   검증 Job   create() -> start() -> complete() 또는 fail()     (조건이 안 맞으면 아무것도 쓰지 않고 False)
+            create(validation_id=...) 는 B 가 만든 검증 ID 를 그대로 쓴다 (없으면 직접 만든다)
             fail_stale()  Job 이 죽어서 진행 중으로 남은 오래된 검증을 failed 로 (create 전에 부른다)
 
 두 저장소는 같은 모양의 dict 를 돌려준다 (API 응답 그대로, docs/openapi/c_replay.json 의 Validation·Diff).
@@ -76,11 +77,14 @@ class MemoryStore:
     def ping(self) -> None:
         return None
 
-    def create(self, bundle_id: str, baseline_bundle_id: str, requested_by: str) -> dict:
+    def create(self, bundle_id: str, baseline_bundle_id: str, requested_by: str,
+               validation_id: str | None = None) -> dict:
         with self._lock:
             if any(r["bundle_id"] == bundle_id and r["status"] in IN_PROGRESS for r in self._rows.values()):
                 raise InProgressExists()
-            row = {"validation_id": new_validation_id(), "bundle_id": bundle_id,
+            if validation_id in self._rows:
+                raise ValueError(f"이미 있는 검증 ID: {validation_id}")
+            row = {"validation_id": validation_id or new_validation_id(), "bundle_id": bundle_id,
                    "baseline_bundle_id": baseline_bundle_id, "status": QUEUED,
                    "golden": None, "replay": None, "error": None, "requested_by": requested_by,
                    "created_at": _now(), "started_at": None, "finished_at": None}
@@ -185,8 +189,9 @@ class PostgresStore:
         with self._conn() as c:
             c.execute("SELECT 1 FROM validations LIMIT 1")
 
-    def create(self, bundle_id: str, baseline_bundle_id: str, requested_by: str) -> dict:
-        row = (new_validation_id(), bundle_id, baseline_bundle_id, QUEUED, None, None, None,
+    def create(self, bundle_id: str, baseline_bundle_id: str, requested_by: str,
+               validation_id: str | None = None) -> dict:
+        row = (validation_id or new_validation_id(), bundle_id, baseline_bundle_id, QUEUED, None, None, None,
                requested_by, _now(), None, None)
         try:
             with self._conn() as c:
