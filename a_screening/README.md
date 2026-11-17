@@ -48,7 +48,10 @@ docker build -f a_screening/Dockerfile --target screening-api -t tradeproof/a-sc
 docker build -f a_screening/Dockerfile --target ocr-worker    -t tradeproof/a-ocr-worker:dev .
 ```
 
-환경변수: `DATABASE_URL`, `BLOB_ENDPOINT`·`BLOB_ACCESS_KEY`·`BLOB_SECRET_KEY`, `BUNDLE_ID`(접수 번들, 예전 이름 `ACTIVE_BUNDLE`), `SHADOW_BUNDLE`.
+환경변수: `DATABASE_URL`, `BLOB_ENDPOINT`·`BLOB_ACCESS_KEY`·`BLOB_SECRET_KEY`, `BUNDLE_ID`(접수 번들, 예전 이름 `ACTIVE_BUNDLE`), `SHADOW_BUNDLE`,
+`REGISTRY_MODE`(`local` 기본: `contracts.BUNDLES`+`data/` / `http`: B 레지스트리), `REGISTRY_URL`(http 일 때 B 주소).
+번들 구성은 `a_screening/registry.py` 한 곳에서 가져옵니다. `http` 면 B 의 `GET /bundles/{id}` 로 모델·리스트 ID 와 원본 ZIP 위치를 받고,
+ZIP 의 `payload/model_config.json`(OCR 설정)·`payload/sanctions.json`(제재 리스트)을 씁니다 (sha256 확인, 번들별로 한 번만 조회).
 OCR 결과는 tesseract 버전에 따라 달라서 이미지에서 5.5.0으로 고정합니다 (팀 기준값: model-v3 정확도 94.3%, 미탐 0).
 
 **규칙 버전은 `rules-v3`로 고정**합니다 (`contracts.RULES_FIXED`, 11/16). 규칙은 `screening/match.py` 코드라서 B 번들(모델 + 리스트)에 없고,
@@ -82,11 +85,10 @@ A 담당은 결정 0006에 따라 M6(심사 서비스, 담당자 검토 화면 �
 
 **남은 것 (1순위: S4)**
 
-- [ ] k3s에 A 실제 이미지 올리기: D 차트(`d_platform/helm/a-screening`)는 지금 더미 이미지. A 이미지 2개(`screening-api`, `ocr-worker`)와
-  필요한 설정(DB·SeaweedFS 주소, 제재 리스트·모델 설정 위치)을 D에 넘긴다
-- [ ] 번들 구성을 B의 `GET /bundles/{id}`에서 가져오기 (B PR #8 병합 뒤). 응답의 `model.uri`·`list.uri`(SeaweedFS `tradeproof-registry`)에서
-  ZIP을 받아 `payload/model_config.json`·`payload/sanctions.json`을 쓴다. 지금은 `contracts.BUNDLES`(B-7~B-10)와 `data/`
-- [ ] 번들별 지표: 이름을 `tradeproof_<모듈>_<대상>` 규칙으로, 모든 지표에 `bundle_id` 라벨 (D의 canary 비교·자동 롤백 근거, MON-01)
+- [x] k3s 차트에 A 실제 이미지 2개(`screening-api`, `ocr-worker`) 설정 (`REGISTRY_MODE=http`, readiness `/healthz`, liveness `/livez`). 실제 k3s 적용은 D와 함께
+- [x] 번들 구성을 B의 `GET /bundles/{id}`에서 가져오기 (`a_screening/registry.py`, 실제 B 앱 + 서명 패키지로 확인)
+- [x] 번들별 지표: `tradeproof_screening_*` 지표에 `bundle_id` 라벨 (분류별 건수·처리 시간·OCR 신뢰도)
+- [ ] k3s 에 B 레지스트리 올리기 (B·D): A 는 http 모드에서 B 가 있어야 판정할 수 있다
 
 **남은 것 (2순위: S1·S5)**
 

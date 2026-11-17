@@ -41,7 +41,6 @@ import logging
 import os
 import re
 import sys
-import threading
 import time
 import traceback
 import uuid
@@ -61,15 +60,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from common import contracts as C  # noqa: E402
 from common.blob import make_blob_store  # noqa: E402
 from a_screening.store import make_store  # noqa: E402
-from a_screening.screening.match import is_blank, load_index, screen  # noqa: E402  (검토 정정 재판정: 워커와 같은 순수 함수)
+from a_screening import registry as R  # noqa: E402  (번들 구성: contracts.BUNDLES 또는 B 레지스트리)
+from a_screening.screening.match import is_blank, screen  # noqa: E402  (검토 정정 재판정: 워커와 같은 순수 함수)
 from a_screening.api import schemas as S  # noqa: E402  (API 명세서용 응답 모양·예시)
 
 
 def _check_bundle_env(active: str, shadow: str | None) -> None:
-    if active not in C.BUNDLES:
-        raise RuntimeError(f"{BUNDLE_ENV}={active!r} 는 contracts.BUNDLES 에 없음 ({list(C.BUNDLES)})")
-    if shadow and shadow not in C.BUNDLES:
-        raise RuntimeError(f"SHADOW_BUNDLE={shadow!r} 는 contracts.BUNDLES 에 없음 ({list(C.BUNDLES)})")
+    """local 모드: 없는 번들이면 바로 실패. http 모드: B 가 아직 안 떴을 수 있어 시작은 막지 않고
+    /healthz 가 번들을 조회해 못 받으면 503 (Ready 가 안 돼서 트래픽이 오지 않는다)."""
+    if R.is_http():
+        return
+    for env, bid in ((BUNDLE_ENV, active), ("SHADOW_BUNDLE", shadow)):
+        if bid and bid not in C.BUNDLES:
+            raise RuntimeError(f"{env}={bid!r} 는 contracts.BUNDLES 에 없음 ({list(C.BUNDLES)})")
 
 
 # 접수 번들: 팀 규약은 BUNDLE_ID (D 가 deploy/ 값으로 주입). 예전 이름 ACTIVE_BUNDLE 도 받는다
@@ -541,7 +544,11 @@ def healthz(request: Request):
             target.ping()
         except Exception as e:  # noqa: BLE001
             raise unavailable(request, name, e) from e
-    b = C.BUNDLES[ACTIVE_BUNDLE]
+    try:
+        b = R.bundle(ACTIVE_BUNDLE)
+        R.list_index(b["list_id"])   # 리스트까지 받아 둬야 판정할 수 있다
+    except (R.RegistryUnavailable, ValueError) as e:
+        raise unavailable(request, "번들 레지스트리", e) from e
     return {"status": "ok", "bundle_id": ACTIVE_BUNDLE, "model_id": b["model_id"],
             "rules_version": C.RULES_FIXED, "list_id": b["list_id"],
             "rules_supported": list(C.RULES_VERSIONS), "shadow_bundle_id": shadow_bundle(),
@@ -583,7 +590,7 @@ def meta():
                              "completed": C.SCREENING_COMPLETED, "failed": C.SCREENING_FAILED},
             "decision_roles": {"approve": DECISION_APPROVE, "hold": DECISION_HOLD},
             "reviewable_statuses": list(REVIEWABLE_STATUSES),
-            "bundles": {bid: dict(b) for bid, b in C.BUNDLES.items()},
+            "bundles": R.known_bundles(),
             "active_bundle": ACTIVE_BUNDLE, "shadow_bundle": shadow_bundle()}
 
 
@@ -663,16 +670,9 @@ def get_document(tx_id: str, doc_type: str):
     raise ApiError(404, C.ERR_NOT_FOUND, f"{tx_id} 는 서류 없이 필드로 접수된 건", tx_id)
 
 
-_INDEX: dict = {}
-_INDEX_LOCK = threading.Lock()
-
-
 def index_for(list_id: str):
-    """제재 리스트 색인 (버전별 캐시, 재판정용)."""
-    with _INDEX_LOCK:
-        if list_id not in _INDEX:
-            _INDEX[list_id] = load_index(list_id)
-        return _INDEX[list_id]
+    """제재 리스트 색인 (리스트별 캐시, 재판정용). REGISTRY_MODE=http 면 B 리스트 ZIP 에서 읽는다."""
+    return R.list_index(list_id)
 
 
 def rescreen(rec: dict, corrected: dict | None) -> dict | None:
@@ -680,7 +680,7 @@ def rescreen(rec: dict, corrected: dict | None) -> dict | None:
     담당자가 직접 입력한 값). 스크리닝 필드 정정이 없으면 None. 반환: {classification, reasons}"""
     if not corrected or not set(corrected) & set(C.SCREENING_FIELDS):
         return None
-    b = C.BUNDLES[rec["bundle_id"]]
+    b = R.bundle(rec["bundle_id"])
     original = rec.get("fields") or {}
     fields = {f: original.get(f) for f in C.TX_FIELDS} | dict(corrected)
     res = screen(fields, index_for(b["list_id"]), rules_version=C.RULES_FIXED, ocr=None)

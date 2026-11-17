@@ -13,36 +13,40 @@ bundle:
   candidate: ""
 
 api:
-  # A 이미지를 k3s 에 넣기 전까지는 더미 이미지로 canary 뼈대만 확인한다.
-  # 더미는 어떤 경로든 BUNDLE_ID 를 본문으로 돌려준다 → 어느 번들이 응답했는지 바로 보인다.
-  image: hashicorp/http-echo:0.2.3
-  imagePullPolicy: IfNotPresent
-  args: ["-text=$(BUNDLE_ID)", "-listen=:8000"]
-  # 실제 A 이미지로 바꿀 때:
-  #   image: tradeproof/a-screening:dev   (docker save | sudo k3s ctr images import -)
-  #   imagePullPolicy: Never
-  #   args: []
-  #   probePath: /healthz
-  #   envFromSecret: tradeproof-env
+  # A 심사 API 이미지 (11/17 A 지윤아). k3s 에 넣는 법:
+  #   docker build -f a_screening/Dockerfile --target screening-api -t tradeproof/a-screening:dev .
+  #   docker save tradeproof/a-screening:dev | sudo k3s ctr images import -
+  # 더미로 canary 뼈대만 볼 때는 image: hashicorp/http-echo:0.2.3, args: ["-text=$(BUNDLE_ID)", "-listen=:8000"],
+  #   probePath·livenessPath: /, envFromSecret: "" 로 되돌리면 된다.
+  image: tradeproof/a-screening:dev
+  imagePullPolicy: Never
+  args: []
   port: 8000
   replicas: 2
-  probePath: /
-  envFromSecret: ""    # DATABASE_URL, BLOB_* 가 든 Secret 이름 (더미는 필요 없음)
+  probePath: /healthz      # readiness: DB·원문 저장소·번들(B 레지스트리) 중 하나라도 안 되면 503 → 트래픽을 받지 않는다
+  livenessPath: /livez     # liveness: 프로세스만 확인 (B·DB 장애로 파드를 재시작하지 않도록)
+  envFromSecret: tradeproof-env    # DATABASE_URL, BLOB_*, REGISTRY_URL (scripts/k3s_data_up.sh 가 .env.example 로 만듦)
+  env:
+    REGISTRY_MODE: http    # 번들 구성·모델 설정·제재 리스트를 B 의 GET /bundles/{id} 와 원본 ZIP 에서 받는다 (a_screening/registry.py)
   resources:
-    requests: { cpu: 10m, memory: 16Mi }
-    limits: { memory: 64Mi }
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { memory: 256Mi }   # 측정: 리스트 2개 적재 후 약 45MB
 
 # OCR 워커. 번들은 접수 때 거래마다 고정되고 워커는 그 거래의 번들로 처리하므로(A 제안) 워커는 하나만 둔다.
-# 포트가 없어 canary 대상이 아니다. A 이미지가 준비되면 enabled: true.
+# 포트가 없어 canary 대상이 아니다.
+#   docker build -f a_screening/Dockerfile --target ocr-worker -t tradeproof/a-ocr-worker:dev .
+#   docker save tradeproof/a-ocr-worker:dev | sudo k3s ctr images import -
 worker:
-  enabled: false
+  enabled: true
   image: tradeproof/a-ocr-worker:dev
   imagePullPolicy: Never
   replicas: 1
   envFromSecret: tradeproof-env
+  env:
+    REGISTRY_MODE: http
   resources:
     requests: { cpu: 50m, memory: 128Mi }
-    limits: { memory: 512Mi }
+    limits: { memory: 512Mi }   # 측정: 한 건 처리 시 약 115MB + tesseract
 
 ingress:
   className: nginx

@@ -35,6 +35,7 @@ from PIL import Image, ImageFilter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from common import contracts as C  # noqa: E402
+from a_screening import registry as R  # noqa: E402  (REGISTRY_MODE=http 면 모델 설정을 B 모델 ZIP 에서)
 
 DEFAULT_MODEL = C.MODEL_BASE
 
@@ -110,15 +111,24 @@ def engine_name() -> str:
     return f"tesseract-{pytesseract.get_tesseract_version()}"
 
 
+def model_spec(model_id: str) -> dict:
+    """모델 ID -> OCR 설정. REGISTRY_MODE=http 면 B 모델 ZIP 의 payload/model_config.json (위 MODELS 와 같은 모양),
+    아니면 위 MODELS 표."""
+    spec = R.model_config(model_id)
+    if spec is not None:
+        return spec
+    if model_id not in MODELS:
+        raise ValueError(f"unknown model_id {model_id!r}; known: {sorted(MODELS)}")
+    return MODELS[model_id]
+
+
 def run_ocr(image_path: str | Path, model_id: str = DEFAULT_MODEL) -> dict:
     """이미지 한 장을 OCR한다. 반환 = image_to_data(DICT) + 엔진/이미지/모델 정보.
 
     좌표(left/top/width/height)는 항상 원본 이미지 픽셀 기준이다.
     엔진을 바꿀 때는 이 함수만 같은 모양으로 돌려주면 된다.
     """
-    if model_id not in MODELS:
-        raise ValueError(f"unknown model_id {model_id!r}; known: {sorted(MODELS)}")
-    spec = MODELS[model_id]
+    spec = model_spec(model_id)
     image_path = Path(image_path)
     raw_bytes = image_path.read_bytes()
     img = Image.open(io.BytesIO(raw_bytes))

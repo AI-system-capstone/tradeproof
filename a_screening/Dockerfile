@@ -10,7 +10,7 @@ FROM python:3.13.7-slim AS base
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /app
 COPY common/__init__.py common/contracts.py common/blob.py common/
-COPY a_screening/__init__.py a_screening/store.py a_screening/db_values.py a_screening/
+COPY a_screening/__init__.py a_screening/store.py a_screening/db_values.py a_screening/registry.py a_screening/
 COPY a_screening/screening/ a_screening/screening/
 
 # ---------------------------------------------------------------- screening-api: 접수·조회·검토·지표 (OCR 없음)
