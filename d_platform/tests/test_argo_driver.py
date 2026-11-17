@@ -206,7 +206,7 @@ def test_api_start_failure_is_503_and_does_not_block_next_deployment():
     r = client.post("/deployments", json={"bundle_id": "B-8"}, headers={"X-Actor": "b"})
     assert r.status_code == 503 and r.json()["code"] == "SERVICE_UNAVAILABLE"
     assert client.get("/deployments").json()[0]["status"] == M.FAILED
-    assert [t["to"] for t in registry.transitions] == ["canary", "cancelled"]   # B 에도 취소를 알린다
+    assert registry.transitions == []     # B 는 이 요청의 503 응답으로 안다 (전이를 보내지 않음)
 
     kube.fail = None
     assert client.post("/deployments", json={"bundle_id": "B-9"}, headers={"X-Actor": "b"}).status_code == 202

@@ -204,7 +204,8 @@ def create_app(store=None, driver=None, registry=None,
     def sync_registry(dep: M.Deployment, was_succeeded: bool = False) -> None:
         """끝난 배포의 결과를 B 의 번들 상태에 반영한다.
 
-        반영 완료 → 후보 active / 진행 중 롤백·실패 → 후보 cancelled / 반영 뒤 롤백 → 직전 번들 active.
+        반영 완료 → 후보 active / 진행 중 롤백 → 후보 cancelled / 반영 뒤 롤백 → 직전 번들 active.
+        canary 는 보내지 않는다(B 가 배포 요청의 202 를 받고 스스로 바꾼다). 시작 실패(failed)도 B 가 응답으로 안다.
         B 에 연결이 안 되면 analysis.registry_sync 를 pending 으로 두고, 다음 조회 때 다시 시도한다.
         트래픽 상태(D 의 status)는 B 와 무관하게 바로 확정한다.
         """
@@ -217,6 +218,7 @@ def create_app(store=None, driver=None, registry=None,
             tell_registry(dep, dep.bundle_id, R.CANCELLED,
                           f"배포 {dep.deployment_id} 중단 ({dep.rollback_reason})")
         elif dep.status == M.FAILED:
+            # 진행 중에 배포 밖에서 번들이 바뀐 경우 (시작 실패는 여기로 오지 않는다). 후보는 이미 canary 다.
             tell_registry(dep, dep.bundle_id, R.CANCELLED, f"배포 {dep.deployment_id} 실패")
 
     def reconcile(dep: M.Deployment) -> M.Deployment:
@@ -290,25 +292,15 @@ def create_app(store=None, driver=None, registry=None,
             other = store.in_progress()
             raise ApiError(409, ERR_CONFLICT, "진행 중인 배포가 있음",
                            other.deployment_id if other else None) from None
-        # B 에 canary 시작을 먼저 알린다. B 가 받아 주지 않으면 트래픽을 건드리지 않는다.
-        told = tell_registry(dep, dep.bundle_id, R.CANARY, f"배포 {dep.deployment_id} canary 시작")
-        if told != "ok":
-            dep.analysis = {**dep.analysis, "result": "failed", "registry_sync": "rejected",
-                            "message": "B 가 canary 전이를 받지 않음" if told == "rejected" else "B 에 연결할 수 없음"}
-            finish(dep, M.FAILED, clock())
-            store.save(dep)
-            if told == "rejected":
-                raise ApiError(409, ERR_CONFLICT, "번들 레지스트리가 canary 시작을 거부함", body.bundle_id)
-            raise ApiError(503, ERR_UNAVAILABLE, "번들 레지스트리에 연결할 수 없음", body.bundle_id)
+        # B 에는 canary 를 보내지 않는다: B 가 이 요청의 202 를 받은 뒤 스스로 canary 로 바꾼다 (B PR #8, 11/17).
         try:
             driver.start(dep)
         except DriverError as e:        # 시작하지 못한 배포는 failed 로 닫아 다음 배포를 막지 않는다
+            # B 에도 알리지 않는다. B 는 이 요청의 응답(503)을 보고, 다시 물을 때 GET /deployments 의 failed 로 정리한다.
             dep.analysis = {**dep.analysis, "result": "failed", "message": str(e)}
             finish(dep, M.FAILED, clock())
-            sync_registry(dep)          # B 에 cancelled
             store.save(dep)
             raise
-        store.save(dep)
         _log(level="info", event="deployment_started", deployment_id=dep.deployment_id,
              bundle_id=dep.bundle_id, previous_bundle_id=previous, actor=x_actor)
         response.headers["Location"] = f"/deployments/{dep.deployment_id}"

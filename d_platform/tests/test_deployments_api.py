@@ -208,14 +208,15 @@ def sent(client) -> list[tuple[str, str]]:
     return [(t["bundle_id"], t["to"]) for t in client.app.state.registry.transitions]
 
 
-def test_start_marks_bundle_canary_then_success_marks_active(client, clock):
+def test_start_does_not_send_canary_then_success_marks_active(client, clock):
+    """canary 는 B 가 배포 요청의 202 를 받고 스스로 바꾼다. D 는 보내지 않는다 (B 가 409 로 막음)."""
     dep_id = start(client, "B-8")["deployment_id"]
-    assert sent(client) == [("B-8", "canary")]
+    assert sent(client) == []
     clock.tick(STEP * 3)
     body = client.get(f"/deployments/{dep_id}").json()
     assert body["analysis"]["registry_sync"] == "ok"
     assert body["analysis"]["registry_change"]["to"] == "active"
-    assert sent(client) == [("B-8", "canary"), ("B-8", "active")]
+    assert sent(client) == [("B-8", "active")]
     assert client.app.state.registry.transitions[0]["actor"] == "d-platform"
 
 
@@ -225,7 +226,7 @@ def test_rollback_in_progress_marks_bundle_cancelled(client, clock):
     client.get(f"/deployments/{auto}")
     manual = start(client, "B-8")["deployment_id"]
     client.post(f"/deployments/{manual}/rollback", headers=ACTOR)
-    assert sent(client) == [("B-9", "canary"), ("B-9", "cancelled"), ("B-8", "canary"), ("B-8", "cancelled")]
+    assert sent(client) == [("B-9", "cancelled"), ("B-8", "cancelled")]
 
 
 def test_rollback_after_success_restores_previous_bundle_in_registry(client, clock):
@@ -238,20 +239,12 @@ def test_rollback_after_success_restores_previous_bundle_in_registry(client, clo
     assert body["analysis"]["registry_change"]["bundle_id"] == "B-7"
 
 
-def test_registry_refusing_canary_does_not_start(client):
+def test_start_works_while_registry_refuses_transitions(client):
+    """B 는 배포 요청의 응답을 기다리는 동안 모든 전이를 409 로 막는다. 그래도 시작은 된다."""
     def reject(bundle_id, to, reason):
-        raise TransitionRejected("registry 409")
+        raise TransitionRejected("registry 409: A deployment request is awaiting confirmation")
     client.app.state.registry.transition = reject
-    assert_error(client.post("/deployments", json={"bundle_id": "B-8"}, headers=ACTOR), 409, "CONFLICT")
-    assert client.get("/deployments").json()[0]["status"] == "failed"
-
-
-def test_registry_down_at_start_is_503_and_does_not_start(client):
-    def down(bundle_id, to, reason):
-        raise RegistryUnavailable("연결 거부")
-    client.app.state.registry.transition = down
-    assert_error(client.post("/deployments", json={"bundle_id": "B-8"}, headers=ACTOR), 503, "SERVICE_UNAVAILABLE")
-    assert client.get("/deployments").json()[0]["status"] == "failed"
+    assert client.post("/deployments", json={"bundle_id": "B-8"}, headers=ACTOR).status_code == 202
 
 
 def test_registry_down_keeps_result_and_retries_later(client, clock):

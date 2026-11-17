@@ -68,7 +68,7 @@
 
 | 언제 | 어느 번들 | 전이 |
 |---|---|---|
-| 배포 시작 | 후보 | `approved` → `canary`. B가 받지 않으면 배포를 시작하지 않는다(거부 409, 연결 안 됨 503, 배포는 `failed`) |
+| 배포 시작 | 후보 | **D는 보내지 않는다.** B가 D의 `POST /deployments` 202를 받은 뒤 스스로 `approved` → `canary`로 바꾼다(B는 다른 모듈의 `canary` 전이를 409로 막는다). 시작에 실패하면(503) B가 응답·`GET /deployments`로 알고 정리한다 |
 | 100% 반영 완료 | 후보 | `canary` → `active` |
 | 진행 중 롤백·중단·실패 | 후보 | `canary` → `cancelled` |
 | 100% 반영 뒤 롤백 | **직전 번들** | `superseded` → `active` (B가 지금 `active`인 번들을 `cancelled`로 바꾼다) |
@@ -91,7 +91,8 @@
 - B: 배포 요청을 받은 D가 승인 여부를 B에 되묻는다(`GET /bundles/{id}`). B는 번들을 `approved`로 바꾼 **뒤에** 요청을 보내야 하고, 그 요청을 처리하는 동안 B가 같은 번들을 잠그고 있으면 서로 기다리게 된다
 - 운영 화면(C): compose에서는 CORS 허용으로 직접 부른다. k3s에서는 ingress 경로로 같은 주소 아래에 묶을지(예: `/api/deployments` → d-platform) 정해야 한다
 - 운영 화면(C): 진행 상황은 `GET /deployments/{id}`를 주기적으로 조회(polling)하는 방식이다. 밀어 주는 방식(SSE 등)은 없다
-- B: 승인 확인(`status == "approved"`)과 전이(`canary`, `active`, `cancelled`)는 B의 `b/registry` 브랜치(PR #8, 아직 병합 전) 형식에 맞췄다. 가짜 B 서버 테스트만 했고 **실제 B와 붙여 보지는 않았다**
+- B: 승인 확인(`status == "approved"`)과 전이(`active`, `cancelled`)는 B의 `b/registry` 브랜치(PR #8, 11/17 커밋 기준) 형식에 맞췄다. B의 연동 테스트(`b_registry/tests/test_deployment.py`, 실제 D 앱을 붙여 돌림)는 통과했지만, 실제 서버끼리 붙여 보지는 않았다
+- B: B는 배포 요청을 보낸 뒤 202를 받아 `canary`로 바꾸기 전까지 모든 전이를 409로 막는다. D가 그 사이에 `active`·`cancelled`를 보내면 거부(`rejected`)로 남고 다시 보내지 않는다. 단계가 `CANARY_PAUSE_SECONDS`(기본 30초) 이상이라 실제로는 생기지 않지만, 생기면 B 상태가 `canary`로 남는다
 - B: 배포 이력이 없을 때의 최초 stable은 환경변수 `BUNDLE_ID`다. B의 `GET /bundles/active`(`{active, canary}`)에서 읽도록 바꿀지 정해야 한다
 - B·C: 검증 Job을 누가 어떤 인자로 만드는지 — B는 Job에 `BUNDLE_ID` 환경변수를 넣고, C의 진입점은 `--validation-id`를 받는다(둘이 아직 안 맞음)
 - 상태값·ID 접두사를 `common/contracts.py`·`common/ids.py`로 옮기기

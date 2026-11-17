@@ -1,11 +1,12 @@
 """B(번들 레지스트리)와 주고받는 쪽: 번들이 배포 가능한 상태인지 묻고, 배포 결과를 알린다.
 
-B 의 API (b/registry 브랜치의 docs/interfaces.md·common/contracts.py REGISTRY_TRANSITIONS, 2026-11-16 기준):
+B 의 API (b/registry 브랜치의 docs/interfaces.md·common/contracts.py REGISTRY_TRANSITIONS, 2026-11-17 기준):
   GET  /bundles/{id}              -> {..., "status": "candidate|validated|approved|canary|active|..."}
   POST /bundles/{id}/transitions  <- {to, actor, reason}  -> {from, to, changed_at}
        X-Actor 헤더를 보내면 본문의 actor 와 같아야 한다. 허용되지 않는 전이는 409.
+배포 시작은 B 가 한다: B 의 POST /bundles/{id}/deployments → D 의 POST /deployments → 202 를 받은 B 가 스스로
+approved -> canary 로 바꾼다 (이때 직전 active 를 previous_active_id 에 적는다). B 는 다른 모듈의 canary 전이를 409 로 막는다.
 D 가 보내는 전이:
-  canary 시작          후보 번들  approved   -> canary     (B 가 이때 직전 active 를 previous_active_id 에 적는다)
   100% 반영 완료       후보 번들  canary     -> active     (B 가 직전 active 를 superseded 로)
   진행 중 중단·롤백    후보 번들  canary     -> cancelled
   100% 반영 뒤 롤백    직전 번들  superseded -> active     (B 가 지금 active 인 번들을 cancelled 로)
