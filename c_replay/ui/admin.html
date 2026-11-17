@@ -219,6 +219,8 @@ async function showValidation(v) {
 }
 const decide = decision => run($('approvalOut'), async () => {
   const body = { bundle_id: need($('bundleId')), decision, actor: need($('actor')), reason: need($('reason')) };
+  const ask = decision === 'approve' ? `번들 ${body.bundle_id}을(를) 승인할까요?\n승인하면 D 에 배포가 바로 요청됩니다` : `번들 ${body.bundle_id}을(를) 반려할까요?`;
+  if (!confirm(ask)) return '';
   const r = await api('b', 'POST', '/approvals', body);
   $('btnBundle').click();
   if (decision === 'reject') return `${tag('반려됨', 'bad')} <span class="muted">${esc(r.from)} → ${esc(r.to)}</span>`;
