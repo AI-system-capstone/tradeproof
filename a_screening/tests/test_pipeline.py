@@ -30,7 +30,7 @@ def test_bundle_spec():
     b = P.bundle_spec(C.BASELINE_BUNDLE)
     want = C.BUNDLES[C.BASELINE_BUNDLE]
     assert b == {"bundle_id": C.BASELINE_BUNDLE, "model_id": want["model_id"],
-                 "list_id": want["list_id"], "rules_version": want["rules_version"]}
+                 "list_id": want["list_id"]}
     with pytest.raises(ValueError):
         P.bundle_spec("B-99")
 
@@ -50,7 +50,7 @@ def test_screen_extracted_without_ocr_matches_match_screen():
     extracted = {f: {"value": v, "source_doc": None, "bbox": None, "confidence": None} for f, v in fields.items()}
     b = P.bundle_spec(C.BASELINE_BUNDLE)
     assert P.screen_extracted(extracted, [], b, from_ocr=False) == \
-        screen(fields, load_index(b["list_id"]), rules_version=b["rules_version"])
+        screen(fields, load_index(b["list_id"]), rules_version=C.RULES_FIXED)
 
 
 # ---------------------------------------------------------------- SVC-04: 같은 입력 → 같은 결과 (3회)
@@ -81,7 +81,7 @@ def test_worker_path_equals_pipeline(bundle_id, tmp_path: Path):
 def test_rules_fixed_for_all_bundles():
     """규칙 버전은 번들과 무관하게 A가 고정 (contracts.RULES_FIXED = rules-v3)."""
     assert C.RULES_FIXED == C.RULES_NEW
-    assert {b["rules_version"] for b in C.BUNDLES.values()} == {C.RULES_FIXED}
+    assert all("rules_version" not in b for b in C.BUNDLES.values())   # B 번들처럼 규칙 버전 없음
 
 
 def test_bundle_without_rules_uses_fixed(monkeypatch):

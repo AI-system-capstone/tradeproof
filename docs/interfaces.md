@@ -80,3 +80,4 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 2026-11-17 | A 지윤아 | A의 번들 필드 이름을 B 레지스트리와 맞춤: `model_version` → `model_id`, `list_version` → `list_id` (값은 그대로, 예: `model-v3`, `list-v14`). A API 응답·`contracts.BUNDLES`·OCR 결과 파일에 적용. 제재 리스트 파일 안의 `list_version` 키는 B 반입 검사가 보므로 그대로 |
 | 2026-11-17 | B 박시우 | 재조합을 B 배포 요청 단계로 이동. B가 D POST /deployments를 호출하고 접수 확인 후 canary로 전이. 직접 canary 전이 차단, 결과 미확인 시 재호출은 D 조회로 확인 |
 | 2026-11-17 | B 박시우 | M2 후보 등록 후 자동 검증 Job 실행·C 완료 콜백·90% 게이트·배포 승인 API 추가. C 결과 폴링과 운영 화면 검증 요청 제거. 승인 시 D 배포 요청, 최초 번들은 검증 생략. 콜백 URL 환경변수·결과 통보 계약과 53 ALTER SQL 추가(C/D 연동 확인 필요) |
+| 2026-11-17 | A 지윤아 | `contracts.BUNDLES` 에서 `rules_version` 제거 (B 번들과 같은 모양: `model_id`, `list_id`). 규칙은 A가 `contracts.RULES_FIXED`(rules-v3)로 고정. A 응답의 `rules_version` 은 그대로(어떤 규칙으로 판정했는지 표시) |
