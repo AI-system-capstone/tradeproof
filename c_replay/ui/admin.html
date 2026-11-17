@@ -94,7 +94,8 @@
    C = docs/openapi/c_replay.json. B 에는 CORS 허용이 없어서 브라우저에서 직접 부르면 막힐 수 있다 (프록시나 B 쪽 설정이 필요).
    B  POST /imports (multipart: package)   -> 202 {import_id}
       GET  /imports/{id}                   -> 202 빈 본문 (처리 중) | 200 {status:"APPROVED"|"REJECTED", reason, bundle_id}
-      GET  /bundles/{id}                   -> {bundle_id, status, model_id, list_id, created_at, model:{model_id, uri}, list:{list_id, uri}}
+      GET  /bundles/{id}                   -> {bundle_id, status, model_id, list_id, created_at, base_bundle_id, history:[…], model:{model_id, uri}, list:{list_id, uri}}
+                                              history 의 deployment_request:{state:"accepted", deployment_id} 로 배포 ID 를 찾는다
       POST /approvals                      <- {bundle_id, decision:"approve"|"reject", actor, reason}
                                            -> 승인 202 {bundle_id, status, deployment_id} (D 에 배포까지 요청함)
                                               승인 200 {bundle_id, status, replacement_bundle_id} (대체 번들이 만들어짐)
@@ -115,7 +116,9 @@ const MOCK = !q.has('mock') ? null : {
   'POST b/imports': { import_id: 'IMP-1' },
   'GET b/imports': { status: 'APPROVED', reason: null, bundle_id: 'B-9' },
   'GET b/bundles': { bundle_id: 'B-9', status: 'validated', model_id: 'model-v4', list_id: 'list-v14',
-    created_at: '2026-11-16T09:00:00Z', model: { model_id: 'model-v4', uri: 's3://registry/models/model-v4.zip' },
+    created_at: '2026-11-16T09:00:00Z', base_bundle_id: 'B-7',
+    history: [{ from: 'candidate', to: 'validated', actor: 'b-registry', reason: 'Validation gate passed', changed_at: '2026-11-16T09:30:00Z', validation_id: 'RP-3f9a1c0b7d2e' }],
+    model: { model_id: 'model-v4', uri: 's3://registry/models/model-v4.zip' },
     list: { list_id: 'list-v14', uri: 's3://registry/lists/list-v14.zip' } },
   'POST b/approvals:approve': { bundle_id: 'B-9', status: 'canary', deployment_id: 'DP-1' },
   'POST b/approvals:reject': { from: 'validated', to: 'rejected', changed_at: '2026-11-16T10:00:00Z' },
@@ -197,6 +200,9 @@ const num = v => typeof v === 'number' ? +v.toFixed(4) : v;
 $('btnBundle').onclick = () => run($('bundleOut'), async () => {
   const id = seg(need($('bundleId')));
   const [b, list] = await Promise.all([api('b', 'GET', `/bundles/${id}`), api('c', 'GET', `/validations?bundle_id=${id}&limit=1`)]);
+  // 배포 요청이 받아들여졌으면 배포 ID 를 3구역 칸에 채운다
+  const dep = (b.history || []).map(h => h.deployment_request).filter(d => d && d.state === 'accepted' && d.deployment_id).at(-1);
+  if (dep) $('deployId').value = dep.deployment_id;
   return `${kv(b)}
     <table><tr><th>모델 파일</th><td>${esc(b.model && b.model.uri)}</td></tr><tr><th>리스트 파일</th><td>${esc(b.list && b.list.uri)}</td></tr></table>
     <h3>게이트</h3><p class="muted">B 미제공 (게이트 판정 API 가 B 에 없음)</p>
@@ -229,6 +235,7 @@ const decide = decision => run($('approvalOut'), async () => {
   if (decision === 'reject') return `${tag('반려됨', 'bad')} <span class="muted">${esc(r.from)} → ${esc(r.to)}</span>`;
   if (r.replacement_bundle_id) return `${tag('배포 안 됨', 'bad')} <span class="muted">운영 번들이 바뀌어 이 번들은 ${esc(r.status)} 처리됨</span>
     <p>대체 번들 <b>${esc(r.replacement_bundle_id)}</b> 이(가) 만들어짐. 다시 검증하고 승인해야 함</p>`;
+  $('deployId').value = r.deployment_id;
   return `${tag('승인됨', 'ok')} 배포 요청함 · 배포 ID <b>${esc(r.deployment_id)}</b> <span class="muted">번들 상태 ${esc(r.status)}</span>`;
 });
 $('btnApprove').onclick = () => decide('approve');
