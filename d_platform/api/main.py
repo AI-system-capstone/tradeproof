@@ -8,7 +8,12 @@
 
 환경변수:
   DATABASE_URL           있으면 Postgres, 없으면 메모리 저장소
-  DEPLOY_DRIVER          fake (기본). 실제 Argo Rollouts 드라이버는 k3s 단계에서 추가
+  DEPLOY_DRIVER          fake (기본) | argo (k3s 의 Argo Rollout 을 helm·kubectl 로 조작)
+  HELM_CHART             argo 일 때 차트 경로, 기본 d_platform/helm/a-screening
+  HELM_BUNDLE_VALUES     argo 일 때 번들 ID 를 적는 파일, 기본 deploy/values-dev.yaml (D 가 쓴다)
+  HELM_VALUES_FILES      argo 일 때 같이 넣을 values 파일(쉼표 구분). 예: A 이미지 설정
+  K8S_NAMESPACE          argo 일 때 네임스페이스, 기본 tradeproof
+  CANARY_PAUSE_SECONDS   argo 일 때 단계마다 머무는 시간(초), 기본 30. 0 이면 사람이 promote 할 때까지 멈춤
   FAKE_STEP_SECONDS      가짜 드라이버의 단계당 시간(초), 기본 5
   FAKE_FAIL_BUNDLES      가짜 드라이버에서 분석이 실패하는 번들(쉼표 구분) → 자동 롤백 흉내
   REGISTRY_MODE          fake (기본) | http
@@ -37,7 +42,7 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from d_platform.api import models as M
-from d_platform.api.drivers import make_driver
+from d_platform.api.drivers import DriverError, make_driver
 from d_platform.api import registry as R
 from d_platform.api.registry import APPROVED, RegistryUnavailable, TransitionRejected, make_registry
 from d_platform.api.store import InProgressExists, finish, make_store
@@ -86,7 +91,10 @@ class Analysis(BaseModel):
     checks: list[dict] = Field(default_factory=list, description="단계별 분석 결과")
     registry_sync: str | None = Field(
         default=None, description="B 번들 상태에 반영했는지: ok | pending(다시 시도 예정) | rejected(B 가 거부)")
+    registry_change: dict | None = Field(
+        default=None, description="B 에 마지막으로 보낸 전이 {bundle_id, to, reason}")
     rollback: dict | None = Field(default=None, description="수동 롤백을 요청한 사람과 사유")
+    message: str | None = Field(default=None, description="실패·중단 사유 (드라이버가 본 그대로)")
 
 
 class DeploymentResponse(BaseModel):
@@ -120,7 +128,7 @@ def create_app(store=None, driver=None, registry=None,
     store = store or make_store(env.get("DATABASE_URL"))
     driver = driver or make_driver(env.get("DEPLOY_DRIVER", "fake"),
                                    float(env.get("FAKE_STEP_SECONDS", "5")),
-                                   _csv(env.get("FAKE_FAIL_BUNDLES")))
+                                   _csv(env.get("FAKE_FAIL_BUNDLES")), env)
     registry = registry or make_registry(env.get("REGISTRY_MODE", "fake"), env.get("REGISTRY_URL"),
                                          _csv(env.get("FAKE_APPROVED_BUNDLES")))
     initial_bundle = env.get("BUNDLE_ID", "B-7")
@@ -157,6 +165,12 @@ def create_app(store=None, driver=None, registry=None,
     async def on_api_error(_: Request, e: ApiError):
         return _error(e.status, e.code, e.message, e.target_id)
 
+    @app.exception_handler(DriverError)
+    async def on_driver_error(request: Request, e: DriverError):
+        _log(level="error", event="driver_error", request_id=getattr(request.state, "request_id", None),
+             path=request.url.path, error=str(e))
+        return _error(503, ERR_UNAVAILABLE, f"클러스터를 조작·조회할 수 없음: {e}")
+
     @app.exception_handler(RequestValidationError)
     async def on_validation(_: Request, e: RequestValidationError):
         first = e.errors()[0] if e.errors() else {}
@@ -170,36 +184,49 @@ def create_app(store=None, driver=None, registry=None,
         return _error(e.status_code, code, str(e.detail))
 
     # ------------------------------------------------------------ 상태 맞추기
-    def sync_registry(dep: M.Deployment) -> None:
-        """끝난 배포의 결과를 B 의 번들 상태에 반영한다 (반영 완료 → active, 롤백 → rolled_back).
-
-        B 에 연결이 안 되면 analysis.registry_sync 를 pending 으로 두고, 다음 조회 때 다시 시도한다.
-        트래픽 상태(D 의 status)는 B 와 무관하게 바로 확정한다.
-        """
-        target = {M.SUCCEEDED: R.ACTIVE, M.ROLLED_BACK: R.ROLLED_BACK}.get(dep.status)
-        if target is None:
-            return
-        reason = (f"배포 {dep.deployment_id} 100% 반영 완료" if target == R.ACTIVE
-                  else f"배포 {dep.deployment_id} 롤백 ({dep.rollback_reason})")
+    def tell_registry(dep: M.Deployment, bundle_id: str, to: str, reason: str) -> str:
+        """B 에 전이를 보내고 결과를 analysis 에 적는다: ok | pending(연결 안 됨, 다시 시도) | rejected(B 가 거부)."""
         try:
-            registry.transition(dep.bundle_id, target, reason)
+            registry.transition(bundle_id, to, reason)
             result = "ok"
         except RegistryUnavailable as e:
             result = "pending"
             _log(level="warning", event="registry_sync_pending", deployment_id=dep.deployment_id,
-                 bundle_id=dep.bundle_id, to=target, error=str(e))
+                 bundle_id=bundle_id, to=to, error=str(e))
         except TransitionRejected as e:
             result = "rejected"
             _log(level="error", event="registry_sync_rejected", deployment_id=dep.deployment_id,
-                 bundle_id=dep.bundle_id, to=target, error=str(e))
-        dep.analysis = {**dep.analysis, "registry_sync": result}
+                 bundle_id=bundle_id, to=to, error=str(e))
+        dep.analysis = {**dep.analysis, "registry_sync": result,
+                        "registry_change": {"bundle_id": bundle_id, "to": to, "reason": reason}}
+        return result
+
+    def sync_registry(dep: M.Deployment, was_succeeded: bool = False) -> None:
+        """끝난 배포의 결과를 B 의 번들 상태에 반영한다.
+
+        반영 완료 → 후보 active / 진행 중 롤백 → 후보 cancelled / 반영 뒤 롤백 → 직전 번들 active.
+        canary 는 보내지 않는다(B 가 배포 요청의 202 를 받고 스스로 바꾼다). 시작 실패(failed)도 B 가 응답으로 안다.
+        B 에 연결이 안 되면 analysis.registry_sync 를 pending 으로 두고, 다음 조회 때 다시 시도한다.
+        트래픽 상태(D 의 status)는 B 와 무관하게 바로 확정한다.
+        """
+        if dep.status == M.SUCCEEDED:
+            tell_registry(dep, dep.bundle_id, R.ACTIVE, f"배포 {dep.deployment_id} 100% 반영 완료")
+        elif dep.status == M.ROLLED_BACK and was_succeeded:
+            tell_registry(dep, dep.previous_bundle_id, R.ACTIVE,
+                          f"배포 {dep.deployment_id} 반영 뒤 롤백 ({dep.rollback_reason}): {dep.bundle_id} 에서 복원")
+        elif dep.status == M.ROLLED_BACK:
+            tell_registry(dep, dep.bundle_id, R.CANCELLED,
+                          f"배포 {dep.deployment_id} 중단 ({dep.rollback_reason})")
+        elif dep.status == M.FAILED:
+            # 진행 중에 배포 밖에서 번들이 바뀐 경우 (시작 실패는 여기로 오지 않는다). 후보는 이미 canary 다.
+            tell_registry(dep, dep.bundle_id, R.CANCELLED, f"배포 {dep.deployment_id} 실패")
 
     def reconcile(dep: M.Deployment) -> M.Deployment:
         """진행 중인 배포를 드라이버가 본 실제 상태에 맞춰 deployments 에 적는다."""
         if not dep.in_progress:
-            if dep.analysis.get("registry_sync") == "pending":      # B 에 못 알린 결과를 다시 알린다
-                sync_registry(dep)
-                if dep.analysis.get("registry_sync") != "pending":
+            change = dep.analysis.get("registry_change")
+            if dep.analysis.get("registry_sync") == "pending" and change:   # B 에 못 알린 결과를 다시 알린다
+                if tell_registry(dep, change["bundle_id"], change["to"], change["reason"]) != "pending":
                     store.save(dep)
             return dep
         obs = driver.observe(dep, clock())
@@ -210,6 +237,8 @@ def create_app(store=None, driver=None, registry=None,
             finish(dep, obs.status, clock())
             if obs.status == M.ROLLED_BACK:
                 driver.rollback(dep)
+            elif obs.status == M.SUCCEEDED:
+                driver.finalize(dep)
             sync_registry(dep)
             _log(level="info", event="deployment_finished", deployment_id=dep.deployment_id,
                  bundle_id=dep.bundle_id, status=dep.status, rollback_reason=dep.rollback_reason,
@@ -263,7 +292,15 @@ def create_app(store=None, driver=None, registry=None,
             other = store.in_progress()
             raise ApiError(409, ERR_CONFLICT, "진행 중인 배포가 있음",
                            other.deployment_id if other else None) from None
-        driver.start(dep)
+        # B 에는 canary 를 보내지 않는다: B 가 이 요청의 202 를 받은 뒤 스스로 canary 로 바꾼다 (B PR #8, 11/17).
+        try:
+            driver.start(dep)
+        except DriverError as e:        # 시작하지 못한 배포는 failed 로 닫아 다음 배포를 막지 않는다
+            # B 에도 알리지 않는다. B 는 이 요청의 응답(503)을 보고, 다시 물을 때 GET /deployments 의 failed 로 정리한다.
+            dep.analysis = {**dep.analysis, "result": "failed", "message": str(e)}
+            finish(dep, M.FAILED, clock())
+            store.save(dep)
+            raise
         _log(level="info", event="deployment_started", deployment_id=dep.deployment_id,
              bundle_id=dep.bundle_id, previous_bundle_id=previous, actor=x_actor)
         response.headers["Location"] = f"/deployments/{dep.deployment_id}"
@@ -289,7 +326,8 @@ def create_app(store=None, driver=None, registry=None,
         if not actor:
             raise ApiError(422, ERR_VALIDATION, "X-Actor 헤더 또는 본문의 actor 가 필요함", deployment_id)
         dep = load(deployment_id)
-        if dep.status == M.SUCCEEDED:
+        was_succeeded = dep.status == M.SUCCEEDED
+        if was_succeeded:
             # 반영이 끝난 배포는 "지금 운영 중인 것"일 때만 되돌릴 수 있다 (DEP-05: 직전 번들로)
             if store.in_progress() is not None or stable_bundle() != dep.bundle_id \
                     or store.latest(1)[0].deployment_id != dep.deployment_id:
@@ -303,7 +341,7 @@ def create_app(store=None, driver=None, registry=None,
         dep.analysis = {**dep.analysis, "result": dep.analysis.get("result", "running"),
                         "rollback": {"actor": actor, "reason": body.reason if body else None}}
         finish(dep, M.ROLLED_BACK, clock())
-        sync_registry(dep)
+        sync_registry(dep, was_succeeded)
         store.save(dep)
         _log(level="info", event="deployment_rolled_back", deployment_id=dep.deployment_id,
              bundle_id=dep.bundle_id, restored_bundle_id=dep.previous_bundle_id, actor=actor,

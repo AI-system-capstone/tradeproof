@@ -141,7 +141,7 @@ METRIC_REVIEWS = "tradeproof_review_decisions"               # gauge   {decision
 BUNDLE_STATUSES = ("candidate", "validated", "validation_failed", "approved", "rejected", "active", "rolled_back")
 
 # ---------------------------------------------------------------- 제재 리스트 항목
-# list JSON = {list_id, source, source_fetched_at, created_at, entry_count, entries:[ENTRY]}
+# list JSON = {list_version, source, source_fetched_at, created_at, entry_count, entries:[ENTRY]}
 ENTRY_FIELDS = ("entry_id", "name", "aliases", "entity_type", "country", "programs", "call_sign", "vessel_flag", "synthetic")
 ENTITY = "entity"
 VESSEL = "vessel"
@@ -220,3 +220,23 @@ EXPECTED = {  # case_type -> {list_id: 기대 분류}
 #   tx_id, received_at, case_type, matched_entry_id, expected:{list-v14:..., list-v15:...},
 #   fields:{TX_FIELDS...}, documents:{invoice:{pdf,png}, bl:{pdf,png}}   (경로는 DATA 기준 상대경로)
 # }
+
+# B 공통 계약: 반입 결과(A), 번들 상태 전이(C·D), 수집 지표(D).
+# 기존 BUNDLE_STATUSES는 유지하여 A의 기존 계약에 영향을 주지 않는다.
+REGISTRY_BUNDLE_STATUSES = ("candidate", "validated", "validation_failed", "approved",
+                            "rejected", "canary", "cancelled", "active", "superseded")
+REGISTRY_TRANSITIONS = {
+    "candidate": {"validated", "validation_failed"},
+    "validated": {"approved", "rejected"},
+    "approved": {"canary", "cancelled"},
+    "canary": {"active", "cancelled"},
+    "active": set(),
+    "superseded": {"active"},
+    "validation_failed": set(), "rejected": set(), "cancelled": set(),
+}
+# Legacy import states remain available to readers of pre-migration history.
+IMPORT_RECEIVED = "RECEIVED"
+IMPORT_APPROVED = "APPROVED"
+IMPORT_REJECTED = "REJECTED"
+METRIC_REGISTRY_IMPORTS = "tradeproof_registry_imports"
+METRIC_REGISTRY_BUNDLES = "tradeproof_registry_bundles"

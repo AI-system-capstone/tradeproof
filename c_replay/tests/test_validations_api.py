@@ -1,4 +1,4 @@
-"""검증 API 테스트. 검증 Job 대신 저장소의 start/complete/fail 로 결과를 넣고 API 응답을 확인한다.
+"""검증 조회 API 테스트. 검증 Job 대신 저장소의 create/start/complete/fail 로 행을 넣고 API 응답을 확인한다.
 
 store 픽스처(conftest)가 메모리·Postgres 두 저장소로 돌린다 (Postgres 는 TEST_DATABASE_URL 이 있을 때만).
 """
@@ -11,9 +11,7 @@ from fastapi.testclient import TestClient
 
 from common import contracts as C
 from c_replay.api import main
-from c_replay.store import StoreUnavailable
-
-ACTOR = {"X-Actor": "b_registry"}
+from c_replay.store import InProgressExists, StoreUnavailable
 
 GOLDEN = {
     "golden_version": "golden-list-v1", "total": 30,
@@ -26,8 +24,8 @@ REPLAY = {"total": 100, "processed": 100, "count_match": True, "changed": 3, "ch
 
 def diff(tx_id, direction, before, after):
     return {"tx_id": tx_id, "direction": direction,
-            "before": {"bundle_id": "B-1", "classification": before, "reasons": []},
-            "after": {"bundle_id": "B-2", "classification": after,
+            "before": {"bundle_id": "B-7", "classification": before, "reasons": []},
+            "after": {"bundle_id": "B-9", "classification": after,
                       "reasons": [{"rule": C.RULE_PARTY_EXACT, "field": "buyer_name"}]},
             "fields_changed": [{"field": "buyer_name", "before": "ACME", "after": None}]}
 
@@ -39,16 +37,15 @@ DIFFS = [diff("TX-0030", "up", C.PASS, C.HOLD),
 
 @pytest.fixture
 def client(store):
-    return TestClient(main.create_app(store=store, env={"BUNDLE_ID": "B-1"}))
+    return TestClient(main.create_app(store=store, env={}))
 
 
-def register(client, bundle_id="B-2", **extra):
-    r = client.post("/validations", json={"bundle_id": bundle_id, **extra}, headers=ACTOR)
-    assert r.status_code == 202, r.text
-    return r.json()
+def register(client, bundle_id="B-9", baseline="B-7"):
+    """검증 Job 이 하듯 저장소에 검증 행을 만든다 (API 에는 등록이 없다)."""
+    return client.app.state.store.create(bundle_id, baseline, "b_registry")
 
 
-def completed(client, bundle_id="B-2", diffs=DIFFS):
+def completed(client, bundle_id="B-9", diffs=DIFFS):
     vid = register(client, bundle_id)["validation_id"]
     assert client.app.state.store.start(vid)
     assert client.app.state.store.complete(vid, GOLDEN, REPLAY, diffs)
@@ -63,36 +60,35 @@ def assert_error(r, status, code):
     return body
 
 
-# ---------------------------------------------------------------- POST /validations
-def test_register_returns_202_queued(client):
-    body = register(client)
-    assert re.fullmatch(r"RP-[0-9a-f]{12}", body["validation_id"])
+# ---------------------------------------------------------------- 등록은 API 에 없다 (검증 Job 이 만든다)
+def test_no_register_api(client):
+    r = client.post("/validations", json={"bundle_id": "B-9"})
+    assert_error(r, 405, C.ERR_VALIDATION)
+
+
+def test_new_validation_is_queued(client):
+    vid = register(client)["validation_id"]
+    assert re.fullmatch(r"RP-[0-9a-f]{12}", vid)
+    body = client.get(f"/validations/{vid}").json()
     assert body == {
-        "validation_id": body["validation_id"], "bundle_id": "B-2", "baseline_bundle_id": "B-1",
+        "validation_id": vid, "bundle_id": "B-9", "baseline_bundle_id": "B-7",
         "status": "queued", "golden": None, "replay": None, "error": None, "requested_by": "b_registry",
         "created_at": body["created_at"], "started_at": None, "finished_at": None,
     }
     assert body["created_at"].endswith("+00:00")
 
 
-def test_register_with_explicit_baseline(client):
-    assert register(client, baseline_bundle_id="B-0")["baseline_bundle_id"] == "B-0"
-
-
-def test_missing_actor_or_bundle_is_422(client):
-    assert_error(client.post("/validations", json={"bundle_id": "B-2"}), 422, C.ERR_VALIDATION)
-    assert_error(client.post("/validations", json={}, headers=ACTOR), 422, C.ERR_VALIDATION)
-
-
-def test_second_validation_of_same_bundle_in_progress_is_409(client):
+def test_one_validation_in_progress_per_bundle(client):
+    store = client.app.state.store
     vid = register(client)["validation_id"]
-    body = assert_error(client.post("/validations", json={"bundle_id": "B-2"}, headers=ACTOR), 409, C.ERR_CONFLICT)
-    assert body["target_id"] == "B-2"
-    register(client, "B-3")                                   # 다른 번들은 가능
-    client.app.state.store.start(vid)                         # running 이어도 409
-    assert_error(client.post("/validations", json={"bundle_id": "B-2"}, headers=ACTOR), 409, C.ERR_CONFLICT)
-    client.app.state.store.fail(vid, {"code": C.ERR_INTERNAL, "message": "x", "target_id": vid})
-    register(client)                                          # 끝난 뒤에는 다시 등록 가능
+    with pytest.raises(InProgressExists):
+        register(client)
+    register(client, "B-10")                                   # 다른 번들은 가능
+    store.start(vid)                                          # running 이어도 막힘
+    with pytest.raises(InProgressExists):
+        register(client)
+    store.fail(vid, {"code": C.ERR_INTERNAL, "message": "x", "target_id": vid})
+    register(client)                                          # 끝난 뒤에는 다시 만들 수 있다
 
 
 # ---------------------------------------------------------------- GET /validations/{id}
@@ -137,19 +133,19 @@ def test_complete_requires_running(client):
 
 # ---------------------------------------------------------------- GET /validations
 def test_list_latest_first_with_filters_and_paging(client):
-    a = completed(client, "B-2")
-    b = register(client, "B-3")["validation_id"]
-    c = register(client, "B-2")["validation_id"]
+    a = completed(client, "B-9")
+    b = register(client, "B-10")["validation_id"]
+    c = register(client, "B-9")["validation_id"]
 
     body = client.get("/validations").json()
     assert [v["validation_id"] for v in body["items"]] == [c, b, a]
     assert body["total"] == 3
 
-    body = client.get("/validations", params={"bundle_id": "B-2"}).json()
+    body = client.get("/validations", params={"bundle_id": "B-9"}).json()
     assert [v["validation_id"] for v in body["items"]] == [c, a]
     body = client.get("/validations", params={"status": "completed"}).json()
     assert [v["validation_id"] for v in body["items"]] == [a] and body["total"] == 1
-    body = client.get("/validations", params={"bundle_id": "B-2", "status": "queued"}).json()
+    body = client.get("/validations", params={"bundle_id": "B-9", "status": "queued"}).json()
     assert [v["validation_id"] for v in body["items"]] == [c]
 
     body = client.get("/validations", params={"limit": 1, "offset": 1}).json()
@@ -193,8 +189,8 @@ def test_diffs_direction_filter_and_paging(client):
 
 
 def test_diffs_of_other_validation_are_separate(client):
-    completed(client, "B-2")
-    other = completed(client, "B-3", diffs=[])
+    completed(client, "B-9")
+    other = completed(client, "B-10", diffs=[])
     assert client.get(f"/validations/{other}/diffs").json() == {"items": [], "total": 0}
 
 
@@ -230,9 +226,9 @@ def test_unknown_path_and_unhandled_error_use_common_format(client, monkeypatch)
 def test_store_down_is_503(client, monkeypatch):
     def down(*a, **k):
         raise StoreUnavailable("OperationalError")
-    monkeypatch.setattr(client.app.state.store, "create", down)
+    monkeypatch.setattr(client.app.state.store, "list", down)
     monkeypatch.setattr(client.app.state.store, "ping", down)
-    assert_error(client.post("/validations", json={"bundle_id": "B-2"}, headers=ACTOR), 503, C.ERR_UNAVAILABLE)
+    assert_error(client.get("/validations"), 503, C.ERR_UNAVAILABLE)
     assert_error(client.get("/healthz"), 503, C.ERR_UNAVAILABLE)
 
 
@@ -258,10 +254,10 @@ def test_metrics(client):
     assert f'{main.METRIC_RUNS}{{status="completed"}} 0' in text
     assert main.METRIC_DURATION + "{" not in text
 
-    completed(client, "B-2")
-    failed = register(client, "B-3")["validation_id"]
+    completed(client, "B-9")
+    failed = register(client, "B-10")["validation_id"]
     client.app.state.store.fail(failed, {"code": C.ERR_INTERNAL, "message": "x", "target_id": failed})
-    register(client, "B-4")                                   # 진행 중인 건은 세지 않는다
+    register(client, "B-8")                                   # 진행 중인 건은 세지 않는다
 
     r = client.get("/metrics")
     assert r.headers["content-type"].startswith("text/plain")
@@ -269,6 +265,27 @@ def test_metrics(client):
     assert f'{main.METRIC_RUNS}{{status="completed"}} 1' in r.text
     assert f'{main.METRIC_RUNS}{{status="failed"}} 1' in r.text
     assert f"# TYPE {main.METRIC_DURATION} gauge" in r.text
-    m = re.search(main.METRIC_DURATION + r'\{bundle_id="B-2"\} ([0-9.]+)\n', r.text)
+    m = re.search(main.METRIC_DURATION + r'\{bundle_id="B-9"\} ([0-9.]+)\n', r.text)
     assert m and float(m.group(1)) >= 0
-    assert 'bundle_id="B-3"' not in r.text
+    assert 'bundle_id="B-10"' not in r.text
+
+
+# ---------------------------------------------------------------- 멈춘 검증 정리 (메모리·Postgres 공통)
+def test_fail_stale_only_old_in_progress_of_same_bundle(store):
+    from datetime import timedelta
+    err = {"code": C.ERR_INTERNAL, "message": "정리", "target_id": "B-9"}
+    running = store.create("B-9", "B-7", "b_registry")["validation_id"]
+    store.start(running)
+    queued = store.create("B-8", "B-7", "b_registry")["validation_id"]
+    done = store.create("B-6", "B-7", "b_registry")["validation_id"]
+    store.start(done)
+    store.complete(done, GOLDEN, REPLAY, [])
+    assert store.fail_stale("B-9", timedelta(hours=1), err) == 0          # 최근 것은 그대로
+    assert store.get(running)["status"] == "running"
+    assert store.fail_stale("B-9", timedelta(seconds=-60), err) == 1      # 기준보다 오래된 것으로 본다
+    v = store.get(running)
+    assert v["status"] == "failed" and v["error"] == err and v["finished_at"]
+    assert store.get(queued)["status"] == "queued"                        # 다른 번들은 그대로
+    store.fail_stale("B-6", timedelta(seconds=-60), err)
+    assert store.get(done)["status"] == "completed"                       # 끝난 것은 그대로
+    store.create("B-9", "B-7", "b_registry")                              # 정리 뒤에는 새 검증을 만들 수 있다
