@@ -17,11 +17,12 @@
 
 ## 검증 흐름
 
-B의 PR #17(아직 열림)이 정한 검증 Job 계약을 따른다.
+B가 정한 검증 Job 계약을 따른다 (`b_registry/verify/replay.py`, `docs/interfaces.md` 4절).
 
 1. B가 검증할 번들마다 검증 ID를 만들고, `job/job-template.json`에 환경변수 5개를 넣어 K8s Job을 만든다.
    - `VALIDATION_ID`, `BUNDLE_ID`, `BASELINE_BUNDLE_ID`, `REQUESTED_BY`, `VALIDATION_CALLBACK_URL`
-2. 검증 Job이 B가 준 검증 ID로 검증 행을 만들고 골든셋 검증·Replay를 한다.
+2. 검증 Job이 B의 `GET /bundles/{id}`로 두 번들의 `model_id`·`list_id`를 읽고, B가 준 검증 ID로 검증 행을 만들어 골든셋 검증·Replay를 한다.
+   - B 주소는 Job 양식의 `B_URL`. 규칙 버전은 번들에 없고 A가 rules-v3로 고정한다.
 3. 결과를 `completed` 또는 `failed`로 저장한다.
    - 시간 제한에 걸리면(SIGTERM) `failed`로 저장한다.
 4. `VALIDATION_CALLBACK_URL`로 결과 전체를 보낸다: `{validation_id, bundle_id, baseline_bundle_id, status, golden, replay, error}`.
@@ -60,6 +61,7 @@ BUNDLE_ID=B-9 DATABASE_URL=postgresql://... python -m c_replay.job
 - 필수는 `BUNDLE_ID`, `DATABASE_URL` 둘이다.
 - 손으로 돌릴 때 `VALIDATION_ID`가 없으면 C가 만들고, `BASELINE_BUNDLE_ID`가 없으면 `contracts.BASELINE_BUNDLE`(B-7)을 쓴다.
 - `VALIDATION_CALLBACK_URL`이 없으면 결과를 보내지 않고 C의 DB에만 저장한다.
+- `B_URL`이 없으면 번들 구성을 `contracts.BUNDLES`(B-7~B-10)에서 읽는다.
 - 종료 코드: 0 = completed로 저장했고 B가 받음(또는 보낼 곳 없음), 1 = 그 밖의 경우, 2 = 필수 환경변수 없음.
 
 이미지 빌드 (저장소 루트에서):

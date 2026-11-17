@@ -442,6 +442,64 @@ def test_job_restarted_with_same_id_while_running_sends_failure():
     assert ok is False and [x["status"] for x in sent] == ["failed"]
 
 
+class _FakeB:
+    """urllib.request.urlopen 대신 B 의 GET /bundles/{id} 에 답한다."""
+
+    def __init__(self, bundles):
+        self.bundles, self.urls = bundles, []
+
+    def __call__(self, url, timeout=None):
+        import io
+        import json
+        import urllib.error
+        self.urls.append(url)
+        bid = url.rsplit("/", 1)[-1]
+        if bid not in self.bundles:
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+        return io.BytesIO(json.dumps({"bundle_id": bid, "status": "candidate", **self.bundles[bid]}).encode())
+
+
+@pytest.fixture
+def fake_b(monkeypatch):
+    def install(bundles):
+        b = _FakeB(bundles)
+        monkeypatch.setattr(V.urllib.request, "urlopen", b)
+        monkeypatch.setattr(V, "_FROM_B", {})
+        return b
+    return install
+
+
+def test_bundles_come_from_b_when_b_url_is_set(fake_b):
+    # B 가 새로 만든 번들(B-11)은 contracts.BUNDLES 에 없지만 B 에서 읽으면 검증된다
+    b = fake_b({BASE: {"model_id": C.MODEL_BASE, "list_id": C.LIST_BASE},
+                "B-11": {"model_id": C.MODEL_NEW, "list_id": C.LIST_NEW}})
+    items, rows, _ = _load()
+    proc = table({("TX-0001", BASE): P, ("TX-0002", BASE): H, ("TX-0001", "B-11"): P, ("TX-0002", "B-11"): H})
+    s = MemoryStore()
+    job = {**_job("B-11"), "b_url": "http://b:8100/"}
+    assert run(job, s, lambda: (items, rows, proc)) is True
+    assert b.urls == ["http://b:8100/bundles/B-7", "http://b:8100/bundles/B-11"]
+    assert _only(s)["golden"]["golden_version"] == "golden-list-v14,golden-list-v15"
+    assert V.bundle("B-11") == {"model_id": C.MODEL_NEW, "list_id": C.LIST_NEW}
+
+
+def test_bundle_missing_in_b_fails_without_loading(fake_b):
+    fake_b({BASE: {"model_id": C.MODEL_BASE, "list_id": C.LIST_BASE}})
+    s = MemoryStore()
+    job = {**_job("B-404"), "b_url": "http://b:8100"}
+    assert run(job, s, lambda: (_ for _ in ()).throw(AssertionError("읽지 않는다"))) is False
+    v = _only(s)
+    assert v["status"] == "failed" and v["error"]["code"] == C.ERR_NOT_FOUND and v["error"]["target_id"] == "B-404"
+
+
+def test_b_unreachable_fails_as_unavailable(monkeypatch):
+    monkeypatch.setattr(V, "_FROM_B", {})
+    monkeypatch.setattr(V.urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(OSError("refused")))
+    s = MemoryStore()
+    assert run({**_job(), "b_url": "http://b:8100"}, s, _load) is False
+    assert _only(s)["error"]["code"] == C.ERR_UNAVAILABLE
+
+
 def test_job_main_requires_bundle_id_and_database_url():
     assert job_main({}) == 2
     assert job_main({"BUNDLE_ID": "B-9"}) == 2
@@ -512,6 +570,7 @@ def test_job_template_is_what_b_expects():
     (c,) = t["spec"]["template"]["spec"]["containers"]
     assert c["command"] == ["python", "-m", "c_replay.job"]
     assert all(e["name"] not in J.JOB_ENV for e in c.get("env", []))   # 이 값들은 B 가 넣는다
+    assert {"name": "B_URL", "value": "http://b-registry:8100"} in c["env"]   # 번들 구성을 B 에서 읽는다
 
 
 # ---------------------------------------------------------------- A 의 처리 경로(pipeline) 연결 (OCR 은 가짜로 바꿔 끼움)

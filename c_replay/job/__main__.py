@@ -1,7 +1,7 @@
 """검증 Job 진입점: 골든셋 검증(VAL-01) + Replay(VAL-02·03) 한 번.
 
 B(M2)가 검증할 번들마다 C 의 Job 양식(c_replay/job/job-template.json)에 아래 환경변수를 넣어
-K8s Job(또는 docker 컨테이너)을 만든다 (B PR #17 의 b_registry/verify/replay.py). 같은 명령을 일반 프로세스로도 실행할 수 있다.
+K8s Job(또는 docker 컨테이너)을 만든다 (b_registry/verify/replay.py). 같은 명령을 일반 프로세스로도 실행할 수 있다.
 
   VALIDATION_ID=RP-... BUNDLE_ID=B-9 BASELINE_BUNDLE_ID=B-7 DATABASE_URL=... \
   VALIDATION_CALLBACK_URL=http://b-registry:8100/bundles/B-9/validation-results/RP-... python -m c_replay.job
@@ -13,6 +13,7 @@ K8s Job(또는 docker 컨테이너)을 만든다 (B PR #17 의 b_registry/verify
   BASELINE_BUNDLE_ID       비교 기준(운영) 번들. 없으면 contracts.BASELINE_BUNDLE
   REQUESTED_BY             검증을 요청한 사람·모듈. 없으면 "manual"
   VALIDATION_CALLBACK_URL  끝나면 결과를 보낼 B 주소. 없으면 보내지 않는다 (결과는 C 의 DB 에만)
+  B_URL                    번들 구성(model_id, list_id)을 읽을 B 주소 (Job 양식에 있음). 없으면 contracts.BUNDLES
   BLOB_*                   업로드 원문 (common.blob)
 종료 코드: 0 = completed 로 저장했고 B 가 받음(또는 보낼 곳 없음), 1 = 그 밖의 경우, 2 = 필수 환경변수 없음
   B 가 결과를 끝내 받지 못하면 1 로 끝나서 K8s Job 이 실패로 남는다 (B 가 알아챌 수 있게).
@@ -32,6 +33,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import timedelta
 from pathlib import Path
@@ -41,8 +43,8 @@ from common import contracts as C  # noqa: E402
 from c_replay import store as S  # noqa: E402
 from c_replay.replay import validate as V  # noqa: E402
 
-# B 가 Job 에 넣는 환경변수. B 의 common.contracts.REGISTRY_JOB_ENV (PR #17) 와 같아야 한다.
-JOB_ENV = ("VALIDATION_ID", "BUNDLE_ID", "BASELINE_BUNDLE_ID", "REQUESTED_BY", "VALIDATION_CALLBACK_URL")
+# B 가 Job 에 넣는 환경변수 (B 의 b_registry/verify/replay.py)
+JOB_ENV = C.REGISTRY_JOB_ENV
 # 결과 전송. 요청 하나는 5초 제한, 대기는 1·2·4… 초에서 30초까지 늘린다.
 NOTIFY_TIMEOUT = 5
 NOTIFY_MAX_WAIT = 30
@@ -141,20 +143,29 @@ def _execute(vid: str, bundle_id: str, baseline: str, store, load) -> bool:
     return done
 
 
-def _validate(vid: str, bundle_id: str, baseline: str, store, load) -> None:
+def _validate(vid: str, bundle_id: str, baseline: str, store, load, b_url: str | None = None) -> None:
+    def fail(err):
+        store.fail(vid, err)
+        V.log(event="validation_failed", validation_id=vid, error=err)
+    if b_url:   # 번들 구성은 B 가 원본 (A 도 B 와 같은 키 model_id·list_id 를 쓴다)
+        try:
+            V.fetch_bundles(b_url, (baseline, bundle_id))
+        except urllib.error.HTTPError as e:
+            target = e.url.rstrip("/").rsplit("/", 1)[-1] if e.url else bundle_id
+            return fail(_error(C.ERR_NOT_FOUND if e.code == 404 else C.ERR_UNAVAILABLE,
+                               f"B 에서 번들을 읽지 못함 (HTTP {e.code})", urllib.parse.unquote(target)))
+        except Exception as e:  # noqa: BLE001  연결 실패
+            return fail(_error(C.ERR_UNAVAILABLE, f"B 에 연결할 수 없음: {type(e).__name__}: {e}", bundle_id))
     for bid in (baseline, bundle_id):
         try:
             V.bundle(bid)
         except LookupError:
-            err = _error(C.ERR_NOT_FOUND, f"번들 {bid} 를 찾을 수 없음", bid)
-            store.fail(vid, err)
-            V.log(event="validation_failed", validation_id=vid, error=err)
-            return
+            return fail(_error(C.ERR_NOT_FOUND, f"번들 {bid} 를 찾을 수 없음", bid))
     _execute(vid, bundle_id, baseline, store, load)
 
 
 def run(job: dict, store, load, notify=no_notify) -> bool:
-    """검증 한 번. job = {validation_id, bundle_id, baseline_bundle_id, requested_by}.
+    """검증 한 번. job = {validation_id, bundle_id, baseline_bundle_id, requested_by, b_url(없어도 됨)}.
     load() -> (골든셋, 과거 거래, process), notify(검증, budget) -> B 가 받았으면 True.
     반환: completed 로 저장했고 B 가 받았으면 True (notify 가 no_notify 면 저장만으로 True)."""
     vid, bundle_id, baseline = job["validation_id"], job["bundle_id"], job["baseline_bundle_id"]
@@ -170,7 +181,7 @@ def run(job: dict, store, load, notify=no_notify) -> bool:
             except S.InProgressExists:
                 V.log(event="validation_in_progress", bundle_id=bundle_id)   # 정리 직후 다른 실행이 끼어든 경우
                 return False
-            _validate(vid, bundle_id, baseline, store, load)
+            _validate(vid, bundle_id, baseline, store, load, job.get("b_url"))
         else:   # 같은 ID 가 이미 끝났다 (Job 이 다시 실행됨): 다시 계산하지 않고 그 결과를 다시 보낸다
             V.log(event="validation_already_finished", validation_id=vid, status=store.get(vid)["status"])
         budget = NOTIFY_BUDGET
@@ -199,7 +210,7 @@ def main(env: dict | None = None) -> int:
         return 2
     job = {"validation_id": env.get("VALIDATION_ID") or S.new_validation_id(), "bundle_id": bundle_id,
            "baseline_bundle_id": env.get("BASELINE_BUNDLE_ID") or C.BASELINE_BUNDLE,
-           "requested_by": env.get("REQUESTED_BY") or "manual"}
+           "requested_by": env.get("REQUESTED_BY") or "manual", "b_url": env.get("B_URL")}
     url = env.get("VALIDATION_CALLBACK_URL")
     global _signaled
     _signaled = False

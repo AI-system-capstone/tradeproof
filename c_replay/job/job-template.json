@@ -19,7 +19,8 @@
             "image": "tradeproof/c-replay-job:dev",
             "imagePullPolicy": "IfNotPresent",
             "command": ["python", "-m", "c_replay.job"],
-            "envFrom": [{ "secretRef": { "name": "tradeproof-env" } }]
+            "envFrom": [{ "secretRef": { "name": "tradeproof-env" } }],
+            "env": [{ "name": "B_URL", "value": "http://b-registry:8100" }]
           }
         ]
       }

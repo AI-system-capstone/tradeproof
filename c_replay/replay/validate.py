@@ -6,8 +6,9 @@
 A 의 평시 심사(ocr-worker)도 같은 함수를 쓴다.
 
 데이터 (A·데이터 담당 테이블, 읽기 전용 트랜잭션으로만 읽는다):
-  골든셋   golden_labels(tx_id, expected)          expected = {list_version: 분류} (a_screening/db/golden_labels_tmp.sql)
-                                                  또는 {list_version: {classification, ...}} (dataset/spec/label.schema.json)
+  골든셋   golden_labels(tx_id, expected)          expected = {list_id: 분류} (a_screening/db/golden_labels_tmp.sql)
+                                                  또는 {list_id: {classification, ...}} (dataset/spec/label.schema.json)
+  번들     B 의 GET /bundles/{id} -> {model_id, list_id} (fetch_bundles). 규칙은 번들에 없고 A 가 rules-v3 로 고정한다
            서류는 data/docs/<tx_id>/ (A 의 sample 입력)
   과거 거래 transactions + screening_results(is_shadow=false) + screening_jobs(있으면 input·원문 위치)
            before = A 가 기록한 판정. 거래마다 한 줄: Job 이 있으면 그 Job 의 번들로 처리한 기록,
@@ -16,6 +17,8 @@ A 의 평시 심사(ocr-worker)도 같은 함수를 쓴다.
 from __future__ import annotations
 
 import json
+import urllib.parse
+import urllib.request
 
 from common import contracts as C
 
@@ -30,20 +33,33 @@ class GoldenFailed(RuntimeError):
     """골든셋 거래 한 건을 처리하지 못했다 (어느 거래인지 메시지에 들어 있다)."""
 
 
+_FROM_B: dict[str, dict] = {}   # fetch_bundles 가 B 에서 읽어 온 번들 구성
+
+
+def fetch_bundles(b_url: str, bundle_ids, timeout: float = 5) -> None:
+    """B 의 GET /bundles/{id} 로 번들 구성(model_id, list_id)을 읽어 둔다. 없는 번들은 urllib.error.HTTPError(404)."""
+    for bid in bundle_ids:
+        url = f"{b_url.rstrip('/')}/bundles/{urllib.parse.quote(bid, safe='')}"
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            b = json.loads(r.read())
+        _FROM_B[bid] = {"model_id": b["model_id"], "list_id": b["list_id"]}
+
+
 def bundle(bundle_id: str) -> dict:
-    """번들 -> {model_version, rules_version, list_version}.
-    가정: 번들 구성을 contracts.BUNDLES 에서 읽는다. B 의 GET /bundles/{id} 로 바꿀 때는 여기만 바꾼다
-    (A 의 pipeline 은 번들 구성을 dict 로 직접 받으므로 A 쪽은 고칠 것이 없다)."""
+    """번들 -> {model_id, list_id}. B 에서 읽어 둔 것을 먼저 쓰고, 없으면 contracts.BUNDLES (B 없이 손으로 돌릴 때).
+    A 의 pipeline 도 같은 키를 받는다. 규칙 버전은 번들에 없다 (A 가 contracts.RULES_FIXED 로 고정)."""
+    if bundle_id in _FROM_B:
+        return _FROM_B[bundle_id]
     if bundle_id not in C.BUNDLES:
         raise LookupError(bundle_id)
-    return C.BUNDLES[bundle_id]
+    return {k: C.BUNDLES[bundle_id][k] for k in ("model_id", "list_id")}
 
 
-def _expected(item: dict, list_version: str) -> str:
-    e = (item.get("expected") or {}).get(list_version)
+def _expected(item: dict, list_id: str) -> str:
+    e = (item.get("expected") or {}).get(list_id)
     e = e.get("classification") if isinstance(e, dict) else e
     if e not in C.CLASSIFICATIONS:
-        raise ValueError(f"골든셋 {item['tx_id']} 에 {list_version} 기대 분류가 없음")
+        raise ValueError(f"골든셋 {item['tx_id']} 에 {list_id} 기대 분류가 없음")
     return e
 
 
@@ -53,7 +69,7 @@ def _metric(baseline, candidate, ndigits=None) -> dict:
 
 
 def golden_result(items: list[dict], process, baseline_id: str, candidate_id: str) -> dict:
-    """GoldenResult. 기대 분류는 정답 라벨에서, 각 번들의 list_version 기준으로 고른다.
+    """GoldenResult. 기대 분류는 정답 라벨에서, 각 번들의 list_id 기준으로 고른다.
     미탐 = 기대보다 낮은 위험도로 분류 (보류->검토, 보류->통과, 검토->통과),
     오탐 = 기대보다 높은 위험도로 분류 (통과->검토, 통과->보류, 검토->보류). 위험도 순서는 _SEVERITY.
     보류->검토도 미탐으로 센다: rules-v3 는 OCR 이 불확실하면 통과가 아니라 검토로 보내므로,
@@ -65,7 +81,7 @@ def golden_result(items: list[dict], process, baseline_id: str, candidate_id: st
     items = sorted(items, key=lambda i: i["tx_id"])
     stats = {}
     for bid in (baseline_id, candidate_id):
-        lv = bundle(bid)["list_version"]
+        lv = bundle(bid)["list_id"]
         ok = fn = fp = 0
         for item in items:
             exp = _expected(item, lv)
@@ -78,7 +94,7 @@ def golden_result(items: list[dict], process, baseline_id: str, candidate_id: st
             fp += _SEVERITY[got] > _SEVERITY[exp]
         stats[bid] = (round(ok / len(items), 4), fn, fp)
     (ab, nb, pb), (ac, nc, pc) = stats[baseline_id], stats[candidate_id]
-    lists = sorted({bundle(b)["list_version"] for b in (baseline_id, candidate_id)})
+    lists = sorted({bundle(b)["list_id"] for b in (baseline_id, candidate_id)})
     return {"golden_version": ",".join(f"golden-{lv}" for lv in lists), "total": len(items),
             "accuracy": _metric(ab, ac, 4), "false_negative": _metric(nb, nc), "false_positive": _metric(pb, pc)}
 
@@ -186,11 +202,11 @@ def ocr_process(blob, workdir):
         if source == C.INPUT_FIELDS:
             extracted, conflicts = {f: {"value": (inp.get("fields") or {}).get(f)} for f in C.TX_FIELDS}, []
         else:
-            key = (tx_id, spec["model_version"])
+            key = (tx_id, spec["model_id"])
             if key not in ocr:
                 if tx_id not in dirs:
                     dirs[tx_id] = tx_dir(tx, inp, source)
-                ocr[key] = P.extract_documents(dirs[tx_id], spec["model_version"])
+                ocr[key] = P.extract_documents(dirs[tx_id], spec["model_id"])
             extracted, conflicts = ocr[key]
         res = P.screen_extracted(extracted, conflicts, spec, from_ocr=source != C.INPUT_FIELDS)
         return {"classification": res["classification"], "reasons": res["reasons"], "fields": _flat(extracted)}

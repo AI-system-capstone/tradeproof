@@ -51,7 +51,7 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 연결 | 방향 | 내용 | 단계 |
 |---|---|---|---|
 | 번들 ID | D → A | D가 배포 레포(`deploy/`)에 적은 번들 ID가 Helm 설정을 거쳐 A의 환경변수 `BUNDLE_ID`로 들어간다 (적용은 D) | 1차 |
-| 검증 Job 시작 | B → C | 후보 등록 후 자동 Job 생성. VALIDATION_ID·BUNDLE_ID·BASELINE_BUNDLE_ID·REQUESTED_BY·VALIDATION_CALLBACK_URL 전달. C POST /validations 및 결과 폴링 미사용. C는 완료/실패 시 콜백 URL에 POST하고 B 200까지 동일 결과 재전송(현재 C 진입점·통보 구현 필요) | 1차 |
+| 검증 Job 시작 | B → C | 후보 등록 후 자동 Job 생성. VALIDATION_ID·BUNDLE_ID·BASELINE_BUNDLE_ID·REQUESTED_BY·VALIDATION_CALLBACK_URL 전달. C POST /validations 및 결과 폴링 미사용. C는 완료/실패 시 콜백 URL에 POST하고 B 200까지 동일 결과 재전송(최대 10분, 409·422면 중단). C는 Job 양식의 `B_URL`로 두 번들의 `model_id`·`list_id`를 읽는다 | 1차 |
 | 배포 결과 알림 | D → B | B가 D 접수 확인 후 canary로 변경하며 D는 승격 active·중단 cancelled를 통보한다. 승격 후 복원은 직전 superseded 번들을 active로 전이하며 현재 번들은 cancelled로 변경한다 | 1차 |
 | A 서비스 구성 | A → D | A는 같은 Dockerfile의 빌드 대상 2개로 뜬다(compose·k3s 공통). `a-screening`(`target: screening-api`, 포트 8000, 지표 `GET :8000/metrics`) + `a-ocr-worker`(`target: ocr-worker`, 포트 없음). 둘 다 DB·`BLOB_*`·`BUNDLE_ID`를 같이 받는다. **TODO(A·D): 워커에 canary를 적용하는 방식과 워커 지표 수집 경로** | 1차 |
 
@@ -81,3 +81,4 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 2026-11-17 | B 박시우 | 재조합을 B 배포 요청 단계로 이동. B가 D POST /deployments를 호출하고 접수 확인 후 canary로 전이. 직접 canary 전이 차단, 결과 미확인 시 재호출은 D 조회로 확인 |
 | 2026-11-17 | B 박시우 | M2 후보 등록 후 자동 검증 Job 실행·C 완료 콜백·90% 게이트·배포 승인 API 추가. C 결과 폴링과 운영 화면 검증 요청 제거. 승인 시 D 배포 요청, 최초 번들은 검증 생략. 콜백 URL 환경변수·결과 통보 계약과 53 ALTER SQL 추가(C/D 연동 확인 필요) |
 | 2026-11-17 | A 지윤아 | `contracts.BUNDLES` 에서 `rules_version` 제거 (B 번들과 같은 모양: `model_id`, `list_id`). 규칙은 A가 `contracts.RULES_FIXED`(rules-v3)로 고정. A 응답의 `rules_version` 은 그대로(어떤 규칙으로 판정했는지 표시) |
+| 2026-11-17 | C 강민성 | 검증 Job 구현 반영(4절): B가 준 검증 ID로 저장, 콜백 URL로 결과 재전송, Job 양식의 `B_URL`로 번들 구성(`model_id`·`list_id`) 조회 |
