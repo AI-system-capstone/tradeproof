@@ -95,8 +95,11 @@
    B  POST /imports (multipart: package)   -> 202 {import_id}
       GET  /imports/{id}                   -> 202 빈 본문 (처리 중) | 200 {status:"APPROVED"|"REJECTED", reason, bundle_id}
       GET  /bundles/{id}                   -> {bundle_id, status, model_id, list_id, created_at, model:{model_id, uri}, list:{list_id, uri}}
-      POST /bundles/{id}/transitions       <- {to:"approved"|"rejected", actor, reason}  -> {from, to, changed_at}
-      (B 는 게이트 판정과 배포 ID 를 주지 않는다. 화면에도 만들어 넣지 않는다.)
+      POST /approvals                      <- {bundle_id, decision:"approve"|"reject", actor, reason}
+                                           -> 승인 202 {bundle_id, status, deployment_id} (D 에 배포까지 요청함)
+                                              승인 200 {bundle_id, status, replacement_bundle_id} (대체 번들이 만들어짐)
+                                              반려 200 {from, to, changed_at}
+      (PR #17 기준. 승인·반려는 /bundles/{id}/transitions 로 보내면 409 로 거부된다.)
    C  GET  /validations?bundle_id=…&limit=1 -> {items:[검증]}  가장 최근 검증
       GET  /validations/{id}/diffs         -> {items:[{tx_id, direction, before:{classification}, after:{classification}}], total}
    D  GET  /deployments/{id}               -> {deployment_id, bundle_id, status, weight, step_index, ...}
@@ -114,7 +117,8 @@ const MOCK = !q.has('mock') ? null : {
   'GET b/bundles': { bundle_id: 'B-9', status: 'validated', model_id: 'model-v4', list_id: 'list-v14',
     created_at: '2026-11-16T09:00:00Z', model: { model_id: 'model-v4', uri: 's3://registry/models/model-v4.zip' },
     list: { list_id: 'list-v14', uri: 's3://registry/lists/list-v14.zip' } },
-  'POST b/bundles': { from: 'validated', to: 'approved', changed_at: '2026-11-16T10:00:00Z' },
+  'POST b/approvals:approve': { bundle_id: 'B-9', status: 'canary', deployment_id: 'DP-1' },
+  'POST b/approvals:reject': { from: 'validated', to: 'rejected', changed_at: '2026-11-16T10:00:00Z' },
   'GET c/validations': { total: 1, items: [{ validation_id: 'RP-3f9a1c0b7d2e', bundle_id: 'B-9', baseline_bundle_id: 'B-7',
     status: 'completed', golden: { golden_version: 'golden-list-v14', total: 100,
       accuracy: { baseline: 1.0, candidate: 0.95, diff: -0.05 },
@@ -136,7 +140,8 @@ const seg = v => encodeURIComponent(v.trim());
 async function api(svc, method, path, body) {
   if (MOCK) {
     const segs = path.split('?')[0].split('/').filter(Boolean);
-    return MOCK[`${method} ${svc}/${segs[0]}${segs.at(-1) === 'diffs' ? '/diffs' : ''}`];
+    const key = `${method} ${svc}/${segs[0]}${segs.at(-1) === 'diffs' ? '/diffs' : ''}`;
+    return MOCK[`${key}:${body && body.decision}`] || MOCK[key];
   }
   const opt = { method };
   if (body instanceof FormData) opt.body = body;
@@ -212,15 +217,17 @@ async function showValidation(v) {
     ${diffs.length ? `<table><tr><th>거래</th><th>방향</th><th>이전</th><th>후보</th></tr>${diffs.map(d =>
       `<tr><td>${esc(d.tx_id)}</td><td>${tag(d.direction === 'down' ? '낮아짐' : '높아짐', d.direction === 'down' ? 'bad' : '')}</td><td>${esc(d.before.classification)}</td><td>${esc(d.after.classification)}</td></tr>`).join('')}</table>` : ''}`;
 }
-const decide = to => run($('approvalOut'), async () => {
-  const id = seg(need($('bundleId')));
-  const body = { to, actor: need($('actor')), reason: need($('reason')) };
-  const r = await api('b', 'POST', `/bundles/${id}/transitions`, body);
+const decide = decision => run($('approvalOut'), async () => {
+  const body = { bundle_id: need($('bundleId')), decision, actor: need($('actor')), reason: need($('reason')) };
+  const r = await api('b', 'POST', '/approvals', body);
   $('btnBundle').click();
-  return `${tag(to === 'approved' ? '승인됨' : '반려됨', to === 'approved' ? 'ok' : 'bad')} <span class="muted">${esc(r.from)} → ${esc(r.to)}</span>`;
+  if (decision === 'reject') return `${tag('반려됨', 'bad')} <span class="muted">${esc(r.from)} → ${esc(r.to)}</span>`;
+  if (r.replacement_bundle_id) return `${tag('배포 안 됨', 'bad')} <span class="muted">운영 번들이 바뀌어 이 번들은 ${esc(r.status)} 처리됨</span>
+    <p>대체 번들 <b>${esc(r.replacement_bundle_id)}</b> 이(가) 만들어짐. 다시 검증하고 승인해야 함</p>`;
+  return `${tag('승인됨', 'ok')} 배포 요청함 · 배포 ID <b>${esc(r.deployment_id)}</b> <span class="muted">번들 상태 ${esc(r.status)}</span>`;
 });
-$('btnApprove').onclick = () => decide('approved');
-$('btnReject').onclick = () => decide('rejected');
+$('btnApprove').onclick = () => decide('approve');
+$('btnReject').onclick = () => decide('reject');
 
 // 3. 배포 상태·롤백
 $('btnDeploy').onclick = () => run($('deployOut'), async () => kv(await api('d', 'GET', `/deployments/${seg(need($('deployId')))}`)));
