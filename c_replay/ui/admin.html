@@ -199,15 +199,24 @@ $('btnUpload').onclick = () => run($('importOut'), async () => {
 const num = v => typeof v === 'number' ? +v.toFixed(4) : v;
 $('btnBundle').onclick = () => run($('bundleOut'), async () => {
   const id = seg(need($('bundleId')));
-  const [b, list] = await Promise.all([api('b', 'GET', `/bundles/${id}`), api('c', 'GET', `/validations?bundle_id=${id}&limit=1`)]);
+  // B 와 C 는 따로 처리한다: C 가 실패해도 B 번들 정보는 보여 준다
+  const [bRes, cRes] = await Promise.allSettled([api('b', 'GET', `/bundles/${id}`), api('c', 'GET', `/validations?bundle_id=${id}&limit=1`)]);
+  if (bRes.status === 'rejected') throw bRes.reason;
+  const b = bRes.value;
   // 배포 요청이 받아들여졌으면 배포 ID 를 3구역 칸에 채운다
   const dep = (b.history || []).map(h => h.deployment_request).filter(d => d && d.state === 'accepted' && d.deployment_id).at(-1);
   if (dep) $('deployId').value = dep.deployment_id;
   return `${kv(b)}
     <table><tr><th>모델 파일</th><td>${esc(b.model && b.model.uri)}</td></tr><tr><th>리스트 파일</th><td>${esc(b.list && b.list.uri)}</td></tr></table>
     <h3>게이트</h3><p class="muted">B 미제공 (게이트 판정 API 가 B 에 없음)</p>
-    ${await showValidation((list.items || [])[0])}`;
+    ${await validationOrError(cRes)}`;
 });
+async function validationOrError(cRes) {
+  try {
+    if (cRes.status === 'rejected') throw cRes.reason;
+    return await showValidation((cRes.value.items || [])[0]);
+  } catch (e) { return `<h3>검증</h3><p class="err">C 조회 실패: ${esc(e.message)}</p>`; }
+}
 // C 검증 결과: 가장 최근 검증 한 건 (검증은 B 가 만든 검증 Job 이 한다)
 const METRICS = [['accuracy', '정확도'], ['false_negative', '미탐'], ['false_positive', '오탐']];
 async function showValidation(v) {
