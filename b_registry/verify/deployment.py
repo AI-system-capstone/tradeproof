@@ -2,6 +2,7 @@
 import httpx
 from sqlalchemy import select
 from b_registry.db import Bundle, iso, now
+from b_registry.verify.gate import has_passed_validation
 from b_registry.verify.workflow import Conflict, NotFound, record, rebuild_candidate, deployment_attempt
 
 
@@ -68,6 +69,15 @@ def request_deployment(db, bid, actor, reason, client):
         if attempt.get("state") == "accepted":
             return {"bundle_id": bid, "status": bundle.status,
                     "deployment_id": attempt["deployment_id"]}
+        all_bundles = list(s.scalars(select(Bundle)))
+        initial = (bundle.base_bundle_id is None and not any(
+            b.status in ("active", "canary", "superseded")
+            or any(h.get("to") in ("active", "canary") for h in (b.history or []))
+            or deployment_attempt(b).get("state") == "accepted" for b in all_bundles))
+        if bundle.status == "candidate" and initial:
+            record(bundle, "approved", actor, "Initial deployment without a comparison target: " + reason)
+        if not initial and not has_passed_validation(bundle):
+            raise Conflict("Deployment requires a passing M2 gate and approval")
         if bundle.status != "approved":
             raise Conflict("Deployment requires an approved bundle")
         recovering = attempt.get("state") == "pending"

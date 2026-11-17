@@ -4,7 +4,7 @@
 
 ## 파일과 역할
 
-- 적용 SQL: `common/schema/50_b_registry_20261114.sql` → `51_b_registry_20261115.sql` → `52_b_registry_20261116.sql` 순서
+- 적용 SQL: `common/schema/50_b_registry_20261114.sql` → `51_b_registry_20261115.sql` → `52_b_registry_20261116.sql` → `53_b_registry_20261117.sql` 순서
 - ORM: `b_registry/db.py` — 매핑과 읽기 전용 `check_schema`, 운영 DDL 없음
 - 적용 명령: `python -m b_registry.cli migrate-db` — 기존 PostgreSQL 연결만 허용
 - 검사 명령: `python -m b_registry.cli check-db` — DDL/데이터 변경 없음
@@ -14,7 +14,7 @@
 
 1. D가 기존 PostgreSQL DB를 백업한다. 제거되는 상세 컬럼이 필요한 경우 백업에서 확인한다.
 2. B API·워커와 B 테이블을 변경하는 외부 작업을 정지한다.
-3. 기존 DB의 `DATABASE_URL`로 `migrate-db`를 실행한다. 또는 psql의 `ON_ERROR_STOP=1`로 세 SQL 파일을 순서대로 실행한다.
+3. 기존 DB의 `DATABASE_URL`로 `migrate-db`를 실행한다. 또는 psql의 `ON_ERROR_STOP=1`로 네 SQL 파일을 순서대로 실행한다.
 4. `check-db`로 매핑을 확인하고 B를 시작한다. 완료된 모델·리스트의 재반입이나 볼륨 초기화는 필요 없다. 구 RECEIVED 반입은 아래 절차대로 ZIP을 재전송한다.
 
 ```powershell
@@ -57,3 +57,9 @@ python -m b_registry.cli check-db
 52 SQL은 기존 테이블만 ALTER합니다. bundles에 base_bundle_id(nullable FK), history(JSON, 기본 [])를 추가하고 imports에 filename(nullable)을 추가하며 artifact_uri를 nullable로 바꿉니다. 새 모델·테이블은 없습니다.
 
 진행 중 canary가 있으면 적용을 거부합니다. 먼저 배포를 완료하거나 취소하고 B를 정지한 뒤 적용합니다. 기존 후보의 생성 기준은 추정하지 않으므로 base_bundle_id=null이며 현재 active가 있으면 카나리 진입이 차단됩니다. 기존 후보를 그대로 승격하지 말고 현재 운영 번들 기준으로 새 후보를 구성·검증해야 합니다. 기존 history는 []로 시작하며 기록되지 않았던 행위자·사유는 복구할 수 없습니다. 기존 Import ID·URI·상태·사유는 보존합니다.
+
+## 2026-11-17 M2 검증 상태
+
+53 SQL은 bundles에 validation_id(VARCHAR 80, nullable)와 validation(JSON, nullable)만 추가합니다. 새 테이블을 만들거나 C/D 테이블을 변경하지 않습니다. 기존 번들·반입·이력 데이터는 유지합니다. 50→51→52→53 순서로 적용하며 CLI migrate-db도 이 순서를 사용합니다.
+
+기존 approved/validated 번들은 검증 결과가 없으면 M2 배포가 차단됩니다. 현재 운영 중인 번들은 유지하며, 기존 후보를 새 기준으로 재등록하거나 검증 상태를 확인한 별도 전진 마이그레이션으로 정리해야 합니다. 검증 데이터 없는 번들을 임의로 합격 처리하지 않습니다. 최초 배포 예외는 운영·배포 이력이 전혀 없는 경우만 적용됩니다.

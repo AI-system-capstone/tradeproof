@@ -11,6 +11,8 @@ services:
       BLOB_SECRET_KEY: ${BLOB_SECRET_KEY}
       BLOB_SECURE: ${BLOB_SECURE:-false}
       TRUST_KEY: /run/registry/publisher.pub
+      VALIDATION_CALLBACK_BASE_URL: ${VALIDATION_CALLBACK_BASE_URL:-http://b-registry:8100}
+      VALIDATION_RUNNER: ${VALIDATION_RUNNER:-kubernetes}
       DEPLOYMENT_URL: ${DEPLOYMENT_URL:-http://d-platform:8300}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:

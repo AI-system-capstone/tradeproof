@@ -51,7 +51,7 @@ def test_postgresql_forward_migration(legacy):
             script = "\n".join(path.read_text(encoding="utf-8") for path in MIGRATIONS)
             conn.execute(script, prepare=False)
             conn.execute(script, prepare=False)
-            assert conn.execute("SELECT count(*) FROM b_registry_schema_migrations").fetchone()[0] == 3
+            assert conn.execute("SELECT count(*) FROM b_registry_schema_migrations").fetchone()[0] == 4
             assert conn.execute("SELECT id FROM unrelated_data").fetchone()[0] == 42
             from b_registry.db import Base
             for table in Base.metadata.sorted_tables:
