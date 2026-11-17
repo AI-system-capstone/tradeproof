@@ -353,6 +353,19 @@
             "title": "Registry Sync",
             "description": "B 번들 상태에 반영했는지: ok | pending(다시 시도 예정) | rejected(B 가 거부)"
           },
+          "registry_change": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Registry Change",
+            "description": "B 에 마지막으로 보낸 전이 {bundle_id, to, reason}"
+          },
           "rollback": {
             "anyOf": [
               {
@@ -365,6 +378,18 @@
             ],
             "title": "Rollback",
             "description": "수동 롤백을 요청한 사람과 사유"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message",
+            "description": "실패·중단 사유 (드라이버가 본 그대로)"
           }
         },
         "type": "object",

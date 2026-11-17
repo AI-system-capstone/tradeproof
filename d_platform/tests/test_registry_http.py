@@ -9,7 +9,8 @@ import pytest
 
 from d_platform.api.registry import HttpRegistry, RegistryUnavailable, TransitionRejected
 
-ALLOWED = {"approved": {"active", "rolled_back"}, "active": {"rolled_back"}}
+# B 의 common/contracts.py REGISTRY_TRANSITIONS (b/registry 브랜치, 2026-11-16) 중 D 가 쓰는 부분
+ALLOWED = {"approved": {"cancelled"}, "canary": {"active", "cancelled"}, "superseded": {"active"}}
 
 
 class FakeB(BaseHTTPRequestHandler):
@@ -69,13 +70,15 @@ def test_bundle_status(registry):
 
 
 def test_transition_sends_to_actor_reason_and_header(registry):
-    registry.transition("B-8", "active", "배포 DP-1 100% 반영 완료")
+    FakeB.bundles["B-8"] = "canary"                                          # B 가 202 를 받고 스스로 바꾼 상태
+    registry.transition("B-8", "active", "배포 DP-1 100% 반영 완료")          # canary -> active
     call = FakeB.calls[0]
     assert call["path"] == "/bundles/B-8/transitions"
     assert call["body"] == {"to": "active", "actor": "d-platform", "reason": "배포 DP-1 100% 반영 완료"}
     assert call["x_actor"] == "d-platform"
     assert registry.bundle_status("B-8") == "active"
-    registry.transition("B-8", "rolled_back", "배포 DP-1 롤백 (manual)")     # active -> rolled_back
+    with pytest.raises(TransitionRejected):
+        registry.transition("B-8", "rolled_back", "예전 계약")                # rolled_back 은 없어졌다
 
 
 def test_transition_not_allowed_is_rejected(registry):
