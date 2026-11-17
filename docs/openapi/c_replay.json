@@ -3,41 +3,23 @@
   "info": {
     "title": "TradeProof c_replay — 검증 API (M3) + 운영 화면 (M8)",
     "version": "0.1.0-draft",
-    "description": "구현 전에 먼저 쓴 명세(초안)다. 범위는 결정 0006 기준: C = M3 검증(골든셋 검증 + Replay) + M8 운영 화면. 게이트·승인·배포 요청은 B(M2) 담당이라 여기에 없다.\n\n**검증 한 번(validation)** = 후보 번들 하나를 운영 번들과 비교하는 작업. 골든셋 검증(VAL-01)과 Replay(VAL-02·03)를 함께 수행한다. 실행 주체는 검증 Job이고(K8s Job 또는 일반 프로세스), 이 API는 검증을 등록하고 결과를 조회한다.\n\n**흐름**\n1. B가 후보 번들을 만들면 `POST /validations`로 검증을 등록한다 → `validation_id`.\n2. 검증 Job이 `python -m c_replay.job --validation-id RP-...`로 실행된다. k3s에서는 B가 C의 Job 템플릿으로 만들고, compose에는 Job이 없으므로 C가 같은 진입점을 백그라운드 프로세스로 직접 띄운다(`RUN_MODE=process`).\n3. 끝나면 C가 B의 `POST /bundles/{bundle_id}/transitions`를 부른다: 완료면 `validated`, 실패면 `validation_failed`.\n4. 운영 화면(M8)과 B(M2 게이트)가 `GET /validations...`로 결과를 읽는다.\n\n**공통 규칙**\n- 실패 응답은 모두 `{code, message, target_id}` (contracts.ERROR_FIELDS).\n- 요청자는 `X-Actor` 헤더, 요청 ID는 `X-Request-ID` 헤더 (응답에도 돌려준다).\n- 시각은 ISO 8601 UTC 문자열.\n\n**팀 확인이 필요한 가정**\n- (B) 검증 등록을 B가 `POST /validations`로 한다는 것, 완료 시 전이 값 `validated` / `validation_failed`.\n- (B) 게이트 판정은 B가 `GET /validations?bundle_id=`의 최신 완료 건을 읽어서 한다는 것.\n- (팀, MTG-06) 미탐·오탐의 정의: 미탐 = 기대 분류가 검토·보류인데 통과 후보로 나온 건, 오탐 = 기대 분류가 통과 후보인데 검토·보류로 나온 건.\n- (팀, MTG-02) 골든셋·과거 거래 건수."
+    "description": "범위는 결정 0006 기준: C = M3 검증(골든셋 검증 + Replay) + M8 운영 화면. 게이트·승인·배포 요청은 B(M2) 담당이라 여기에 없다.\n\n**검증 한 번(validation)** = 후보 번들 하나를 운영 번들과 비교하는 작업. 골든셋 검증(VAL-01)과 Replay(VAL-02·03)를 함께 수행한다. 검증은 검증 Job이 하고, 이 API는 결과를 **조회만** 한다 (등록 API 없음).\n\n**흐름**\n1. B가 반입 검증을 통과한 번들(`validated`)마다 C의 Job 템플릿(`c_replay/job/job-template.json`)에 `BUNDLE_ID`를 넣어 K8s Job을 만든다.\n2. 검증 Job(`python -m c_replay.job`)이 B의 `GET /bundles/active`로 운영 번들을 확인하고, 검증 행을 만들어(`queued` → `running`) 골든셋 검증·Replay를 한 뒤 `completed` 또는 `failed`로 저장한다.\n3. 끝나면 검증 Job이 B에 완료 알림을 보낸다: `POST /bundles/{bundle_id}/validation-results` `{validation_id, bundle_id, status}` (B가 만들 API, 경로는 가정).\n4. B(M2 게이트)는 이 API의 결과로 통과·실패를 판정하고 승인·반려 전이를 한다. 운영 화면(M8)도 이 API로 결과를 본다.\n\n**공통 규칙**\n- 실패 응답은 모두 `{code, message, target_id}` (contracts.ERROR_FIELDS).\n- 요청 ID는 `X-Request-ID` 헤더 (응답에도 돌려준다).\n- 시각은 ISO 8601 UTC 문자열.\n\n**팀 확인이 필요한 가정**\n- (B) 완료 알림을 받는 게이트 판정 요청 API를 B가 만든다는 것과 그 경로.\n- (B) 게이트 판정은 B가 `GET /validations?bundle_id=`의 최신 `completed` 건을 읽어서 한다는 것.\n- (팀, MTG-06) 미탐·오탐의 정의: 미탐 = 기대 분류가 검토·보류인데 통과 후보로 나온 건, 오탐 = 기대 분류가 통과 후보인데 검토·보류로 나온 건.\n- (팀, MTG-02) 골든셋·과거 거래 건수."
   },
   "servers": [{ "url": "http://localhost:8200", "description": "개발 환경 (compose)" }],
   "tags": [
-    { "name": "validations", "description": "M3 검증: 등록·상태·결과·달라진 거래" },
+    { "name": "validations", "description": "M3 검증: 상태·결과·달라진 거래 (조회만)" },
     { "name": "ui", "description": "M8 운영 화면" },
     { "name": "ops", "description": "상태 확인·지표" }
   ],
   "paths": {
     "/validations": {
-      "post": {
-        "tags": ["validations"],
-        "summary": "검증 등록",
-        "description": "후보 번들의 검증을 등록한다. 호출자는 B(M2). 비교 기준(`baseline_bundle_id`)을 생략하면 B의 `GET /bundles/active`로 현재 운영 번들을 쓴다. 같은 번들에 `queued` 또는 `running` 검증이 있으면 409.",
-        "operationId": "createValidation",
-        "parameters": [{ "$ref": "#/components/parameters/Actor" }],
-        "requestBody": {
-          "required": true,
-          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ValidationRequest" } } }
-        },
-        "responses": {
-          "202": { "description": "등록됨 (status = queued)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Validation" } } } },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "422": { "$ref": "#/components/responses/Validation" },
-          "503": { "$ref": "#/components/responses/Unavailable" }
-        }
-      },
       "get": {
         "tags": ["validations"],
         "summary": "검증 목록",
-        "description": "최근에 등록된 순서. 운영 화면과 B(M2 게이트)는 `bundle_id`로 걸러 첫 번째 줄(가장 최근 검증)을 쓴다.",
+        "description": "최근에 만들어진 순서. 운영 화면과 B(M2 게이트)는 `bundle_id`로 걸러 첫 번째 줄(가장 최근 검증)을 쓴다.",
         "operationId": "listValidations",
         "parameters": [
-          { "name": "bundle_id", "in": "query", "schema": { "type": "string" }, "example": "B-2" },
+          { "name": "bundle_id", "in": "query", "schema": { "type": "string" }, "example": "B-9" },
           { "name": "status", "in": "query", "schema": { "$ref": "#/components/schemas/ValidationStatus" } },
           { "$ref": "#/components/parameters/Limit" },
           { "$ref": "#/components/parameters/Offset" }
@@ -130,7 +112,6 @@
   },
   "components": {
     "parameters": {
-      "Actor": { "name": "X-Actor", "in": "header", "required": true, "description": "요청한 사람 또는 모듈", "schema": { "type": "string", "minLength": 1, "maxLength": 64 }, "example": "b_registry" },
       "ValidationId": { "name": "validation_id", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^RP-[0-9a-f]{12}$" }, "example": "RP-3f9a1c0b7d2e" },
       "Limit": { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } },
       "Offset": { "name": "offset", "in": "query", "schema": { "type": "integer", "minimum": 0, "default": 0 } }
@@ -142,31 +123,23 @@
       "Unavailable": { "description": "DB 또는 B에 연결할 수 없음 (SERVICE_UNAVAILABLE)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
     },
     "schemas": {
-      "ValidationRequest": {
-        "type": "object",
-        "required": ["bundle_id"],
-        "properties": {
-          "bundle_id": { "type": "string", "minLength": 1, "maxLength": 64, "description": "검증할 후보 번들", "examples": ["B-2"] },
-          "baseline_bundle_id": { "type": ["string", "null"], "description": "비교 기준 번들. 생략하면 현재 운영 번들", "examples": ["B-1"] }
-        }
-      },
       "ValidationStatus": {
         "type": "string",
         "enum": ["queued", "running", "completed", "failed"],
-        "description": "queued: 등록됨 · running: 검증 Job 실행 중 · completed: 결과 있음 · failed: 실행 자체가 실패 (error 참고). 지표가 나쁜 것은 failed가 아니라 completed다 — 통과 여부는 B의 게이트가 정한다."
+        "description": "queued: 검증 Job이 행을 만듦 · running: 검증 Job 실행 중 · completed: 결과 있음 · failed: 실행 자체가 실패 (error 참고). 지표가 나쁜 것은 failed가 아니라 completed다 — 통과 여부는 B의 게이트가 정한다."
       },
       "Validation": {
         "type": "object",
         "required": ["validation_id", "bundle_id", "baseline_bundle_id", "status", "golden", "replay", "error", "requested_by", "created_at", "started_at", "finished_at"],
         "properties": {
           "validation_id": { "type": "string", "description": "RP-<12자리 hex>", "examples": ["RP-3f9a1c0b7d2e"] },
-          "bundle_id": { "type": "string", "description": "후보 번들", "examples": ["B-2"] },
-          "baseline_bundle_id": { "type": "string", "description": "비교 기준(운영) 번들", "examples": ["B-1"] },
+          "bundle_id": { "type": "string", "description": "후보 번들", "examples": ["B-9"] },
+          "baseline_bundle_id": { "type": "string", "description": "비교 기준(운영) 번들", "examples": ["B-7"] },
           "status": { "$ref": "#/components/schemas/ValidationStatus" },
           "golden": { "oneOf": [{ "$ref": "#/components/schemas/GoldenResult" }, { "type": "null" }] },
           "replay": { "oneOf": [{ "$ref": "#/components/schemas/ReplayResult" }, { "type": "null" }] },
           "error": { "oneOf": [{ "$ref": "#/components/schemas/Error" }, { "type": "null" }], "description": "status = failed 일 때 사유" },
-          "requested_by": { "type": "string", "description": "X-Actor" },
+          "requested_by": { "type": "string", "description": "검증을 시작시킨 쪽 (B가 만든 Job이면 b_registry)" },
           "created_at": { "type": "string", "format": "date-time" },
           "started_at": { "type": ["string", "null"], "format": "date-time" },
           "finished_at": { "type": ["string", "null"], "format": "date-time" }

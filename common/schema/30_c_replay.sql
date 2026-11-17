@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS validations (
     golden              JSONB,                      -- 골든셋 검증 결과 (completed 일 때)
     replay              JSONB,                      -- Replay 요약 (completed 일 때)
     error               JSONB,                      -- 공통 에러 형식 {code, message, target_id} (failed 일 때)
-    requested_by        TEXT NOT NULL,              -- X-Actor
+    requested_by        TEXT NOT NULL,              -- 검증을 시작시킨 쪽 (B 가 만든 Job 이면 b_registry)
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     started_at          TIMESTAMPTZ,                -- running 이 된 시각
     finished_at         TIMESTAMPTZ                 -- completed / failed 가 된 시각
