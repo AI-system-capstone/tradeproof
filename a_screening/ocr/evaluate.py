@@ -32,10 +32,10 @@ from extract import DEFAULT_MODEL, norm_value, out_dir_for  # noqa: E402
 _SEV = {C.PASS: 0, C.REVIEW: 1, C.HOLD: 2}
 
 
-def _load_index(list_version: str, lists_dir: Path | None) -> ListIndex:
+def _load_index(list_id: str, lists_dir: Path | None) -> ListIndex:
     if lists_dir is None:
-        return load_index(list_version)
-    with open(Path(lists_dir) / f"{list_version}.json", encoding="utf-8") as fh:
+        return load_index(list_id)
+    with open(Path(lists_dir) / f"{list_id}.json", encoding="utf-8") as fh:
         return ListIndex(json.load(fh))
 
 
@@ -99,7 +99,7 @@ def evaluate(docs_dir: Path, ocr_dir: Path, index: ListIndex, tx_ids: list[str] 
             row["extracted_reasons"] = se["reasons"]
         screening_rows.append(row)
 
-        exp = (truth.get("expected") or {}).get(index.list_version)
+        exp = (truth.get("expected") or {}).get(index.list_id)
         if exp:
             truth_vs_expected["checked"] += 1
             if exp == ct:
@@ -125,7 +125,7 @@ def evaluate(docs_dir: Path, ocr_dir: Path, index: ListIndex, tx_ids: list[str] 
         "tx_all_fields_correct": n_tx - len({m["tx_id"] for m in mismatches}),
         "per_field": per_field,
         "screening": {
-            "list_version": index.list_version,
+            "list_id": index.list_id,
             "rules_version": rules_version,
             "agreement": round(agree / n_tx, 4) if n_tx else None,
             "agree": agree, "total": n_tx,
@@ -165,7 +165,7 @@ def print_table(rep: dict, model: str) -> None:
         print(f"{f:<20}{_pct(v['accuracy']):>8}{v['correct']:>5}/{v['total']:<4}")
     s = rep["screening"]
     rv = "" if s.get("rules_version", C.RULES_BASE) == C.RULES_BASE else f" {s['rules_version']}"
-    print(f"screening [{s['list_version']}{rv}]: agreement={_pct(s['agreement'])} ({s['agree']}/{s['total']})  "
+    print(f"screening [{s['list_id']}{rv}]: agreement={_pct(s['agreement'])} ({s['agree']}/{s['total']})  "
           f"MISSES(미탐)={s['misses']}  under={s['under_classified']}  over={s['over_classified']}")
     for c in s["confusion"]:
         print(f"   truth {c['truth']:<15} -> extracted {c['extracted']:<15} x{c['count']}")
@@ -209,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
     ocr_dir = out_dir_for(a.ocr_dir, a.model)
     index = _load_index(a.list, a.lists_dir)
     rep = evaluate(a.docs_dir, ocr_dir, index, a.tx, a.rules)
-    rep = {"model_version": a.model, "evaluated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    rep = {"model_id": a.model, "evaluated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
            "docs_dir": str(a.docs_dir), "ocr_dir": str(ocr_dir), **rep}
     name = "eval_report.json" if a.rules == C.RULES_BASE else f"eval_report.{a.rules}.json"
     out = a.out or ocr_dir / name

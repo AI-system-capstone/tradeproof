@@ -127,7 +127,7 @@ def _record(tx_id: str, bundle_id: str, status: str, input_: dict, *, submitted_
         fields = {f: (extracted_fields.get(f) or {}).get("value") for f in C.TX_FIELDS}
     return {
         "tx_id": tx_id, "status": status, "bundle_id": bundle_id,
-        "model_version": b["model_version"], "rules_version": b["rules_version"], "list_version": b["list_version"],
+        "model_id": b["model_id"], "rules_version": b["rules_version"], "list_id": b["list_id"],
         "input": input_, "received_at": _iso(received_at),
         "submitted_at": _iso(submitted_at), "started_at": _iso(started_at), "completed_at": _iso(completed_at),
         "attempts": attempts or 0, "worker_id": worker_id,

@@ -25,21 +25,25 @@ MODEL_NEW = "model-v4"       # 시연 장면 4용으로 일부러 성능을 떨�
 RULES_BASE = "rules-v2"
 RULES_NEW = "rules-v3"       # 11/08: OCR 불확실성 규칙 추가 (신뢰도 낮음·Invoice/B-L 불일치·필드 누락 -> 검토, OCR 혼동 글자 감안 일치 -> 보류)
 RULES_VERSIONS = (RULES_BASE, RULES_NEW)
+# 11/16: 규칙 버전은 번들 구성이 아니라 A가 고정한다. 규칙은 match.py 코드라서 B 번들(모델 ZIP + 리스트 ZIP)에 없다.
+#   rules-v3 = rules-v2 + OCR 오류 대비 규칙 (OCR 혼동 글자를 감안한 일치 -> 보류, 신뢰도 낮음·불일치·누락 -> 검토)
+#   미탐 방지가 최우선이라 v3 로 고정 (rules-v2 는 OCR 혼동으로 보류가 검토로 내려가는 경우가 있음)
+RULES_FIXED = RULES_NEW
 BUNDLES = {
-    "B-7": {"model_version": MODEL_BASE, "rules_version": RULES_BASE, "list_version": LIST_BASE, "status": "active"},     # 현재 활성
-    "B-8": {"model_version": MODEL_BASE, "rules_version": RULES_BASE, "list_version": LIST_NEW, "status": "candidate"},   # 리스트 갱신 (장면 2)
-    "B-9": {"model_version": MODEL_NEW, "rules_version": RULES_BASE, "list_version": LIST_NEW, "status": "candidate"},    # 모델 갱신 (장면 4, canary)
-    # 11/08 추가 (팀 공유 필요): 규칙 갱신. 리스트는 B-8과 같고 규칙만 다름
-    "B-10": {"model_version": MODEL_BASE, "rules_version": RULES_NEW, "list_version": LIST_NEW, "status": "candidate"},
+    "B-7": {"model_id": MODEL_BASE, "rules_version": RULES_FIXED, "list_id": LIST_BASE, "status": "active"},     # 현재 활성
+    "B-8": {"model_id": MODEL_BASE, "rules_version": RULES_FIXED, "list_id": LIST_NEW, "status": "candidate"},   # 리스트 갱신 (장면 2)
+    "B-9": {"model_id": MODEL_NEW, "rules_version": RULES_FIXED, "list_id": LIST_NEW, "status": "candidate"},    # 모델 갱신 (장면 4, canary)
+    # 11/08 추가: 규칙 갱신 번들. 11/16 규칙 고정 뒤로는 B-8과 구성이 같다 (D 테스트가 ID를 쓰고 있어 남겨 둠)
+    "B-10": {"model_id": MODEL_BASE, "rules_version": RULES_FIXED, "list_id": LIST_NEW, "status": "candidate"},
 }
 BASELINE_BUNDLE = "B-7"
 
 
-def ocr_dir(model_version: str, base: Path | str | None = None) -> Path:
+def ocr_dir(model_id: str, base: Path | str | None = None) -> Path:
     """OCR 결과 폴더. 기준 모델(model-v3)은 base 그대로, 다른 모델은 base/<model>/ (모델끼리 섞이지 않게).
     OCR 서비스와 심사 API가 같이 쓴다 (API가 OCR 코드를 import하지 않도록 여기 둔다)."""
     base = Path(base) if base else OCR_DIR
-    return base if model_version == MODEL_BASE else base / model_version
+    return base if model_id == MODEL_BASE else base / model_id
 
 # ---------------------------------------------------------------- 판정 분류 (통과 후보 / 담당자 검토 / 고위험 보류)
 PASS = "PASS_CANDIDATE"
@@ -105,8 +109,8 @@ INPUT_FIELDS = "fields"     # 이미 추출된 필드를 직접 입력
 INPUT_SOURCES = (INPUT_SAMPLE, INPUT_UPLOAD, INPUT_FIELDS)
 EXTRACTION_FROM_FIELDS = "api:fields"
 
-def extraction_source_ocr(model_version: str) -> str:
-    return f"ocr:{model_version}"
+def extraction_source_ocr(model_id: str) -> str:
+    return f"ocr:{model_id}"
 
 SAMPLE_TX_ID_RE = r"^TX-[0-9]{4,}$"   # 샘플 거래 ID 형식 (경로 탐색 방지)
 
@@ -204,7 +208,7 @@ CASE_FUZZY = "fuzzy_match"
 CASE_NEW = "new_listing"
 CASE_VESSEL = "sanctioned_vessel"
 CASE_MIX = {CASE_CLEAN: 70, CASE_EXACT: 10, CASE_FUZZY: 10, CASE_NEW: 5, CASE_VESSEL: 5}
-EXPECTED = {  # case_type -> {list_version: 기대 분류}
+EXPECTED = {  # case_type -> {list_id: 기대 분류}
     CASE_CLEAN: {LIST_BASE: PASS, LIST_NEW: PASS},
     CASE_EXACT: {LIST_BASE: HOLD, LIST_NEW: HOLD},
     CASE_FUZZY: {LIST_BASE: REVIEW, LIST_NEW: REVIEW},

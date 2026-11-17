@@ -141,7 +141,7 @@ class ListIndex:
     """제재 리스트를 정규화해 둔 색인. 리스트 한 버전당 한 번 만든다."""
 
     def __init__(self, sanction_list: dict):
-        self.list_version = sanction_list["list_version"]
+        self.list_id = sanction_list["list_version"]
         self.parties: list[tuple[str, str, dict]] = []   # (정규화 이름, 원래 이름, 항목)
         self.vessels: list[tuple[str, str, dict]] = []
         for e in sanction_list["entries"]:
@@ -186,7 +186,7 @@ def _check(value: str, field: str, exact: dict, pool: list, vessel: bool) -> dic
 
 
 def screen(fields: dict, index: ListIndex, rules_version: str = C.RULES_BASE, ocr: dict | None = None) -> dict:
-    """거래 필드 하나를 판정한다. 반환: {classification, reasons, list_version, rules_version}
+    """거래 필드 하나를 판정한다. 반환: {classification, reasons, list_id, rules_version}
 
     rules_version: 번들의 rules_version (contracts.RULES_VERSIONS). 기본값 rules-v2 = 기존 동작 그대로.
     ocr: rules-v3 용 OCR 부가 정보 (없으면 None: 직접 입력한 필드 등)
@@ -211,7 +211,7 @@ def screen(fields: dict, index: ListIndex, rules_version: str = C.RULES_BASE, oc
         if _SEVERITY[r["classification"]] > _SEVERITY[cls]:
             cls = r["classification"]
     return {"classification": cls, "reasons": reasons,
-            "list_version": index.list_version, "rules_version": C.RULES_BASE}
+            "list_id": index.list_id, "rules_version": C.RULES_BASE}
 
 
 def _reason(rule: str, field: str, value, cls: str, score=None, entry: dict | None = None,
@@ -395,7 +395,7 @@ def _screen_v3(fields: dict, index: ListIndex, ocr) -> dict:
         if _SEVERITY[r["classification"]] > _SEVERITY[cls]:
             cls = r["classification"]
     return {"classification": cls, "reasons": reasons,
-            "list_version": index.list_version, "rules_version": C.RULES_NEW}
+            "list_id": index.list_id, "rules_version": C.RULES_NEW}
 
 
 def best_party_score(name: str, index: ListIndex) -> float:

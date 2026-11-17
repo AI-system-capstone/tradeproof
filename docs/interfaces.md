@@ -30,7 +30,7 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 연결 | 방향 | 내용 | 단계 |
 |---|---|---|---|
 | `contracts.py` | 공통 → 전체 | 모든 모듈은 필드 이름·코드값·상태값·팀 상수를 이 파일에서 가져다 쓴다 | 1차 |
-| 판정 코드·OCR 코드 | A → C | C는 A의 처리 경로(`from a_screening.pipeline import screen_documents, bundle_spec` — 서류 폴더 → OCR → 필드 → 판정, 워커와 같은 함수)를 그대로 가져다 써서 실제 심사와 같은 결과를 낸다. A는 이 코드를 **C가 import할 수 있는 형태**로 유지한다 | 1차 |
+| 판정 코드·OCR 코드 | A → C | C는 A의 처리 경로(`from a_screening.pipeline import screen_documents, bundle_spec` — 서류 폴더 → OCR → 필드 → 판정, 워커와 같은 함수)를 그대로 가져다 써서 실제 심사와 같은 결과를 낸다. A는 이 코드를 **C가 import할 수 있는 형태**로 유지한다. 규칙 버전은 번들에 없고 A가 `rules-v3`로 고정한다(`contracts.RULES_FIXED`, 번들 구성에 `rules_version`을 빼고 넘기면 이 값) | 1차 |
 
 ## 3. 데이터
 
@@ -76,4 +76,6 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 2026-11-16 | B 박시우 | 병합 충돌을 해소하고 C 운영 화면·B 게이트 담당과 최신 반입 API를 통합. B의 canary/active/cancelled 계약을 유지하며 D 구현 연동은 별도 작업으로 남김 |
 | 2026-11-16 | B 박시우 | 카나리 시작 시 생성 기준 운영 번들 불일치 409. 거부 파일은 저장하지 않고 Import 파일명·사유 기록 및 오류 target_id로 조회. 번들 조회에 base_bundle_id·history 추가, 52 ALTER 마이그레이션 추가 |
 | 2026-11-16 | B 박시우 | 기준 변경 시 카나리 요청을 단순 409 대신 현재 운영 자산과 재조합한 새 candidate 생성으로 처리. 응답 replacement_bundle_id 제공, 기존 후보 cancelled 및 새 후보 재검증·승인 필요 |
+| 2026-11-16 | A 지윤아 | 판정 규칙 버전을 번들과 무관하게 `rules-v3`로 고정(`contracts.RULES_FIXED`). A API 명세서 `docs/openapi/a_screening.json` 추가 |
+| 2026-11-17 | A 지윤아 | A의 번들 필드 이름을 B 레지스트리와 맞춤: `model_version` → `model_id`, `list_version` → `list_id` (값은 그대로, 예: `model-v3`, `list-v14`). A API 응답·`contracts.BUNDLES`·OCR 결과 파일에 적용. 제재 리스트 파일 안의 `list_version` 키는 B 반입 검사가 보므로 그대로 |
 | 2026-11-17 | B 박시우 | 재조합을 B 배포 요청 단계로 이동. B가 D POST /deployments를 호출하고 접수 확인 후 canary로 전이. 직접 canary 전이 차단, 결과 미확인 시 재호출은 D 조회로 확인 |

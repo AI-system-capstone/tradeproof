@@ -46,12 +46,12 @@ def load_fields(tx_dir: Path, truth: dict, source: str, ocr_dir: Path):
         raise FileNotFoundError(f"{ext_path} 없음: 먼저 ocr/extract.py 를 실행하세요")
     ext = json.loads(ext_path.read_text(encoding="utf-8"))
     flat = {k: (v or {}).get("value") for k, v in ext["fields"].items()}
-    return flat, ext["fields"], f"ocr:{ext.get('model_version', 'unknown')}"
+    return flat, ext["fields"], f"ocr:{ext.get('model_id', 'unknown')}"
 
 
 def build(docs_dir: Path, source: str, ocr_dir: Path, bundle_id: str) -> tuple[str, dict]:
     bundle = C.BUNDLES[bundle_id]
-    index = load_index(bundle["list_version"])
+    index = load_index(bundle["list_id"])
     truths = sorted(docs_dir.glob("TX-*/truth.json"))
     if not truths:
         raise SystemExit(f"{docs_dir} 에 truth.json 이 없습니다. 먼저 docs/gen_docs.py 를 실행하세요.")
@@ -86,7 +86,7 @@ def build(docs_dir: Path, source: str, ocr_dir: Path, bundle_id: str) -> tuple[s
 
         stats["transactions"] += 1
         stats["classification"][res["classification"]] += 1
-        exp = truth["expected"].get(bundle["list_version"])
+        exp = truth["expected"].get(bundle["list_id"])
         if exp != res["classification"]:
             stats["mismatch_vs_expected"].append({"tx_id": truth["tx_id"], "expected": exp, "got": res["classification"]})
     out.append("COMMIT;")
