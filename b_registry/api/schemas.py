@@ -1,4 +1,5 @@
 from typing import Literal
+from common import contracts as C
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from b_registry.contracts import BUNDLE_STATUSES
 
@@ -88,3 +89,35 @@ class DeploymentResult(StrictModel):
     status: str
     deployment_id: str | None = None
     replacement_bundle_id: str | None = None
+
+
+class ValidationCallback(StrictModel):
+    validation_id: str
+    bundle_id: str
+    baseline_bundle_id: str
+    status: Literal[C.REGISTRY_VALIDATION_COMPLETED, C.REGISTRY_VALIDATION_FAILED]
+    golden: dict | None = None
+    replay: dict | None = None
+    error: str | None = None
+
+
+class ApprovalRequest(DeploymentRequest):
+    bundle_id: str
+    decision: Literal[C.REGISTRY_APPROVE, C.REGISTRY_REJECT]
+
+
+class ValidationRunResult(StrictModel):
+    validation_id: str
+    bundle_id: str
+    baseline_bundle_id: str
+    model_id: str
+    list_id: str
+    actor: str
+    reason: str
+    status: Literal[*C.REGISTRY_VALIDATION_STATES]
+    created_at: str
+    finished_at: str | None = None
+    policy: dict
+    gate: dict | None
+    result: dict | None
+    error: str | None

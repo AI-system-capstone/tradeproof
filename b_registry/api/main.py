@@ -13,11 +13,12 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from common import contracts as C
 from b_registry import contracts as B
-from b_registry.api.schemas import DeploymentRequest, DeploymentResult, ActiveBundles, BundleResult, ErrorResponse, ImportAccepted, BundleRegistered, Transition, TransitionResult, VerificationResult
+from b_registry.api.schemas import ValidationCallback, ValidationRunResult, ApprovalRequest, DeploymentRequest, DeploymentResult, ActiveBundles, BundleResult, ErrorResponse, ImportAccepted, BundleRegistered, Transition, TransitionResult, VerificationResult
 from b_registry.config import Settings
 from b_registry.db import Bundle, AIModel, SanctionsList, Database, Import, iso
 from b_registry.storage import Artifacts, StorageUnavailable, make_store
-from b_registry.verify.replay import ReplayDispatcher
+from b_registry.verify.replay import ValidationJobRunner, RunnerUnavailable
+from b_registry.verify.release import ReleaseService
 from b_registry.verify.workflow import Conflict, ImportService, NotFound, transition
 from b_registry.verify.worker import ReplayWorker
 from b_registry.verify.deployment import DeploymentClient, DeploymentUnavailable, request_deployment
@@ -66,7 +67,7 @@ def bundle_fields(s, bundle):
             "model": asset_fields(s.get(AIModel, bundle.model_id), "model_id"),
             "list": asset_fields(s.get(SanctionsList, bundle.list_id), "list_id")}
 
-def create_app(cfg=None, db=None, store=None, deployment_client=None):
+def create_app(cfg=None, db=None, store=None, deployment_client=None, validation_runner=None):
     logs = logging.getLogger("b_registry")
     if not logs.handlers:
         logs.addHandler(logging.StreamHandler())
@@ -77,7 +78,8 @@ def create_app(cfg=None, db=None, store=None, deployment_client=None):
     artifacts = Artifacts(store or make_store(cfg))
     service = ImportService(db, cfg, artifacts)
     deployment_client = deployment_client or DeploymentClient(cfg.deployment_url)
-    worker = ReplayWorker(ReplayDispatcher(db))
+    releases = ReleaseService(db, cfg, validation_runner or ValidationJobRunner(cfg))
+    worker = ReplayWorker(releases)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -91,6 +93,7 @@ def create_app(cfg=None, db=None, store=None, deployment_client=None):
         responses={n: {"model": ErrorResponse} for n in (400, 404, 409, 413, 422, 500, 503)})
     app.add_middleware(BodyLimitMiddleware, limit=cfg.max_zip_bytes)
     app.state.db, app.state.service, app.state.worker = db, service, worker
+    app.state.releases = releases
 
     @app.middleware("http")
     async def request_context(request, call_next):
@@ -130,6 +133,7 @@ def create_app(cfg=None, db=None, store=None, deployment_client=None):
     async def invalid(request, error):
         return error_response(C.ERR_VALIDATION, "Invalid request fields", 422, target(request))
 
+    @app.exception_handler(RunnerUnavailable)
     @app.exception_handler(DeploymentUnavailable)
     async def deployment_unavailable(request, error):
         return error_response(C.ERR_UNAVAILABLE, str(error), 503, target(request))
@@ -206,9 +210,39 @@ def create_app(cfg=None, db=None, store=None, deployment_client=None):
         actor = request.headers.get("X-Actor", body.actor)
         if actor != body.actor:
             raise HTTPException(422, "X-Actor and actor must match")
-        if body.to == "canary":
-            raise Conflict("Use POST /bundles/{id}/deployments to request deployment through B")
+        if body.to in ("validated", "validation_failed", "approved", "rejected", "canary"):
+            raise Conflict("Use M2 validation, approval and deployment APIs; direct gate transitions are forbidden")
         result = transition(db, bundle_id, body.to, actor, body.reason)
+        worker.notify()
+        return result
+
+    @app.post("/bundles/{bundle_id}/validation-results/{validation_id}", response_model=ValidationRunResult,
+              response_model_exclude_none=True)
+    def validation_result(bundle_id: str, validation_id: str, body: ValidationCallback):
+        try:
+            return releases.receive(bundle_id, validation_id, body.model_dump())
+        except (ValueError, KeyError, TypeError, AttributeError) as error:
+            raise HTTPException(422, "Invalid validation result") from error
+
+    @app.get("/bundles/{bundle_id}/validation", response_model=ValidationRunResult,
+             response_model_exclude_none=True)
+    def get_validation(bundle_id: str):
+        return releases.get(bundle_id)
+
+    @app.post("/approvals", response_model=DeploymentResult | TransitionResult, response_model_exclude_none=True,
+              responses={202: {"model": DeploymentResult}})
+    def approve_bundle(body: ApprovalRequest, request: Request, response: Response):
+        if request.headers.get("X-Actor", body.actor) != body.actor:
+            raise HTTPException(422, "X-Actor and actor must match")
+        if body.decision == C.REGISTRY_REJECT:
+            return releases.approve(body.bundle_id, body.decision, body.actor, body.reason)
+        with db.sessions() as s:
+            bundle = s.get(Bundle, body.bundle_id)
+            needs_approval = bundle is not None and bundle.status == C.REGISTRY_VALIDATED
+        if needs_approval:
+            releases.approve(body.bundle_id, body.decision, body.actor, body.reason)
+        result = request_deployment(db, body.bundle_id, body.actor, body.reason, deployment_client)
+        response.status_code = 200 if "replacement_bundle_id" in result else 202
         worker.notify()
         return result
 

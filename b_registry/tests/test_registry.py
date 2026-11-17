@@ -7,9 +7,21 @@ from common import contracts as C
 from b_registry.api.main import create_app
 from b_registry.db import Bundle, AIModel, SanctionsList, Database, Import
 from b_registry.storage import StorageUnavailable
-from b_registry.verify.replay import ReplayDispatcher
-from b_registry.verify.workflow import Conflict, ImportService, transition
+from b_registry.verify.replay import ValidationJobRunner
+from b_registry.verify.workflow import Conflict, ImportService, transition as _transition
 from b_registry.verify.validation import ValidationFailure
+
+def transition(db, bid, target, actor, reason):
+    # Fixtures for unrelated registry/deployment tests; M2 tests exercise real result collection.
+    if target == "validated":
+        with db.transaction() as session:
+            bundle = session.get(Bundle, bid)
+            bundle.validation_id = "RP-test-" + bid
+            bundle.validation = {"validation_id":bundle.validation_id, "status":"completed",
+                "model_id":bundle.model_id, "list_id":bundle.list_id,
+                "baseline_bundle_id":bundle.base_bundle_id, "gate":{"decision":"passed"}}
+    return _transition(db, bid, target, actor, reason)
+
 
 def upload(service, name):
     imp = service.intake((service.cfg.trust_key.parent / "packages" / name).read_bytes())
@@ -72,8 +84,10 @@ def test_transition_canary_cancel_and_promotion(service):
         return client.post(f"/bundles/{new}/transitions", json={"to": state, "actor": "C", "reason": "test"})
     assert change("active").status_code == 409
     assert change("canary").status_code == 409
-    assert change("validated").status_code == 200
-    assert change("approved").status_code == 200
+    assert change("validated").status_code == 409
+    assert change("approved").status_code == 409
+    transition(service.db, new, "validated", "C", "passed")
+    transition(service.db, new, "approved", "operator", "approved")
     assert change("active").status_code == 409
     assert change("canary").status_code == 409
     transition(service.db, new, "canary", "D", "accepted")
@@ -156,40 +170,6 @@ def test_no_update_before_baseline_activation(service):
         upload(service, "model-v4.zip")
     with service.db.sessions() as s:
         assert s.get(AIModel, "model-v4") is None
-
-def test_replay_job_idempotency_and_retry(service, monkeypatch):
-    upload(service, "model-v3.zip")
-    iid = upload(service, "list-v14.zip")
-    bid = service.registered_bundle(iid)
-    monkeypatch.setenv("REPLAY_NAMESPACE", "test")
-    template = {"apiVersion": "batch/v1", "kind": "Job", "spec": {"template": {"spec": {
-        "restartPolicy": "Never", "containers": [{"name": "replay", "image": "team-replay",
-        "env": [{"name": "BUNDLE_ID", "value": "wrong"}]}]}}}}
-    mode = ["offline"]
-    jobs = {}
-    def handler(request):
-        if mode[0] == "offline":
-            return httpx.Response(503)
-        if request.method == "POST":
-            import json
-            job = json.loads(request.content)
-            name = job["metadata"]["name"]
-            if name in jobs:
-                return httpx.Response(409)
-            jobs[name] = job
-            return httpx.Response(201, json=job)
-        return httpx.Response(200, json=jobs[request.url.path.rsplit("/", 1)[-1]])
-    with httpx.Client(base_url="https://kubernetes", transport=httpx.MockTransport(handler)) as client:
-        dispatcher = ReplayDispatcher(service.db, template, client)
-        dispatcher.run_once()
-        assert jobs == {}
-        mode[0] = "online"
-        dispatcher.run_once()
-        dispatcher.dispatch(bid)  # K8s succeeded but DB acknowledgement was lost.
-        dispatcher.run_once()  # Existing Job handles repeated reconciliation.
-        assert len(jobs) == 1
-        job = next(iter(jobs.values()))
-        assert job["spec"]["template"]["spec"]["containers"][0]["env"] == [{"name": "BUNDLE_ID", "value": bid}]
 
 def test_database_readiness_without_schema(cfg):
     app = create_app(cfg)
@@ -304,7 +284,7 @@ def test_trust_key_unavailable_never_persists(service, monkeypatch):
 def test_metadata_schema_is_minimal_and_legacy_split_schema_rejected(cfg):
     from sqlalchemy import inspect, text
     from b_registry.db import AIModel, SanctionsList, Import, WorkflowLock
-    assert set(Bundle.__table__.columns.keys()) == {"bundle_id", "model_id", "list_id", "status", "previous_active_id", "base_bundle_id", "history", "created_at"}
+    assert set(Bundle.__table__.columns.keys()) == {"bundle_id", "model_id", "list_id", "status", "previous_active_id", "base_bundle_id", "validation_id", "validation", "history", "created_at"}
     assert set(AIModel.__table__.columns.keys()) == {"model_id", "artifact_uri", "created_at"}
     assert set(SanctionsList.__table__.columns.keys()) == {"list_id", "artifact_uri", "created_at"}
     assert "package_hash" not in Import.__table__.columns and "steps" not in Import.__table__.columns
