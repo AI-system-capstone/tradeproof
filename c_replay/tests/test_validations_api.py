@@ -242,6 +242,61 @@ def test_admin_page(client, monkeypatch, tmp_path):
     assert "운영 화면" in r.text
 
 
+# ---------------------------------------------------------------- 운영 화면 중계 (B·D)
+def proxy_client(handler, env=None):
+    """B·D 대신 handler(httpx.Request) -> httpx.Response 가 답한다."""
+    import httpx
+    from c_replay.store import MemoryStore
+    env = {"B_URL": "http://b:8100", "D_URL": "http://d:8300/"} if env is None else env
+    return TestClient(main.create_app(store=MemoryStore(), env=env, transport=httpx.MockTransport(handler)))
+
+
+def test_proxy_passes_allowed_request_and_response_through():
+    import httpx
+    seen = []
+    def handler(req):
+        seen.append(req)
+        return httpx.Response(202, json={"bundle_id": "B-9", "deployment_id": "DP-1"})
+    c = proxy_client(handler)
+    body = {"bundle_id": "B-9", "decision": "approve", "actor": "kim", "reason": "ok"}
+    r = c.post("/api/b/approvals", json=body, headers={"X-Actor": "kim", "Cookie": "s=1"})
+    assert r.status_code == 202 and r.json() == {"bundle_id": "B-9", "deployment_id": "DP-1"}
+    (req,) = seen
+    assert str(req.url) == "http://b:8100/approvals" and req.method == "POST"
+    assert req.headers["x-actor"] == "kim" and "cookie" not in req.headers   # 정해 둔 헤더만 넘긴다
+    assert req.read() == r.request.read()
+    c.get("/api/d/deployments/DP-1")
+    assert str(seen[-1].url) == "http://d:8300/deployments/DP-1"
+
+
+def test_proxy_keeps_upstream_error_status_and_body():
+    import httpx
+    c = proxy_client(lambda req: httpx.Response(409, json={"code": "CONFLICT", "message": "m", "target_id": None}))
+    r = c.get("/api/b/bundles/B-9/validation")
+    assert r.status_code == 409 and r.json()["code"] == "CONFLICT"
+
+
+@pytest.mark.parametrize("method,path", [
+    ("GET", "/api/b/bundles"),                       # 목록은 화면이 쓰지 않는다
+    ("POST", "/api/b/bundles/B-9/transitions"),      # 상태 직접 변경은 넘기지 않는다
+    ("GET", "/api/b/bundles/../imports"),            # 경로 조작
+    ("GET", "/api/x/bundles/B-9"),                   # 모르는 서비스
+    ("POST", "/api/d/deployments"),                  # 배포 시작은 B 가 한다
+])
+def test_proxy_rejects_paths_the_screen_does_not_use(method, path):
+    c = proxy_client(lambda req: pytest.fail("B·D 를 부르면 안 된다"))
+    assert_error(c.request(method, path), 404, C.ERR_NOT_FOUND)
+
+
+def test_proxy_is_503_when_upstream_is_not_set_or_down():
+    import httpx
+    c = proxy_client(lambda req: pytest.fail("부르면 안 된다"), env={})
+    assert_error(c.get("/api/b/bundles/B-9"), 503, C.ERR_UNAVAILABLE)
+    def down(req):
+        raise httpx.ConnectError("refused")
+    assert_error(proxy_client(down).get("/api/b/bundles/B-9"), 503, C.ERR_UNAVAILABLE)
+
+
 # ---------------------------------------------------------------- 상태 확인·지표
 def test_healthz_and_livez(client):
     assert client.get("/livez").json() == {"status": "ok"}

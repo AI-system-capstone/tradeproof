@@ -4,6 +4,7 @@
   GET  /validations/{id}            상태·결과
   GET  /validations/{id}/diffs      달라진 거래       (completed 가 아니면 409)
   GET  /admin                       운영 화면 (c_replay/ui/admin.html)
+  GET·POST /api/{b|d}/...           운영 화면이 부르는 B·D API 를 그대로 전달 (정해 둔 경로만)
   GET  /healthz /livez /metrics
 
 조회만 한다. 검증 행은 검증 Job(c_replay.job)이 만들고 결과도 Job 이 적는다.
@@ -11,17 +12,20 @@
 
 환경변수:
   DATABASE_URL   있으면 Postgres, 없으면 메모리 저장소
+  B_URL, D_URL   운영 화면 중계가 부를 B·D 주소 (예: http://b-registry:8100). 없으면 중계는 503
 """
 from __future__ import annotations
 
 import logging
 import os
+import re
 import uuid
 from enum import Enum
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, Query, Request
+import httpx
+from fastapi import FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
@@ -37,6 +41,18 @@ METRIC_RUNS = "tradeproof_validation_runs_total"              # counter {status}
 METRIC_DURATION = "tradeproof_validation_duration_seconds"    # gauge   {bundle_id}  번들별 최근 완료 건
 
 log = logging.getLogger("c_replay")
+
+# 운영 화면 중계: 화면은 C 한 곳만 부르고, C 가 B·D 에 그대로 전달한다 (브라우저의 다른 출처 호출·CORS 가 필요 없다).
+# 아무 주소나 넘기지 않도록 화면이 쓰는 경로만 허용한다. ID 자리에는 영문·숫자·_·- 만 (.. 같은 경로 조작 차단).
+_ID = r"[A-Za-z0-9_-]+"
+PROXY_ROUTES = {
+    ("b", "POST"): ("imports", "approvals"),
+    ("b", "GET"): (f"imports/{_ID}", f"bundles/{_ID}", f"bundles/{_ID}/validation"),
+    ("d", "GET"): (f"deployments/{_ID}",),
+    ("d", "POST"): (f"deployments/{_ID}/rollback",),
+}
+PROXY_HEADERS = ("content-type", "x-actor", "x-request-id")
+PROXY_TIMEOUT = httpx.Timeout(30, connect=2)   # 반입은 B 가 검증을 마치고 답하므로 길게
 
 ValidationStatus = Literal["queued", "running", "completed", "failed"]
 RiskDirection = Literal["up", "down"]
@@ -134,9 +150,11 @@ _Limit = Query(default=50, ge=1, le=200)
 _Offset = Query(default=0, ge=0)
 
 
-def create_app(store=None, env: dict | None = None) -> FastAPI:
+def create_app(store=None, env: dict | None = None, transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
+    """transport: 테스트에서 B·D 대신 가짜 응답을 넣을 때."""
     env = os.environ if env is None else env
     store = store or S.make_store(env.get("DATABASE_URL"))
+    upstream = {"b": env.get("B_URL"), "d": env.get("D_URL")}
 
     app = FastAPI(title="TradeProof c_replay — 검증 API (M3) + 운영 화면 (M8)", version="0.1.0")
     app.state.store = store
@@ -208,6 +226,25 @@ def create_app(store=None, env: dict | None = None) -> FastAPI:
         if not ADMIN_HTML.is_file():
             raise ApiError(404, C.ERR_NOT_FOUND, "운영 화면 파일이 없음", "admin.html")
         return FileResponse(ADMIN_HTML, media_type="text/html")
+
+    @app.api_route("/api/{service}/{path:path}", methods=["GET", "POST"], tags=["ui"],
+                   responses={404: _ERR, 503: _ERR}, summary="운영 화면용 B·D 중계")
+    async def proxy(service: str, path: str, request: Request):
+        """B·D 의 응답(상태 코드·본문)을 그대로 돌려준다. 허용하지 않은 경로는 404, 연결 실패는 503."""
+        allowed = PROXY_ROUTES.get((service, request.method), ())
+        if not any(re.fullmatch(r, path) for r in allowed):
+            raise ApiError(404, C.ERR_NOT_FOUND, f"중계하지 않는 경로: {request.method} /{service}/{path}", path)
+        base = upstream.get(service)
+        if not base:
+            raise ApiError(503, C.ERR_UNAVAILABLE, f"{service.upper()}_URL 이 설정되지 않음", service)
+        headers = {k: v for k, v in request.headers.items() if k.lower() in PROXY_HEADERS}
+        try:
+            async with httpx.AsyncClient(transport=transport, timeout=PROXY_TIMEOUT) as client:
+                r = await client.request(request.method, f"{base.rstrip('/')}/{path}",
+                                         content=await request.body(), headers=headers)
+        except httpx.HTTPError as e:
+            raise ApiError(503, C.ERR_UNAVAILABLE, f"{service.upper()} 에 연결할 수 없음: {type(e).__name__}", service) from e
+        return Response(r.content, status_code=r.status_code, media_type=r.headers.get("content-type"))
 
     # ------------------------------------------------------------ 상태 확인·지표
     @app.get("/healthz", tags=["ops"], responses={503: _ERR}, summary="준비 상태 (DB 연결)")

@@ -64,6 +64,17 @@ BUNDLE_ID=B-9 DATABASE_URL=postgresql://... python -m c_replay.job
 - `B_URL`이 없으면 번들 구성을 `contracts.BUNDLES`(B-7~B-10)에서 읽는다.
 - 종료 코드: 0 = completed로 저장했고 B가 받음(또는 보낼 곳 없음), 1 = 그 밖의 경우, 2 = 필수 환경변수 없음.
 
+운영 화면(`GET /admin`)을 띄우는 예:
+
+```bash
+B_URL=http://localhost:8100 D_URL=http://localhost:8300 uvicorn c_replay.api.main:app --port 8200
+```
+
+- 화면은 C 서버 한 곳만 부른다. B·D는 C의 `/api/b/…`, `/api/d/…` 중계를 거친다. 그래서 B·D에 브라우저 호출 허용(CORS)이 필요 없다.
+- 중계는 화면이 쓰는 경로만 넘긴다(명세 `docs/openapi/c_replay.json`의 `/api/{service}/{path}`).
+- 검증은 B가 만든 검증 ID 하나로 따라간다: 게이트·지표는 B의 `GET /bundles/{id}/validation`, 달라진 거래는 같은 ID로 C의 `/diffs`.
+- 서버 없이 화면만 볼 때: `c_replay/ui/admin.html?mock=1`
+
 이미지 빌드 (저장소 루트에서):
 
 ```bash

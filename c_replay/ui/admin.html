@@ -91,43 +91,47 @@
 </main>
 
 <script>
-/* 호출하는 API. 기준: B = origin/b/registry 의 b_registry/docs/openapi/b_registry.json, D = docs/openapi/d_platform.json,
-   C = docs/openapi/c_replay.json. B 에는 CORS 허용이 없어서 브라우저에서 직접 부르면 막힐 수 있다 (프록시나 B 쪽 설정이 필요).
-   B  POST /imports (multipart: package)   -> 202 {import_id}
-      GET  /imports/{id}                   -> 202 빈 본문 (처리 중) | 200 {status:"APPROVED"|"REJECTED", reason, bundle_id}
+/* 화면은 C 서버 한 곳만 부른다. B·D 는 C 의 중계(/api/b/…, /api/d/…)를 거친다 (브라우저의 다른 출처 호출·CORS 가 필요 없다).
+   검증은 B 가 만든 검증 ID 하나로 따라간다: 번들(B) → 검증·게이트(B) → 달라진 거래(C, 같은 검증 ID) → 배포(D).
+   기준: B = PR #17(origin/b/approve) 의 b_registry/docs/openapi/b_registry.json, C = docs/openapi/c_replay.json, D = docs/openapi/d_platform.json
+   B  POST /imports (multipart: package)   -> 201 {import_id, bundle_id}
+      GET  /imports/{id}                   -> {status:"APPROVED"|"REJECTED", reason, bundle_id, filename}
       GET  /bundles/{id}                   -> {bundle_id, status, model_id, list_id, created_at, base_bundle_id, history:[…], model:{model_id, uri}, list:{list_id, uri}}
                                               history 의 deployment_request:{state:"accepted", deployment_id} 로 배포 ID 를 찾는다
+      GET  /bundles/{id}/validation        -> {validation_id, status, baseline_bundle_id, gate:{decision:"passed"|"blocked", reasons, policy}, result:{golden, replay}, error}
+                                              (검증을 아직 안 했으면 404)
       POST /approvals                      <- {bundle_id, decision:"approve"|"reject", actor, reason}
                                            -> 승인 202 {bundle_id, status, deployment_id} (D 에 배포까지 요청함)
                                               승인 200 {bundle_id, status, replacement_bundle_id} (대체 번들이 만들어짐)
                                               반려 200 {from, to, changed_at}
-      (PR #17 기준. 승인·반려는 /bundles/{id}/transitions 로 보내면 409 로 거부된다.)
-   C  GET  /validations?bundle_id=…&limit=1 -> {items:[검증]}  가장 최근 검증
-      GET  /validations/{id}/diffs         -> {items:[{tx_id, direction, before:{classification}, after:{classification}}], total}
+   C  GET  /validations/{id}/diffs         -> {items:[{tx_id, direction, before:{classification}, after:{classification}}], total}
    D  GET  /deployments/{id}               -> {deployment_id, bundle_id, status, weight, step_index, ...}
       POST /deployments/{id}/rollback      <- {actor, reason}
-   주소는 ?b=…&c=…&d=… 로 바꿀 수 있다. ?mock=1 이면 서버 없이 예시 데이터로 화면만 본다. */
+   파일로 열면(file://) C 주소는 ?c=… (기본 http://localhost:8200). ?mock=1 이면 서버 없이 예시 데이터로 화면만 본다. */
 const q = new URLSearchParams(location.search);
-const BASE = {
-  b: q.get('b') || 'http://localhost:8100',
-  c: q.get('c') || (location.protocol === 'file:' ? 'http://localhost:8200' : ''),
-  d: q.get('d') || 'http://localhost:8300',
-};
+const C_URL = q.get('c') || (location.protocol === 'file:' ? 'http://localhost:8200' : '');
+const BASE = { b: C_URL + '/api/b', c: C_URL, d: C_URL + '/api/d' };
 const MOCK = !q.has('mock') ? null : {
   'POST b/imports': { import_id: 'IMP-1' },
   'GET b/imports': { status: 'APPROVED', reason: null, bundle_id: 'B-9' },
   'GET b/bundles': { bundle_id: 'B-9', status: 'validated', model_id: 'model-v4', list_id: 'list-v14',
     created_at: '2026-11-16T09:00:00Z', base_bundle_id: 'B-7',
-    history: [{ from: 'candidate', to: 'validated', actor: 'b-registry', reason: 'Validation gate passed', changed_at: '2026-11-16T09:30:00Z', validation_id: 'RP-3f9a1c0b7d2e' }],
+    history: [{ from: 'candidate', to: 'validated', actor: 'b-registry', reason: 'Validation gate passed', changed_at: '2026-11-16T09:30:00Z', validation_id: 'RP-3f9a1c0b7d2e4a5b8c9d0e1f2a3b4c5d' }],
     model: { model_id: 'model-v4', uri: 's3://registry/models/model-v4.zip' },
     list: { list_id: 'list-v14', uri: 's3://registry/lists/list-v14.zip' } },
+  'GET b/bundles/validation': { validation_id: 'RP-3f9a1c0b7d2e4a5b8c9d0e1f2a3b4c5d', bundle_id: 'B-9', baseline_bundle_id: 'B-7',
+    model_id: 'model-v4', list_id: 'list-v14', actor: 'b-registry', reason: 'Automatic validation after bundle registration',
+    status: 'completed', created_at: '2026-11-16T09:10:00Z', finished_at: '2026-11-16T09:30:00Z',
+    policy: { min_accuracy: 0.9, require_complete_replay: true },
+    gate: { decision: 'passed', reasons: [], policy: { min_accuracy: 0.9, require_complete_replay: true } },
+    result: { status: 'completed', error: null,
+      golden: { golden_version: 'golden-list-v14', total: 100,
+        accuracy: { baseline: 1.0, candidate: 0.95, diff: -0.05 },
+        false_negative: { baseline: 0, candidate: 1, diff: 1 }, false_positive: { baseline: 0, candidate: 0, diff: 0 } },
+      replay: { total: 100, processed: 100, count_match: true, changed: 2, changed_down: 1 } },
+    error: null },
   'POST b/approvals:approve': { bundle_id: 'B-9', status: 'canary', deployment_id: 'DP-1' },
   'POST b/approvals:reject': { from: 'validated', to: 'rejected', changed_at: '2026-11-16T10:00:00Z' },
-  'GET c/validations': { total: 1, items: [{ validation_id: 'RP-3f9a1c0b7d2e', bundle_id: 'B-9', baseline_bundle_id: 'B-7',
-    status: 'completed', golden: { golden_version: 'golden-list-v14', total: 100,
-      accuracy: { baseline: 1.0, candidate: 0.95, diff: -0.05 },
-      false_negative: { baseline: 0, candidate: 1, diff: 1 }, false_positive: { baseline: 0, candidate: 0, diff: 0 } },
-    replay: { total: 100, processed: 100, count_match: true, changed: 2, changed_down: 1 } }] },
   'GET c/validations/diffs': { total: 2, items: [
     { tx_id: 'TX-0012', direction: 'down', before: { classification: 'HIGH_RISK_HOLD' }, after: { classification: 'MANUAL_REVIEW' } },
     { tx_id: 'TX-0047', direction: 'up', before: { classification: 'PASS_CANDIDATE' }, after: { classification: 'HIGH_RISK_HOLD' } }] },
@@ -144,7 +148,7 @@ const seg = v => encodeURIComponent(v.trim());
 async function api(svc, method, path, body) {
   if (MOCK) {
     const segs = path.split('?')[0].split('/').filter(Boolean);
-    const key = `${method} ${svc}/${segs[0]}${segs.at(-1) === 'diffs' ? '/diffs' : ''}`;
+    const key = `${method} ${svc}/${segs[0]}${['diffs', 'validation'].includes(segs.at(-1)) ? '/' + segs.at(-1) : ''}`;
     return MOCK[`${key}:${body && body.decision}`] || MOCK[key];
   }
   const opt = { method };
@@ -152,9 +156,8 @@ async function api(svc, method, path, body) {
   else if (body) { opt.body = JSON.stringify(body); opt.headers = { 'Content-Type': 'application/json' }; }
   let res;
   try { res = await fetch(BASE[svc] + path, opt); }
-  catch (e) {  // 브라우저는 서버 꺼짐과 CORS 거부를 구분해 주지 않는다
-    throw new Error(`${svc.toUpperCase()} 서버(${BASE[svc] || location.origin})에 연결하지 못했습니다. 서버가 켜져 있는지, 주소(?${svc}=…)가 맞는지, CORS 허용이 되어 있는지 확인하세요`
-      + (svc === 'b' ? ' (B 는 CORS 설정이 없을 수 있음)' : ''));
+  catch (e) {  // C 서버 자체에 닿지 못함. B·D 연결 실패는 C 가 503(SERVICE_UNAVAILABLE)으로 알려 준다
+    throw new Error(`C 서버(${C_URL || location.origin})에 연결하지 못했습니다. C 서버가 켜져 있는지, 파일로 열었다면 주소(?c=…)가 맞는지 확인하세요`);
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`${data.code || res.status}: ${data.message || res.statusText}`);  // 공통 에러 형식
@@ -228,8 +231,8 @@ $('btnUpload').onclick = () => run($('importOut'), async () => {
 // 2. 검증·승인 (UI-02)
 const num = v => typeof v === 'number' ? +v.toFixed(4) : v;
 async function showBundle(id) {
-  // B 와 C 는 따로 처리한다: C 가 실패해도 B 번들 정보는 보여 준다
-  const [bRes, cRes] = await Promise.allSettled([api('b', 'GET', `/bundles/${id}`), api('c', 'GET', `/validations?bundle_id=${id}&limit=1`)]);
+  // 번들과 검증을 따로 처리한다: 검증 조회가 실패해도 번들 정보는 보여 준다
+  const [bRes, vRes] = await Promise.allSettled([api('b', 'GET', `/bundles/${id}`), api('b', 'GET', `/bundles/${id}/validation`)]);
   if (bRes.status === 'rejected') throw bRes.reason;
   const b = bRes.value;
   // 배포 요청이 받아들여졌으면 배포 ID 를 3구역 칸에 채운다
@@ -237,37 +240,45 @@ async function showBundle(id) {
   if (dep) $('deployId').value = dep.deployment_id;
   return `${kv(b)}
     <table><tr><th>모델 파일</th><td>${esc(b.model && b.model.uri)}</td></tr><tr><th>리스트 파일</th><td>${esc(b.list && b.list.uri)}</td></tr></table>
-    <h3>게이트</h3><p class="muted">B 미제공 (게이트 판정 API 가 B 에 없음)</p>
-    ${await validationOrError(cRes)}`;
+    ${await validationOrError(vRes)}`;
 }
 $('btnBundle').onclick = () => {
   let id;
   run($('bundleOut'), () => showBundle(id = seg(need($('bundleId')))), () => showBundle(id));
 };
-async function validationOrError(cRes) {
-  try {
-    if (cRes.status === 'rejected') throw cRes.reason;
-    return await showValidation((cRes.value.items || [])[0]);
-  } catch (e) { return `<h3>검증</h3><p class="err">C 조회 실패: ${esc(e.message)}</p>`; }
+async function validationOrError(vRes) {
+  if (vRes.status === 'rejected') {
+    if (/^(NOT_FOUND|404)\b/.test(vRes.reason.message)) return '<h3>검증</h3><p class="muted">아직 검증이 없음</p>';
+    return `<h3>검증</h3><p class="err">검증 조회 실패: ${esc(vRes.reason.message)}</p>`;
+  }
+  return showValidation(vRes.value);
 }
-// C 검증 결과: 가장 최근 검증 한 건 (검증은 B 가 만든 검증 Job 이 한다)
+// B 의 게이트 판정 (PR #17: 정확도 기준 이상 + Replay 전체 처리면 통과)
+function gateHtml(gate) {
+  if (!gate) return '<h3>게이트 (B)</h3><p class="muted">판정 전</p>';
+  const ok = gate.decision === 'passed', p = gate.policy || {};
+  return `<h3>게이트 (B)</h3><p>${tag(ok ? '통과 · 승인 가능' : '차단', ok ? 'ok' : 'bad')} ${esc((gate.reasons || []).join(' · '))}</p>
+    <p class="muted">기준: 정확도 ${esc(p.min_accuracy)} 이상${p.require_complete_replay ? ', Replay 전체 처리' : ''}</p>`;
+}
+// 검증 한 건: 상태·게이트·지표는 B 가 받은 결과, 달라진 거래는 같은 검증 ID 로 C 에서
 const METRICS = [['accuracy', '정확도'], ['false_negative', '미탐'], ['false_positive', '오탐']];
 async function showValidation(v) {
-  if (!v) return '<h3>검증</h3><p class="muted">아직 검증이 없음</p>';
   const head = `<h3>검증 ${esc(v.validation_id)}</h3><p>${statusTag(v.status)} 기준 ${esc(v.baseline_bundle_id)} → 후보 ${esc(v.bundle_id)}</p>`;
-  if (v.status === 'failed') return `${head}<p class="err">${esc(v.error && v.error.message)}</p>`;
   if (v.status === 'queued' || v.status === 'running') return head + PENDING;  // 끝날 때까지 자동으로 다시 조회
-  if (v.status !== 'completed') return head;
-  const g = v.golden, rp = v.replay;
-  const diffs = (await api('c', 'GET', `/validations/${seg(v.validation_id)}/diffs?limit=200`)).items || [];
-  return `${head}
+  if (v.status === 'failed') return `${head}<p class="err">${esc(v.error)}</p>${gateHtml(v.gate)}`;
+  const g = v.result && v.result.golden, rp = v.result && v.result.replay;
+  if (!g || !rp) return head + gateHtml(v.gate);
+  let diffs, diffErr = '';
+  try { diffs = (await api('c', 'GET', `/validations/${seg(v.validation_id)}/diffs?limit=200`)).items || []; }
+  catch (e) { diffs = []; diffErr = `<p class="err">달라진 거래 조회 실패 (C): ${esc(e.message)}</p>`; }
+  return `${head}${gateHtml(v.gate)}
     <h3>골든셋 검증 (${esc(g.total)}건)</h3>
     <table><tr><th>지표</th><th>운영</th><th>후보</th><th>차이</th></tr>${METRICS.map(([k, name]) =>
       `<tr><td>${name}</td><td class="num">${esc(num(g[k].baseline))}</td><td class="num">${esc(num(g[k].candidate))}</td><td class="num">${esc(num(g[k].diff))}</td></tr>`).join('')}</table>
     <h3>Replay</h3>
     <p>처리 ${esc(rp.processed)} / 전체 ${esc(rp.total)} ${tag(rp.count_match ? '건수 일치' : '건수 불일치', rp.count_match ? 'ok' : 'bad')} · 달라진 거래 ${esc(rp.changed)}건 (위험도 낮아짐 ${esc(rp.changed_down)}건)</p>
     ${diffs.length ? `<table><tr><th>거래</th><th>방향</th><th>이전</th><th>후보</th></tr>${diffs.map(d =>
-      `<tr><td>${esc(d.tx_id)}</td><td>${tag(d.direction === 'down' ? '낮아짐' : '높아짐', d.direction === 'down' ? 'bad' : '')}</td><td>${esc(d.before.classification)}</td><td>${esc(d.after.classification)}</td></tr>`).join('')}</table>` : ''}`;
+      `<tr><td>${esc(d.tx_id)}</td><td>${tag(d.direction === 'down' ? '낮아짐' : '높아짐', d.direction === 'down' ? 'bad' : '')}</td><td>${esc(d.before.classification)}</td><td>${esc(d.after.classification)}</td></tr>`).join('')}</table>` : ''}${diffErr}`;
 }
 const decide = async decision => {
   let sent = false;
