@@ -50,7 +50,9 @@ class FakeB:
             def do_GET(self):  # noqa: N802
                 outer.calls.append(self.path)
                 bid = self.path.rsplit("/", 1)[-1]
-                if self.path.startswith("/bundles/") and bid in outer.bundles:
+                if self.path == "/bundles":
+                    body, code = json.dumps(list(outer.bundles.values())).encode(), 200
+                elif self.path.startswith("/bundles/") and bid in outer.bundles:
                     body, code = json.dumps(outer.bundles[bid]).encode(), 200
                 else:
                     body, code = b'{"code":"NOT_FOUND"}', 404
@@ -147,3 +149,12 @@ def test_tampered_zip_rejected(b):
 def test_store_accepts_registry_bundle(b):
     ST._check_bundles(NEW_BUNDLE, None)                    # contracts.BUNDLES 에 없어도 B 에 있으면 접수 가능
     assert ST._check_filters(None, None, NEW_BUNDLE) is None
+
+
+def test_model_and_list_without_bundle_lookup(b):
+    """C 검증 Job 처럼 번들은 호출한 쪽이 B 에서 읽고 모델·리스트 ID 만 넘겨도, A 가 B 번들 목록에서 ZIP 위치를 찾는다."""
+    assert R.model_config("model-v5") == MODEL_CONFIG
+    assert R.sanctions_list(LIST_ID)["entries"] == SAMPLE_LIST["entries"]
+    assert b.calls == ["/bundles"]                          # 목록 한 번으로 둘 다 찾는다
+    with pytest.raises(R.BadArtifact):                     # B 어느 번들도 안 쓰는 모델
+        R.model_config("model-v9")
