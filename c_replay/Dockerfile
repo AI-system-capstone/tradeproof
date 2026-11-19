@@ -25,7 +25,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       tesseract-ocr=5.5.0-1+b1 tesseract-ocr-eng=1:4.1.0-2 poppler-utils \
  && rm -rf /var/lib/apt/lists/*
-COPY a_screening/__init__.py a_screening/pipeline.py a_screening/store.py a_screening/db_values.py a_screening/
+COPY a_screening/__init__.py a_screening/pipeline.py a_screening/store.py a_screening/db_values.py a_screening/registry.py a_screening/
 COPY a_screening/ocr/ a_screening/ocr/
 COPY a_screening/screening/ a_screening/screening/
 CMD ["python", "-m", "c_replay.job"]

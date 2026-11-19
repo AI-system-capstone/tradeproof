@@ -50,7 +50,9 @@ class FakeB:
             def do_GET(self):  # noqa: N802
                 outer.calls.append(self.path)
                 bid = self.path.rsplit("/", 1)[-1]
-                if self.path.startswith("/bundles/") and bid in outer.bundles:
+                if self.path.split("?")[0] == "/bundles":           # B 의 번들 목록
+                    body, code = json.dumps(list(outer.bundles.values())).encode(), 200
+                elif self.path.startswith("/bundles/") and bid in outer.bundles:
                     body, code = json.dumps(outer.bundles[bid]).encode(), 200
                 else:
                     body, code = b'{"code":"NOT_FOUND"}', 404
@@ -123,6 +125,15 @@ def test_model_and_list_from_zip(b):
     assert X.model_spec("model-v5") == MODEL_CONFIG        # OCR 은 B 모델 ZIP 설정으로 돈다
     assert R.sanctions_list(LIST_ID)["entries"] == SAMPLE_LIST["entries"]
     assert P.index_for(LIST_ID) is R.list_index(LIST_ID)   # 색인은 한 번만 만든다
+
+
+def test_model_and_list_without_bundle_lookup(b):
+    """C 검증 Job 처럼 번들 구성을 B 에서 직접 읽고 model_id·list_id 만 넘겨도 ZIP 을 찾는다 (B 번들 목록에서)."""
+    assert R.model_config("model-v5") == MODEL_CONFIG
+    assert R.sanctions_list(LIST_ID)["entries"] == SAMPLE_LIST["entries"]
+    assert b.calls == ["/bundles"]                          # 목록 한 번으로 모델·리스트 위치를 같이 캐시
+    with pytest.raises(R.RegistryUnavailable):              # 어느 번들에도 없는 모델
+        R.model_config("model-v404")
 
 
 def test_screen_with_registry_list_matches_local(b):

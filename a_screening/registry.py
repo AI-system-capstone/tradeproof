@@ -139,10 +139,27 @@ def known_bundles() -> dict[str, dict]:
 
 
 # ---------------------------------------------------------------- ZIP 안 파일
+def _find_uri(kind: str, item_id: str) -> str | None:
+    """번들을 거치지 않고 모델·리스트 ID 만 받은 경우(C 검증 Job 이 번들 구성을 B 에서 직접 읽고 model_id 만 넘김):
+    B 의 GET /bundles 목록에서 그 모델·리스트를 쓰는 번들을 찾아 ZIP 위치를 얻는다. 목록의 위치는 모두 캐시해 둔다."""
+    items = _get_json("/bundles")
+    if not isinstance(items, list):
+        raise RegistryUnavailable(f"B 번들 목록 응답 형식이 다름: {type(items).__name__}")
+    with _LOCK:
+        for d in items:
+            for k, id_key in (("model", "model_id"), ("list", "list_id")):
+                ref = d.get(k) if isinstance(d, dict) else None
+                if isinstance(ref, dict) and ref.get(id_key) and ref.get("uri"):
+                    _URIS.setdefault((k, ref[id_key]), ref["uri"])
+        return _URIS.get((kind, item_id))
+
+
 def _artifact_file(kind: str, item_id: str, name: str) -> bytes:
     uri = _URIS.get((kind, item_id))
     if uri is None:
-        raise RegistryUnavailable(f"{kind} {item_id!r} 의 ZIP 위치를 모름 (그 번들을 먼저 조회해야 함)")
+        uri = _find_uri(kind, item_id)
+    if uri is None:
+        raise RegistryUnavailable(f"{kind} {item_id!r} 의 ZIP 위치를 모름 (B 의 어느 번들에도 없음)")
     try:
         raw = _blob_store().get(uri)
     except Exception as e:  # noqa: BLE001
