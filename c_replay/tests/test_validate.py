@@ -669,3 +669,59 @@ def test_real_ocr_matches_a_pipeline(tmp_path):
     expected = A.screen_documents(C.DOCS_DIR / tx_id, A.bundle_spec(C.BASELINE_BUNDLE))["result"]
     got = proc({"tx_id": tx_id}, C.BASELINE_BUNDLE)
     assert (got["classification"], got["reasons"]) == (expected["classification"], expected["reasons"])
+
+
+# ---------------------------------------------------------------- 진행 상황 (운영 화면의 진행 막대)
+def test_golden_progress_counts_both_bundles():
+    items, _, proc = _load()
+    seen = []
+    V.golden_result(items, proc, BASE, CAND, progress=lambda d, t: seen.append((d, t)))
+    assert seen == [(0, 4), (1, 4), (2, 4), (3, 4), (4, 4)]     # 골든셋 2건 × 번들 2개
+
+
+def test_replay_progress_counts_failed_tx_too():
+    rows = [past("TX-0001", P), past("TX-0002", H)]
+    proc = table({("TX-0001", CAND): RuntimeError("ocr"), ("TX-0002", CAND): H})
+    seen = []
+    r, _ = V.replay_result(rows, proc, CAND, progress=lambda d, t: seen.append((d, t)))
+    assert r["processed"] == 1 and seen == [(0, 2), (1, 2), (2, 2)]   # 실패한 거래도 처리 시도로 센다
+
+
+class _ProgressLog(MemoryStore):
+    def __init__(self):
+        super().__init__()
+        self.writes = []
+
+    def progress(self, validation_id, stage, done, total):
+        self.writes.append((stage, done, total))
+        return super().progress(validation_id, stage, done, total)
+
+
+def test_progress_writer_writes_first_last_and_every_interval():
+    s, clock = _ProgressLog(), _Clock()
+    s.create(CAND, BASE, "t", validation_id=VID)
+    s.start(VID)
+    write = J.progress_writer(s, VID, "replay", clock=clock, interval=2)
+    for done in range(0, 11):            # 1초에 한 건씩 처리한다고 보면
+        write(done, 10)
+        clock.t += 1
+    assert [d for _, d, _ in s.writes] == [0, 2, 4, 6, 8, 10]    # 처음·마지막 + 2초마다
+    assert s.get(VID)["progress"]["done"] == 10
+
+
+def test_progress_write_failure_does_not_stop_validation(capsys):
+    class Broken(MemoryStore):
+        def progress(self, *a):
+            raise RuntimeError("db down")
+    ok, s, _ = _run(store=Broken())
+    assert ok is True and _only(s)["status"] == "completed"
+    assert "progress_write_failed" in capsys.readouterr().out
+
+
+def test_job_records_progress_while_running():
+    s = _ProgressLog()
+    ok, _, _ = _run(store=s)
+    assert ok is True
+    assert s.writes[0] == ("golden", 0, 4) and ("golden", 4, 4) in s.writes
+    assert s.writes[-1] == ("replay", 2, 2)
+    assert _only(s)["progress"]["stage"] == "replay"          # 끝난 뒤에는 마지막 값이 남는다

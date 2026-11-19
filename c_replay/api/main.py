@@ -1,7 +1,7 @@
 """검증 API (C, 포트 8200). 명세: docs/openapi/c_replay.json
 
   GET  /validations                 최근 순 목록 (bundle_id·status 로 거르기)
-  GET  /validations/{id}            상태·결과
+  GET  /validations/{id}            상태·결과·진행 상황(progress, running 동안 검증 Job 이 적음)
   GET  /validations/{id}/diffs      달라진 거래       (completed 가 아니면 409)
   GET  /admin                       운영 화면 (c_replay/ui/admin.html)
   GET·POST /api/{b|d}/...           운영 화면이 부르는 B·D API 를 그대로 전달 (정해 둔 경로만)
@@ -47,7 +47,7 @@ log = logging.getLogger("c_replay")
 _ID = r"[A-Za-z0-9_-]+"
 PROXY_ROUTES = {
     ("b", "POST"): ("imports", "approvals"),
-    ("b", "GET"): (f"imports/{_ID}", f"bundles/{_ID}", f"bundles/{_ID}/validation"),
+    ("b", "GET"): (f"imports/{_ID}", "bundles/active", f"bundles/{_ID}", f"bundles/{_ID}/validation"),
     ("d", "GET"): (f"deployments/{_ID}",),
     ("d", "POST"): (f"deployments/{_ID}/rollback",),
 }
@@ -101,6 +101,13 @@ class ReplayResult(BaseModel):
     changed_down: int
 
 
+class Progress(BaseModel):
+    stage: Literal["golden", "replay"] = Field(description="golden = 골든셋 검증, replay = Replay")
+    done: int = Field(description="처리한 건수")
+    total: int = Field(description="golden: 골든셋 건수 × 번들 2개, replay: 과거 거래 건수")
+    updated_at: str = Field(description="검증 Job 이 마지막으로 적은 시각")
+
+
 class Validation(BaseModel):
     validation_id: str
     bundle_id: str
@@ -109,6 +116,7 @@ class Validation(BaseModel):
     golden: GoldenResult | None
     replay: ReplayResult | None
     error: Error | None
+    progress: Progress | None = Field(default=None, description="running 동안의 처리 건수. 시작 전이면 null")
     requested_by: str
     created_at: str
     started_at: str | None

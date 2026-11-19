@@ -68,18 +68,24 @@ def _metric(baseline, candidate, ndigits=None) -> dict:
     return {"baseline": baseline, "candidate": candidate, "diff": round(d, ndigits) if ndigits else d}
 
 
-def golden_result(items: list[dict], process, baseline_id: str, candidate_id: str) -> dict:
+def _no_progress(done: int, total: int) -> None:
+    return None
+
+
+def golden_result(items: list[dict], process, baseline_id: str, candidate_id: str, progress=_no_progress) -> dict:
     """GoldenResult. 기대 분류는 정답 라벨에서, 각 번들의 list_id 기준으로 고른다.
     미탐 = 기대보다 낮은 위험도로 분류 (보류->검토, 보류->통과, 검토->통과),
     오탐 = 기대보다 높은 위험도로 분류 (통과->검토, 통과->보류, 검토->보류). 위험도 순서는 _SEVERITY.
     보류->검토도 미탐으로 센다: rules-v3 는 OCR 이 불확실하면 통과가 아니라 검토로 보내므로,
     저하 모델은 '보류->통과'가 아니라 '보류->검토'로 나타난다 (S5 에서 게이트가 막아야 하는 경우).
     한 건이라도 처리에 실패하면 GoldenFailed 로 전체가 실패한다. 일부로 센 정확도는 전체 정확도로 오해되기 때문이다.
-    (replay_result 는 건수 일치 여부(count_match)를 같이 보여 주므로 실패한 거래를 건너뛴다.)"""
+    (replay_result 는 건수 일치 여부(count_match)를 같이 보여 주므로 실패한 거래를 건너뛴다.)
+    progress(done, total): 한 건 처리할 때마다 부른다. total = 골든셋 건수 × 번들 2개."""
     if not items:
         raise EmptyGolden()
     items = sorted(items, key=lambda i: i["tx_id"])
-    stats = {}
+    stats, done, total = {}, 0, len(items) * 2
+    progress(done, total)
     for bid in (baseline_id, candidate_id):
         lv = bundle(bid)["list_id"]
         ok = fn = fp = 0
@@ -92,6 +98,8 @@ def golden_result(items: list[dict], process, baseline_id: str, candidate_id: st
             ok += got == exp
             fn += _SEVERITY[got] < _SEVERITY[exp]
             fp += _SEVERITY[got] > _SEVERITY[exp]
+            done += 1
+            progress(done, total)
         stats[bid] = (round(ok / len(items), 4), fn, fp)
     (ab, nb, pb), (ac, nc, pc) = stats[baseline_id], stats[candidate_id]
     lists = sorted({bundle(b)["list_id"] for b in (baseline_id, candidate_id)})
@@ -103,20 +111,25 @@ def _str(v):
     return None if v is None else str(v)
 
 
-def replay_result(past: list[dict], process, candidate_id: str, log=lambda **kw: None) -> tuple[dict, list[dict]]:
+def replay_result(past: list[dict], process, candidate_id: str, log=lambda **kw: None,
+                  progress=_no_progress) -> tuple[dict, list[dict]]:
     """(ReplayResult, Diff 목록). past 한 건 = {tx_id, bundle_id, classification, reasons, fields} (A 의 기록).
-    처리 중 예외가 난 거래는 processed 에서 빠진다 (count_match=false). 분류가 같으면 필드가 달라도 diff 가 아니다."""
+    처리 중 예외가 난 거래는 processed 에서 빠진다 (count_match=false). 분류가 같으면 필드가 달라도 diff 가 아니다.
+    progress(done, total): 한 건 처리를 시도할 때마다 부른다 (실패한 거래도 센다). total = 과거 거래 건수."""
     ids = [t["tx_id"] for t in past]
     if len(set(ids)) != len(ids):
         dup = sorted({i for i in ids if ids.count(i) > 1})
         raise ValueError(f"과거 기록에 같은 tx_id 가 두 번 이상 있음: {dup[:5]}")   # 결과(tx_id 기준)가 섞인다
     processed, diffs = 0, []
-    for tx in sorted(past, key=lambda t: t["tx_id"]):
+    progress(0, len(past))
+    for i, tx in enumerate(sorted(past, key=lambda t: t["tx_id"]), 1):
         try:
             after = process(tx, candidate_id)
         except Exception as e:  # noqa: BLE001  한 건 실패가 전체를 멈추지 않게 (건수 불일치로 드러난다)
             log(event="replay_tx_failed", tx_id=tx["tx_id"], error=f"{type(e).__name__}: {e}")
+            progress(i, len(past))
             continue
+        progress(i, len(past))
         processed += 1
         b, a = tx["classification"], after["classification"]
         if b == a:
