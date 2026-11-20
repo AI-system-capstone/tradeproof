@@ -31,6 +31,9 @@ api:
   resources:
     requests: { cpu: 50m, memory: 64Mi }
     limits: { memory: 256Mi }   # 측정: 리스트 2개 적재 후 약 45MB
+  # 선택: 파드에 붙일 볼륨. 샘플 서류(data/docs)를 붙이면 "샘플 ID로 접수"가 된다 (예: d_platform/k8s/demo/a-screening-values.yaml)
+  volumes: []
+  volumeMounts: []
 
 # OCR 워커. 번들은 접수 때 거래마다 고정되고 워커는 그 거래의 번들로 처리하므로(A 제안) 워커는 하나만 둔다.
 # 포트가 없어 canary 대상이 아니다.
@@ -47,6 +50,8 @@ worker:
   resources:
     requests: { cpu: 50m, memory: 128Mi }
     limits: { memory: 512Mi }   # 측정: 한 건 처리 시 약 115MB + tesseract
+  volumes: []        # api 와 같은 형식
+  volumeMounts: []
 
 ingress:
   className: nginx

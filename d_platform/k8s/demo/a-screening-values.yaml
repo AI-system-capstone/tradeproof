@@ -1,0 +1,15 @@
+# 시연 키트용 A 차트 추가 값 (scripts/demo_up.sh·demo_reset.sh 가 helm 에, D 배포 API 가 HELM_VALUES_FILES 로 넣는다)
+# 샘플 서류(data/docs)를 A 심사 API·워커에 읽기 전용으로 붙인다 → 검토 화면의 "샘플 ID로 접수"(sample_tx_id)가 된다.
+# 노드의 /data/tradeproof 는 저장소의 data/ 폴더다 (k3d: 클러스터를 만들 때 -v 로 붙임).
+api:
+  volumes:
+    - name: docs
+      hostPath: { path: /data/tradeproof/docs, type: Directory }
+  volumeMounts:
+    - { name: docs, mountPath: /app/data/docs, readOnly: true }
+worker:
+  volumes:
+    - name: docs
+      hostPath: { path: /data/tradeproof/docs, type: Directory }
+  volumeMounts:
+    - { name: docs, mountPath: /app/data/docs, readOnly: true }
