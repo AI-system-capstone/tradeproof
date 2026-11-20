@@ -1,0 +1,6 @@
+{
+  "engine": "tesseract",
+  "lang": "eng",
+  "config": "--oem 1 --psm 6",
+  "preprocess": {"scale": 0.34, "blur": 0.4, "noise_std": 10.0, "salt_pepper": 0.002}
+}
