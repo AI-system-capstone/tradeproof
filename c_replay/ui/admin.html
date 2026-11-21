@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TradeProof 운영 화면</title>
-<!-- M8 운영 화면 (UI-01 반입, UI-02 검증·승인, 배포 상태·롤백).
+<!-- M8 운영 화면 (현재 운영 번들, UI-01 반입, UI-02 검증·승인, 배포 상태·롤백).
      폐쇄망용: 외부 CDN·폰트·라이브러리 없이 HTML+CSS+바닐라 JS 한 파일.
      A의 담당자 검토 화면(a_screening/ui/review.html)과는 별도. -->
 <style>
@@ -34,7 +34,7 @@
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.danger { color: var(--bad); border-color: var(--bad); }
   .out { margin-top: 10px; overflow-x: auto; }
-  .out:empty { display: none; }
+  .out:empty, [data-cerr]:empty, [data-stale]:empty { display: none; }
   table { border-collapse: collapse; width: 100%; }
   th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--muted); font-weight: 500; white-space: nowrap; }
@@ -45,6 +45,25 @@
   .tag.bad { background: var(--bad-bg); color: var(--bad); }
   .err { color: var(--bad); }
   .muted { color: var(--muted); }
+  /* 진행 막대: 새 값까지 조회 간격(5초) 동안 일정한 속도로 늘어난다 (POLL_MS 와 같게) */
+  .stage { display: grid; grid-template-columns: 6.5em minmax(80px, 260px) auto; gap: 4px 10px; align-items: center; margin: 4px 0; }
+  .stage .info { display: flex; flex-wrap: wrap; gap: 0 8px; }
+  .bar { height: 10px; background: var(--line); border-radius: 5px; overflow: hidden; }
+  .fill { height: 100%; background: var(--accent); transition: width 5s linear; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  button.link { border: none; background: none; padding: 0; color: var(--accent); font-weight: 600; text-decoration: underline; }
+  tr[data-diff] { cursor: pointer; }
+  tr[data-diff]:hover td { background: rgba(36, 87, 197, 0.06); }
+  dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text);
+           max-width: 780px; width: 94vw; max-height: 88vh; padding: 16px 18px; }
+  dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+  .dlg-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+  .dlg-head h2 { margin: 0; flex: 1; font-size: 16px; }
+  .diff-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+  @media (max-width: 600px) { .diff-grid { grid-template-columns: 1fr; } }
+  .diff-card { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
+  .diff-card h4 { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -53,6 +72,11 @@
   <label class="row muted">담당자 <input type="text" id="actor" placeholder="이름"></label>
 </header>
 <main>
+  <section>
+    <div class="row"><h2 style="margin:0;flex:1">현재 운영 번들</h2><button id="btnActive">새로고침</button></div>
+    <div class="out" id="activeOut" aria-live="polite"></div>
+  </section>
+
   <section>
     <h2>1. 반입</h2>
     <div class="row">
@@ -91,12 +115,17 @@
   </section>
 </main>
 
+<dialog id="diffDlg" aria-labelledby="diffTitle">
+  <div id="diffBody"></div>
+</dialog>
+
 <script>
 /* 화면은 C 서버 한 곳만 부른다. B·D 는 C 의 중계(/api/b/…, /api/d/…)를 거친다 (브라우저의 다른 출처 호출·CORS 가 필요 없다).
    검증은 B 가 만든 검증 ID 하나로 따라간다: 번들(B) → 검증·게이트(B) → 달라진 거래(C, 같은 검증 ID) → 배포(D).
    기준: B = b_registry/docs/openapi/b_registry.json, C = docs/openapi/c_replay.json, D = docs/openapi/d_platform.json
    B  POST /imports (multipart: package)   -> 201 {import_id, bundle_id}
       GET  /imports/{id}                   -> {status:"APPROVED"|"REJECTED", reason, bundle_id, filename}
+      GET  /bundles/active                 -> {active: 번들 | null, canary: 번들 | null} (둘이 함께 있을 수 있다: 카나리 배포 중)
       GET  /bundles/{id}                   -> {bundle_id, status, model_id, list_id, created_at, base_bundle_id, history:[…], model:{model_id, uri}, list:{list_id, uri}}
                                               history 의 deployment_request:{state:"accepted", deployment_id} 로 배포 ID 를 찾는다
       GET  /bundles/{id}/validation        -> {validation_id, status, baseline_bundle_id, gate:{decision:"passed"|"blocked", reasons, policy}, result:{golden, replay}, error}
@@ -105,16 +134,21 @@
                                            -> 승인 202 {bundle_id, status, deployment_id} (D 에 배포까지 요청함)
                                               승인 200 {bundle_id, status, replacement_bundle_id} (대체 번들이 만들어짐)
                                               반려 200 {from, to, changed_at}
-   C  GET  /validations/{id}/diffs         -> {items:[{tx_id, direction, before:{classification}, after:{classification}}], total}
+   C  GET  /validations/{id}               -> {status, created_at, started_at, progress:{stage:"golden"|"replay", done, total, updated_at} | null}
+                                              검증이 queued·running 일 때만 부른다 (진행 막대·경과 시간용)
+      GET  /validations/{id}/diffs         -> {items:[{tx_id, direction, before:{bundle_id, classification, reasons}, after:{bundle_id, classification, reasons}, fields_changed:[{field, before, after}]}], total}
    D  GET  /deployments/{id}               -> {deployment_id, bundle_id, status, weight, step_index, ...}
       POST /deployments/{id}/rollback      <- {actor, reason}
-   파일로 열면(file://) C 주소는 ?c=… (기본 http://localhost:8200). ?mock=1 이면 서버 없이 예시 데이터로 화면만 본다. */
+   파일로 열면(file://) C 주소는 ?c=… (기본 http://localhost:8200). ?mock=1 이면 서버 없이 예시 데이터로 화면만 본다.
+   ?mock=running 이면 검증이 진행 중인 화면을 본다 (조회할 때마다 처리 건수가 늘어난다). */
 const q = new URLSearchParams(location.search);
 const C_URL = q.get('c') || (location.protocol === 'file:' ? 'http://localhost:8200' : '');
 const BASE = { b: C_URL + '/api/b', c: C_URL, d: C_URL + '/api/d' };
 const MOCK = !q.has('mock') ? null : {
   'POST b/imports': { import_id: 'IMP-1' },
   'GET b/imports': { status: 'APPROVED', reason: null, bundle_id: 'B-9' },
+  'GET b/bundles/active': { canary: null, active: { bundle_id: 'B-7', status: 'active', model_id: 'model-v3', list_id: 'list-v14',
+    created_at: '2026-11-10T09:00:00Z', base_bundle_id: null } },
   'GET b/bundles': { bundle_id: 'B-9', status: 'validated', model_id: 'model-v4', list_id: 'list-v14',
     created_at: '2026-11-16T09:00:00Z', base_bundle_id: 'B-7',
     history: [{ from: 'candidate', to: 'validated', actor: 'b-registry', reason: 'Validation gate passed', changed_at: '2026-11-16T09:30:00Z', validation_id: 'RP-3f9a1c0b7d2e4a5b8c9d0e1f2a3b4c5d' }],
@@ -134,13 +168,39 @@ const MOCK = !q.has('mock') ? null : {
   'POST b/approvals:approve': { bundle_id: 'B-9', status: 'canary', deployment_id: 'DP-1' },
   'POST b/approvals:reject': { from: 'validated', to: 'rejected', changed_at: '2026-11-16T10:00:00Z' },
   'GET c/validations/diffs': { total: 2, items: [
-    { tx_id: 'TX-0012', direction: 'down', before: { classification: 'HIGH_RISK_HOLD' }, after: { classification: 'MANUAL_REVIEW' } },
-    { tx_id: 'TX-0047', direction: 'up', before: { classification: 'PASS_CANDIDATE' }, after: { classification: 'HIGH_RISK_HOLD' } }] },
+    { tx_id: 'TX-0012', direction: 'down',
+      before: { bundle_id: 'B-7', classification: 'HIGH_RISK_HOLD',
+        reasons: [{ rule: 'party_exact', field: 'buyer_name', value: 'ASTERIA HARBOR TRADING LLC', entry_id: 'DEMO-A001', matched_name: 'ASTERIA HARBOR TRADING LLC', score: 1.0, classification: 'HIGH_RISK_HOLD' }] },
+      after: { bundle_id: 'B-9', classification: 'MANUAL_REVIEW',
+        reasons: [{ rule: 'low_confidence', field: 'buyer_name', value: 'ASTERlA HARB0R TRADlNG LLC', entry_id: null, matched_name: null, score: 0.78, classification: 'MANUAL_REVIEW' }] },
+      fields_changed: [{ field: 'buyer_name', before: 'ASTERIA HARBOR TRADING LLC', after: 'ASTERlA HARB0R TRADlNG LLC' }] },
+    { tx_id: 'TX-0047', direction: 'up',
+      before: { bundle_id: 'B-7', classification: 'PASS_CANDIDATE', reasons: [] },
+      after: { bundle_id: 'B-9', classification: 'HIGH_RISK_HOLD',
+        reasons: [{ rule: 'vessel_exact_ocr', field: 'vessel_name', value: 'MV N0RTHERN STAR', entry_id: 'OFAC-1042', matched_name: 'MV NORTHERN STAR', score: 0.94, classification: 'HIGH_RISK_HOLD' }] },
+      fields_changed: [{ field: 'vessel_name', before: 'MV PACIFIC DAWN', after: 'MV N0RTHERN STAR' }] }] },
+  'GET c/validations': mockRunning(),
   'GET d/deployments': { deployment_id: 'DP-1', bundle_id: 'B-9', previous_bundle_id: 'B-7', status: 'progressing',
     weight: 50, step_index: 1, steps: [10, 50, 100], requested_by: 'ops', created_at: '2026-11-16T10:05:00Z' },
   'POST d/deployments': { deployment_id: 'DP-1', bundle_id: 'B-9', previous_bundle_id: 'B-7', status: 'rolled_back',
     weight: 0, step_index: 1, steps: [10, 50, 100], rollback_reason: 'manual' },
 };
+
+// ?mock=running: 조회할 때마다 골든셋 200건(100건 × 번들 2개) → Replay 120건 순으로 처리 건수가 늘어난다
+function mockRunning() {
+  const started = new Date(Date.now() - 42000).toISOString();
+  let calls = 0;
+  return () => {
+    const n = 37 + 30 * calls++, golden = n <= 200;
+    return { validation_id: 'RP-3f9a1c0b7d2e4a5b8c9d0e1f2a3b4c5d', status: 'running', created_at: started, started_at: started,
+      progress: { stage: golden ? 'golden' : 'replay', done: golden ? n : Math.min(n - 200, 120), total: golden ? 200 : 120,
+        updated_at: new Date().toISOString() } };
+  };
+}
+if (MOCK && q.get('mock') === 'running') {
+  Object.assign(MOCK['GET b/bundles'], { status: 'candidate', history: [] });
+  Object.assign(MOCK['GET b/bundles/validation'], { status: 'running', finished_at: null, gate: null, result: null });
+}
 
 const $ = id => document.getElementById(id);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -149,8 +209,9 @@ const seg = v => encodeURIComponent(v.trim());
 async function api(svc, method, path, body) {
   if (MOCK) {
     const segs = path.split('?')[0].split('/').filter(Boolean);
-    const key = `${method} ${svc}/${segs[0]}${['diffs', 'validation'].includes(segs.at(-1)) ? '/' + segs.at(-1) : ''}`;
-    return MOCK[`${key}:${body && body.decision}`] || MOCK[key];
+    const key = `${method} ${svc}/${segs[0]}${['diffs', 'validation', 'active'].includes(segs.at(-1)) ? '/' + segs.at(-1) : ''}`;
+    const m = MOCK[`${key}:${body && body.decision}`] || MOCK[key];
+    return typeof m === 'function' ? m() : m;
   }
   const opt = { method };
   if (body instanceof FormData) opt.body = body;
@@ -174,9 +235,10 @@ function poll(out, again, gen, fails = 0) {
   setTimeout(async () => {
     if (out._gen !== gen) return;
     try {
+      LIVE = null;
       const html = await again();
       if (out._gen !== gen) return;
-      out.innerHTML = html;
+      if (!patchLive(out)) out.innerHTML = html;   // 진행 중인 검증이면 바뀐 숫자·막대만 고친다 (깜빡임·화면 읽기 반복 방지)
       if (out.querySelector('[data-pending]')) poll(out, again, gen);
     } catch (e) {
       if (out._gen !== gen) return;
@@ -204,18 +266,38 @@ const tag = (text, cls = '') => `<span class="tag ${cls}">${esc(text)}</span>`;
 const GOOD = ['APPROVED', 'validated', 'approved', 'active', 'completed', 'succeeded'];
 const BAD = ['REJECTED', 'rejected', 'validation_failed', 'rolled_back', 'failed', 'cancelled'];
 // 번들 상태 풀이 (validated 는 M3 게이트를 통과했고 승인을 기다리는 상태)
-const NOTE = { candidate: '검증 전', validated: '게이트 통과', validation_failed: '게이트 차단', approved: '승인됨', rejected: '반려됨',
+// 검증 상태 풀이 (queued 는 검증 Job 이 행만 만들고 아직 처리를 시작하지 않은 상태)
+const NOTE = { queued: '대기 중', running: '검증 중',
+  candidate: '검증 전', validated: '게이트 통과', validation_failed: '게이트 차단', approved: '승인됨', rejected: '반려됨',
   canary: '일부 트래픽 배포 중', active: '운영 중', cancelled: '취소됨', superseded: '새 번들로 대체됨' };
 const statusTag = s => tag(NOTE[s] ? `${s} · ${NOTE[s]}` : s ?? '-', GOOD.includes(s) ? 'ok' : BAD.includes(s) ? 'bad' : '');
 // 객체의 단순 값만 표로 (응답에 필드가 늘어도 화면을 고치지 않게)
 const kv = o => '<table>' + Object.entries(o).filter(([, v]) => v === null || typeof v !== 'object')
   .map(([k, v]) => `<tr><th>${esc(k)}</th><td>${k === 'status' ? statusTag(v) : esc(v)}</td></tr>`).join('') + '</table>';
 
+// 현재 운영 번들: B 의 active(전체 트래픽)와 canary(일부 트래픽 배포 중). 화면을 열 때, 승인·롤백 뒤에 다시 읽는다
+function bundleRow(name, b) {
+  if (!b) return `<tr><th>${name}</th><td class="muted">없음</td></tr>`;
+  return `<tr><th>${name}</th><td><b>${esc(b.bundle_id)}</b> ${statusTag(b.status)}
+    <span class="muted">모델 ${esc(b.model_id)} · 리스트 ${esc(b.list_id)}${b.created_at ? ` · 등록 ${esc(b.created_at)}` : ''}</span></td></tr>`;
+}
+async function showActive() {
+  const r = await api('b', 'GET', '/bundles/active');
+  return `<table>${bundleRow('운영 중 (active)', r.active)}${bundleRow('카나리 (canary)', r.canary)}</table>
+    ${!r.active && !r.canary ? '<p class="muted">B 에 운영 중인 번들이 없음</p>' : ''}`;
+}
+const refreshActive = () => run($('activeOut'), showActive);
+$('btnActive').onclick = refreshActive;
+refreshActive();
+
 // 1. 반입 (UI-01)
 async function showImport() {
   const r = await api('b', 'GET', `/imports/${seg(need($('importId')))}`);
   if (!r.status) return '<p class="muted">처리 중 (B 가 202 로 답함). 잠시 뒤 다시 조회하세요</p>';
-  if (r.bundle_id) $('bundleId').value = r.bundle_id;
+  if (r.bundle_id) {
+    $('bundleId').value = r.bundle_id;
+    loadBundle(r.bundle_id);
+  }
   return `<p>결과 ${statusTag(r.status)} ${r.bundle_id ? `· 번들 <b>${esc(r.bundle_id)}</b>` : ''}</p>
     ${r.reason ? `<p class="${r.status === 'REJECTED' ? 'err' : 'muted'}">사유: ${esc(r.reason)}</p>` : ''}`;
 }
@@ -251,15 +333,22 @@ async function showBundle(id) {
   if (dep) $('deployId').value = dep.deployment_id;
   return `${kv(b)}
     <table><tr><th>모델 파일</th><td>${esc(b.model && b.model.uri)}</td></tr><tr><th>리스트 파일</th><td>${esc(b.list && b.list.uri)}</td></tr></table>
-    ${await validationOrError(vRes)}`;
+    ${await validationOrError(vRes, b)}`;
 }
-$('btnBundle').onclick = () => {
+function loadBundle(rawId) {
   let id;
-  run($('bundleOut'), () => showBundle(id = seg(need($('bundleId')))), () => showBundle(id));
-};
-async function validationOrError(vRes) {
+  return run($('bundleOut'), () => showBundle(id = seg(rawId ?? need($('bundleId')))), () => showBundle(id));
+}
+$('btnBundle').onclick = () => loadBundle();
+async function validationOrError(vRes, b) {
   if (vRes.status === 'rejected') {
-    if (/^(NOT_FOUND|404)\b/.test(vRes.reason.message)) return '<h3>검증</h3><p class="muted">아직 검증이 없음</p>';
+    if (/^(NOT_FOUND|404)\b/.test(vRes.reason.message)) {
+      // 기준 번들이 있는 candidate 번들은 B 가 자동으로 검증을 시작하므로, 등록 직후 404 여도 계속 조회한다
+      if (b && b.status === 'candidate' && b.base_bundle_id) {
+        return `<h3>검증</h3><p class="muted">${statusTag('queued')} 검증 시작 대기 중…</p>${PENDING}`;
+      }
+      return '<h3>검증</h3><p class="muted">아직 검증이 없음</p>';
+    }
     return `<h3>검증</h3><p class="err">검증 조회 실패: ${esc(vRes.reason.message)}</p>`;
   }
   return showValidation(vRes.value);
@@ -271,25 +360,209 @@ function gateHtml(gate) {
   return `<h3>게이트 (B)</h3><p>${tag(ok ? '통과 · 승인 가능' : '차단', ok ? 'ok' : 'bad')} ${esc((gate.reasons || []).join(' · '))}</p>
     <p class="muted">기준: 정확도 ${esc(p.min_accuracy)} 이상${p.require_complete_replay ? ', Replay 전체 처리' : ''}</p>`;
 }
+// 진행 중인 검증: 상태·시각·처리 건수는 C 의 검증 행에서 읽는다 (B 는 끝난 결과만 받는다)
+// - 경과 시간: 시작 시각(data-since)만 받아 두고 브라우저가 1초마다 센다 (서버를 부르지 않는다)
+// - 막대: 받은 값까지 CSS transition 으로 5초 동안 늘어난다. 숫자는 실제로 받은 값만 보여 준다
+// - 남은 시간: 최근 기록(updated_at, done) 몇 개로 처리 속도를 구해 이 단계의 남은 시간을 10초 단위로 보여 준다
+// - 다시 조회해도 단계·상태가 같으면 숫자·막대만 고친다 (patchLive). 단계가 바뀔 때만 화면 읽기 프로그램에 알린다
+const STAGES = [['golden', '① 골든셋'], ['replay', '② Replay']];
+const STALE_SEC = 60;  // 검증 Job 은 2초마다 적는다. 이보다 오래 소식이 없으면 멈췄을 수 있다고 알려 준다
+const secondsSince = t => Math.max(0, Math.round((Date.now() - Date.parse(t)) / 1000));
+const duration = s => s < 60 ? `${s}초` : `${Math.floor(s / 60)}분 ${s % 60}초`;
+const elapsed = t => t ? ` · 경과 <span data-since="${esc(t)}">${duration(secondsSince(t))}</span>` : '';
+setInterval(() => document.querySelectorAll('[data-since]').forEach(el => {
+  el.textContent = duration(secondsSince(el.dataset.since));
+}), 1000);
+
+let LIVE = null;            // 마지막으로 그린 진행 중 검증 {vid, v, c}. poll 이 patchLive 에 넘긴다
+const SAMPLES = new Map();  // `${검증 ID}|${단계}` -> 최근 기록 [{t, done}] (남은 시간 계산용)
+function remaining(vid, p) {
+  const key = `${vid}|${p.stage}`, list = SAMPLES.get(key) || [], t = Date.parse(p.updated_at);
+  if (!list.length || list.at(-1).t !== t) list.push({ t, done: p.done });
+  SAMPLES.set(key, list.slice(-4));
+  const a = list.at(-4) || list[0], b = list.at(-1), rate = (b.done - a.done) / ((b.t - a.t) / 1000);
+  if (list.length < 2 || !(rate > 0) || p.done >= p.total) return '';
+  return `이 단계 약 ${duration(Math.ceil((p.total - p.done) / rate / 10) * 10)} 남음`;
+}
+const pctOf = p => p.total ? Math.floor(p.done * 100 / p.total) : 0;
+function stageRow(stage, name, p, vid) {
+  const idx = STAGES.findIndex(([k]) => k === stage), cur = p ? STAGES.findIndex(([k]) => k === p.stage) : -1;
+  let body;
+  if (idx < cur) body = `<span>${tag('완료', 'ok')}</span>`;
+  else if (idx > cur) body = '<span class="muted">대기</span>';
+  else body = `<div class="bar" role="progressbar" aria-label="${name} 진행" aria-valuemin="0" aria-valuemax="${esc(p.total)}" aria-valuenow="${esc(p.done)}">
+      <div class="fill" style="width:${pctOf(p)}%"></div></div>
+    <span class="info"><span data-count>${esc(p.done)}/${esc(p.total)} (${pctOf(p)}%)</span><span class="muted" data-eta>${remaining(vid, p)}</span></span>`;
+  return `<div class="stage" data-stage="${stage}"><span>${name}</span>${body.startsWith('<div') ? body : `${body}<span></span>`}</div>`;
+}
+const staleText = p => p && secondsSince(p.updated_at) > STALE_SEC
+  ? `${duration(secondsSince(p.updated_at))} 동안 진행 기록이 없음. 검증 Job 이 멈췄을 수 있습니다` : '';
+const liveKey = (v, c) => `${v.status}|${c && c.progress ? c.progress.stage : '-'}`;
+function liveInner(v, c) {
+  if (v.status === 'queued') return `<p>${statusTag('queued')} 검증 Job 이 시작되기를 기다림${elapsed(v.created_at)}</p>`;
+  const p = c && c.progress;
+  return `<p>${statusTag('running')} ${p ? `${STAGES.find(([k]) => k === p.stage)[1].slice(2)} 처리 중` : '골든셋과 Replay 처리 중'}${elapsed(c && (c.started_at || c.created_at))}</p>
+    ${STAGES.map(([k, name]) => stageRow(k, name, p, v.validation_id)).join('')}
+    ${p && p.stage === 'golden' ? '<p class="muted">골든셋은 운영·후보 번들로 한 번씩 처리하므로 전체 건수가 골든셋의 2배입니다</p>' : ''}
+    <p class="err" data-stale>${staleText(p)}</p>`;
+}
+const announceText = (v, c) => v.status === 'queued' ? '검증 대기 중'
+  : c && c.progress ? `${STAGES.find(([k]) => k === c.progress.stage)[1].slice(2)} 단계 처리 중` : '검증 중';
+// 같은 검증이 같은 단계로 계속 진행 중이면 숫자·막대·남은 시간만 고치고 true. 아니면 false (호출한 쪽이 전체를 다시 그린다)
+function patchLive(out) {
+  const box = out.querySelector('[data-live]');
+  if (!LIVE || !box || box.dataset.live !== LIVE.vid) return false;
+  const { v, c, cErr } = LIVE, p = c && c.progress;
+  const errEl = out.querySelector('[data-cerr]');
+  if (errEl) errEl.textContent = cErr;
+  if (box.dataset.key !== liveKey(v, c)) {   // 상태·단계가 바뀜: 이 칸만 다시 그리고 알린다
+    box.innerHTML = liveInner(v, c);
+    box.dataset.key = liveKey(v, c);
+    out.querySelector('[data-announce]').textContent = announceText(v, c);
+    return true;
+  }
+  if (p) {
+    const row = box.querySelector(`[data-stage="${p.stage}"]`);
+    row.querySelector('.fill').style.width = `${pctOf(p)}%`;
+    row.querySelector('[role=progressbar]').setAttribute('aria-valuenow', p.done);
+    row.querySelector('[data-count]').textContent = `${p.done}/${p.total} (${pctOf(p)}%)`;
+    row.querySelector('[data-eta]').textContent = remaining(v.validation_id, p);
+  }
+  const staleEl = box.querySelector('[data-stale]');
+  if (staleEl) staleEl.textContent = staleText(p);
+  return true;
+}
 // 검증 한 건: 상태·게이트·지표는 B 가 받은 결과, 달라진 거래는 같은 검증 ID 로 C 에서
 const METRICS = [['accuracy', '정확도'], ['false_negative', '미탐'], ['false_positive', '오탐']];
+const CLASS_LABELS = { PASS_CANDIDATE: '통과 후보', MANUAL_REVIEW: '담당자 검토', HIGH_RISK_HOLD: '고위험 보류' };
+const FIELD_LABELS = {
+  invoice_no: '송장 번호', invoice_date: '송장 일자', bl_no: 'B/L 번호', seller_name: '판매자(Shipper)',
+  seller_country: '판매자 국가', buyer_name: '구매자(Consignee)', buyer_country: '구매자 국가', vessel_name: '선박',
+  port_of_loading: '선적항', port_of_discharge: '양하항', goods_description: '품명', currency: '통화', amount: '금액',
+};
+const RULE_LABELS = {
+  party_exact: '당사자 정확 일치', vessel_exact: '선박 정확 일치',
+  party_fuzzy: '당사자 유사', vessel_fuzzy: '선박 유사',
+  party_exact_ocr: '당사자 OCR 혼동 감안 일치', vessel_exact_ocr: '선박 OCR 혼동 감안 일치',
+  party_match_other_doc: '당사자: 다른 서류 값으로 일치', vessel_match_other_doc: '선박: 다른 서류 값으로 일치',
+  low_confidence: 'OCR 신뢰도 낮음', doc_conflict: 'Invoice·B/L 불일치',
+  missing_field: '필드 못 읽음', processing_failed: '처리 실패',
+};
+const clsTag = c => !c ? '-' : tag(CLASS_LABELS[c] ? `${c} · ${CLASS_LABELS[c]}` : c,
+  c === 'PASS_CANDIDATE' ? 'ok' : c === 'HIGH_RISK_HOLD' ? 'bad' : '');
+const fieldName = f => !f ? '-' : (FIELD_LABELS[f] ? `${FIELD_LABELS[f]} (${f})` : f);
+const ruleName = r => !r ? '-' : (RULE_LABELS[r] ? `${RULE_LABELS[r]} (${r})` : r);
+const valCell = v => v === null || v === undefined || v === '' ? '<span class="muted">(없음)</span>' : `<span class="mono">${esc(v)}</span>`;
+
+let DIFFS = [];      // 현재 화면에 그린 달라진 거래 목록 (상세 모달에서 인덱스로 참조)
+let DIFF_META = {};  // { validation_id, baseline_bundle_id, bundle_id }
+
+function reasonKey(r) {
+  return [r.rule, r.field, r.value, r.entry_id, r.matched_name, r.classification].map(v => v ?? '').join('|');
+}
+
+function reasonsHtml(reasons, otherReasons, mode) {
+  const rs = reasons || [];
+  if (!rs.length) return '<p class="muted" style="margin:6px 0">판정 근거 없음 (일치·경고 규칙에 걸리지 않음)</p>';
+  const otherKeys = new Set((otherReasons || []).map(reasonKey));
+  return `<table><tr><th>변화</th><th>규칙</th><th>분류</th><th>필드</th><th>추출 값</th><th>매칭 대상</th><th>점수</th></tr>${rs.map(r => {
+    const same = otherKeys.has(reasonKey(r));
+    const badge = same ? tag('유지') : mode === 'before' ? tag('해제됨', 'bad') : tag('신규', 'ok');
+    const match = [r.matched_name, r.entry_id ? `(${r.entry_id})` : ''].filter(Boolean).join(' ');
+    const score = typeof r.score === 'number' ? r.score.toFixed(2) : (r.score ?? '-');
+    return `<tr><td>${badge}</td><td>${esc(ruleName(r.rule))}</td><td>${r.classification ? clsTag(r.classification) : '-'}</td>
+      <td>${esc(fieldName(r.field))}</td><td>${valCell(r.value)}</td><td>${match ? esc(match) : '<span class="muted">-</span>'}</td>
+      <td class="num">${esc(score)}</td></tr>`;
+  }).join('')}</table>`;
+}
+
+function openDiffDetail(idx) {
+  const d = DIFFS[idx];
+  if (!d) return;
+  const dlg = $('diffDlg'), body = $('diffBody');
+  const bSide = d.before || {}, aSide = d.after || {};
+  const bBundle = bSide.bundle_id || DIFF_META.baseline_bundle_id || '이전';
+  const aBundle = aSide.bundle_id || DIFF_META.bundle_id || '후보';
+  const fc = d.fields_changed || [];
+  const dirTag = tag(d.direction === 'down' ? '위험도 낮아짐' : '위험도 높아짐', d.direction === 'down' ? 'bad' : '');
+  body.innerHTML = `
+    <div class="dlg-head">
+      <h2 id="diffTitle"><span class="mono">${esc(d.tx_id)}</span> Replay 상세 비교 ${dirTag}</h2>
+      <span class="muted">${idx + 1} / ${DIFFS.length}</span>
+      <button type="button" data-nav="${idx - 1}" ${idx <= 0 ? 'disabled' : ''}>◀ 이전 거래</button>
+      <button type="button" data-nav="${idx + 1}" ${idx >= DIFFS.length - 1 ? 'disabled' : ''}>다음 거래 ▶</button>
+      <button type="button" data-close="1">닫기</button>
+    </div>
+    <div class="diff-grid">
+      <div class="diff-card">
+        <h4>이전 판정 (운영 · <span class="mono">${esc(bBundle)}</span>)</h4>
+        <div>${clsTag(bSide.classification)}</div>
+      </div>
+      <div class="diff-card">
+        <h4>후보 판정 (후보 · <span class="mono">${esc(aBundle)}</span>)</h4>
+        <div>${clsTag(aSide.classification)}</div>
+      </div>
+    </div>
+    <h3>바뀐 추출 필드 (${fc.length}건)</h3>
+    ${fc.length ? `<table><tr><th>필드</th><th>이전 값 (${esc(bBundle)})</th><th>후보 값 (${esc(aBundle)})</th></tr>${fc.map(f =>
+      `<tr><td>${esc(fieldName(f.field))}</td><td>${valCell(f.before)}</td><td>${valCell(f.after)}</td></tr>`).join('')}</table>`
+      : '<p class="muted">바뀐 추출 필드 없음 (추출 텍스트는 같고 제재 리스트 또는 판정 근거만 달라짐)</p>'}
+    <h3>이전 판정 근거 (${esc(bBundle)} · ${((bSide.reasons) || []).length}건)</h3>
+    ${reasonsHtml(bSide.reasons, aSide.reasons, 'before')}
+    <h3>후보 판정 근거 (${esc(aBundle)} · ${((aSide.reasons) || []).length}건)</h3>
+    ${reasonsHtml(aSide.reasons, bSide.reasons, 'after')}`;
+  dlg.dataset.idx = String(idx);
+  if (!dlg.open) dlg.showModal();
+}
+
+$('bundleOut').addEventListener('click', e => {
+  const t = e.target.closest('[data-diff]');
+  if (t) openDiffDetail(Number(t.dataset.diff));
+});
+$('diffDlg').addEventListener('click', e => {
+  if (e.target === $('diffDlg') || e.target.closest('[data-close]')) { $('diffDlg').close(); return; }
+  const nav = e.target.closest('[data-nav]');
+  if (nav && !nav.disabled) openDiffDetail(Number(nav.dataset.nav));
+});
+$('diffDlg').addEventListener('keydown', e => {
+  const idx = Number($('diffDlg').dataset.idx);
+  if (e.key === 'ArrowLeft' && idx > 0) { e.preventDefault(); openDiffDetail(idx - 1); }
+  else if (e.key === 'ArrowRight' && idx < DIFFS.length - 1) { e.preventDefault(); openDiffDetail(idx + 1); }
+});
+
 async function showValidation(v) {
+  if (v.status === 'queued' || v.status === 'running') {  // 끝날 때까지 자동으로 다시 조회
+    let c = null, cErr = '';
+    try { c = await api('c', 'GET', `/validations/${seg(v.validation_id)}`); }
+    catch (e) {
+      // 검증 Job 이 C 에 행을 만들기 전(404)이면 정상 대기 상태로 본다
+      if (!/^(NOT_FOUND|404)\b/.test(e.message)) cErr = `진행 상황 조회 실패 (C): ${e.message}`;
+    }
+    if (c && c.status !== 'queued' && c.status !== 'running') c = null;  // C 에서는 이미 끝남: B 가 결과를 받으면 다음 조회에 반영된다
+    const now = c ? { ...v, status: c.status, created_at: c.created_at } : v;
+    LIVE = { vid: v.validation_id, v: now, c, cErr };
+    // data-live 칸 안의 잦은 변화(경과 시간 등)는 읽지 않는다(aria-live=off). 단계가 바뀔 때만 data-announce 로 알린다
+    return `<h3>검증 ${esc(v.validation_id)}</h3><p class="muted">기준 ${esc(v.baseline_bundle_id)} → 후보 ${esc(v.bundle_id)}</p>
+      <div data-live="${esc(v.validation_id)}" data-key="${esc(liveKey(now, c))}" aria-live="off">${liveInner(now, c)}</div>
+      <p class="sr-only" data-announce aria-live="polite"></p><p class="muted" data-cerr>${esc(cErr)}</p>${PENDING}`;
+  }
   const head = `<h3>검증 ${esc(v.validation_id)}</h3><p>${statusTag(v.status)} 기준 ${esc(v.baseline_bundle_id)} → 후보 ${esc(v.bundle_id)}</p>`;
-  if (v.status === 'queued' || v.status === 'running') return head + PENDING;  // 끝날 때까지 자동으로 다시 조회
   if (v.status === 'failed') return `${head}<p class="err">${esc(v.error)}</p>${gateHtml(v.gate)}`;
   const g = v.result && v.result.golden, rp = v.result && v.result.replay;
   if (!g || !rp) return head + gateHtml(v.gate);
   let diffs, diffErr = '';
   try { diffs = (await api('c', 'GET', `/validations/${seg(v.validation_id)}/diffs?limit=200`)).items || []; }
   catch (e) { diffs = []; diffErr = `<p class="err">달라진 거래 조회 실패 (C): ${esc(e.message)}</p>`; }
+  DIFFS = diffs;
+  DIFF_META = { validation_id: v.validation_id, baseline_bundle_id: v.baseline_bundle_id, bundle_id: v.bundle_id };
   return `${head}${gateHtml(v.gate)}
     <h3>골든셋 검증 (${esc(g.total)}건)</h3>
     <table><tr><th>지표</th><th>운영</th><th>후보</th><th>차이</th></tr>${METRICS.map(([k, name]) =>
       `<tr><td>${name}</td><td class="num">${esc(num(g[k].baseline))}</td><td class="num">${esc(num(g[k].candidate))}</td><td class="num">${esc(num(g[k].diff))}</td></tr>`).join('')}</table>
     <h3>Replay</h3>
     <p>처리 ${esc(rp.processed)} / 전체 ${esc(rp.total)} ${tag(rp.count_match ? '건수 일치' : '건수 불일치', rp.count_match ? 'ok' : 'bad')} · 달라진 거래 ${esc(rp.changed)}건 (위험도 낮아짐 ${esc(rp.changed_down)}건)</p>
-    ${diffs.length ? `<table><tr><th>거래</th><th>방향</th><th>이전</th><th>후보</th></tr>${diffs.map(d =>
-      `<tr><td>${esc(d.tx_id)}</td><td>${tag(d.direction === 'down' ? '낮아짐' : '높아짐', d.direction === 'down' ? 'bad' : '')}</td><td>${esc(d.before.classification)}</td><td>${esc(d.after.classification)}</td></tr>`).join('')}</table>` : ''}${diffErr}`;
+    ${diffs.length ? `<table><tr><th>거래</th><th>방향</th><th>이전</th><th>후보</th><th>상세</th></tr>${diffs.map((d, i) =>
+      `<tr data-diff="${i}"><td><button type="button" class="link mono" data-diff="${i}">${esc(d.tx_id)}</button></td><td>${tag(d.direction === 'down' ? '낮아짐' : '높아짐', d.direction === 'down' ? 'bad' : '')}</td><td>${clsTag(d.before && d.before.classification)}</td><td>${clsTag(d.after && d.after.classification)}</td><td><button type="button" data-diff="${i}">상세 보기</button></td></tr>`).join('')}</table>` : ''}${diffErr}`;
 }
 const decide = async decision => {
   let sent = false;
@@ -300,15 +573,18 @@ const decide = async decision => {
     const r = await api('b', 'POST', '/approvals', body);
     sent = true;
     if (decision === 'reject') return `${tag('반려됨', 'bad')} <span class="muted">${esc(r.from)} → ${esc(r.to)}</span>`;
-    if (r.replacement_bundle_id) return `${tag('배포 안 됨', 'bad')} <span class="muted">운영 번들이 바뀌어 이 번들은 ${esc(r.status)} 처리됨</span>
+    if (r.replacement_bundle_id) {
+      $('bundleId').value = r.replacement_bundle_id;
+      return `${tag('배포 안 됨', 'bad')} <span class="muted">운영 번들이 바뀌어 이 번들은 ${esc(r.status)} 처리됨</span>
       <p>대체 번들 <b>${esc(r.replacement_bundle_id)}</b> 이(가) 만들어짐. 다시 검증하고 승인해야 함</p>`;
+    }
     if (r.status !== 'canary' && r.status !== 'active') {
       return `${tag('배포 시작 안 됨', 'bad')} <span class="muted">번들 상태가 ${statusTag(r.status)} 이므로 새 배포가 시작되지 않았습니다${r.deployment_id ? ` (기존 배포 ID ${esc(r.deployment_id)})` : ''}</span>`;
     }
     $('deployId').value = r.deployment_id;
     return `${tag('승인됨', 'ok')} 배포 요청함 · 배포 ID <b>${esc(r.deployment_id)}</b> <span class="muted">번들 상태 ${esc(r.status)}</span>`;
   });
-  if (sent) $('btnBundle').click();  // 버튼 잠금이 풀린 뒤에 번들을 다시 조회
+  if (sent) { $('btnBundle').click(); refreshActive(); }  // 버튼 잠금이 풀린 뒤에 번들·운영 번들을 다시 조회
 };
 $('btnApprove').onclick = () => decide('approve');
 $('btnReject').onclick = () => decide('reject');
@@ -325,7 +601,9 @@ $('btnDeploy').onclick = () => {
 $('btnRollback').onclick = () => run($('deployOut'), async () => {
   const id = need($('deployId')), actor = need($('actor')), reason = $('rollbackReason').value.trim();
   if (!confirm(`배포 ${id}을(를) 롤백할까요?\n사유: ${reason || '없음'}`)) return '';
-  return kv(await api('d', 'POST', `/deployments/${seg(id)}/rollback`, { actor, reason }));
+  const r = await api('d', 'POST', `/deployments/${seg(id)}/rollback`, { actor, reason });
+  refreshActive();  // 롤백하면 운영·카나리 번들이 바뀐다
+  return kv(r);
 });
 </script>
 </body>

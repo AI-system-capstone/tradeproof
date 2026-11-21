@@ -20,6 +20,7 @@ K8s Job(또는 docker 컨테이너)을 만든다 (b_registry/verify/replay.py). 
 
 흐름: 같은 번들의 끝나지 않은 이전 검증 정리 -> 같은 ID 가 이미 끝났으면 그 결과를 다시 보냄
       -> 아니면 검증 행 생성(queued) -> 번들 확인 -> running -> 골든셋·Replay -> completed 또는 failed -> B 에 결과 전송
+진행 상황: running 동안 처리 건수를 validations.progress 에 적는다 (PROGRESS_INTERVAL 초마다, 운영 화면의 진행 막대)
 결과 전송: B 가 200 을 줄 때까지 간격을 늘려 가며 다시 보낸다 (B 의 연동 문서). 409·422 는 다시 보내도 같으므로 멈춘다.
 시간 제한(activeDeadlineSeconds)에 걸리면 K8s 가 SIGTERM 을 보낸다. 검증 행을 만든 뒤라면 어느 지점에서든
 failed 로 저장하고 짧게 전송을 시도한다 (이미 completed 면 결과를 바꾸지 않는다). 처음 신호만 처리하고 이후 신호는 무시한다.
@@ -51,6 +52,8 @@ NOTIFY_MAX_WAIT = 30
 NOTIFY_BUDGET = 600         # 평소: 10분 동안 다시 보낸다 (Job 시간 제한 3600초 안)
 NOTIFY_BUDGET_ON_TERM = 20  # SIGTERM 뒤: 종료 유예(job-template.json 의 30초) 안에 끝나야 한다
 NOTIFY_STOP = (409, 422)    # 다시 보내도 결과가 같은 응답 (ID 불일치·이미 끝난 검증·형식 오류)
+# 진행 상황(validations.progress)은 처음·마지막 건과, 그 사이에는 이 간격(초)마다 한 번만 적는다 (DB 쓰기를 줄이려고)
+PROGRESS_INTERVAL = 2
 
 
 class Terminated(BaseException):
@@ -118,6 +121,23 @@ def no_notify(v: dict, budget: float = 0) -> bool:
     return False
 
 
+def progress_writer(store, vid: str, stage: str, clock=time.monotonic, interval: float = PROGRESS_INTERVAL):
+    """progress(done, total) 함수를 만든다. 처음(0)·마지막(total) 건은 꼭 적고, 그 사이는 interval 초마다 한 번.
+    적다가 실패해도 검증은 계속한다 (진행 막대는 화면 표시용일 뿐 결과에 영향이 없다)."""
+    last = [None]
+
+    def progress(done: int, total: int) -> None:
+        now = clock()
+        if done not in (0, total) and last[0] is not None and now - last[0] < interval:
+            return
+        last[0] = now
+        try:
+            store.progress(vid, stage, done, total)
+        except Exception as e:  # noqa: BLE001
+            V.log(event="progress_write_failed", validation_id=vid, stage=stage, error=f"{type(e).__name__}: {e}")
+    return progress
+
+
 def _execute(vid: str, bundle_id: str, baseline: str, store, load) -> bool:
     """running -> 골든셋·Replay -> completed. 예외면 failed. SIGTERM(Terminated)은 run 에서 처리한다."""
     store.start(vid)
@@ -126,8 +146,10 @@ def _execute(vid: str, bundle_id: str, baseline: str, store, load) -> bool:
         golden, past, process = load()
         other = sum(p["bundle_id"] != baseline for p in past)
         V.log(event="past_bundle_mismatch", baseline_bundle_id=baseline, count=other, total=len(past))
-        g = V.golden_result(golden, process, baseline, bundle_id)
-        r, diffs = V.replay_result(past, process, bundle_id, log=V.log)
+        g = V.golden_result(golden, process, baseline, bundle_id,
+                            progress=progress_writer(store, vid, S.GOLDEN))
+        r, diffs = V.replay_result(past, process, bundle_id, log=V.log,
+                                   progress=progress_writer(store, vid, S.REPLAY))
     except Exception as e:  # noqa: BLE001  실행 자체의 실패 -> failed (지표가 나쁜 것은 completed). Terminated 는 run 이 처리
         if isinstance(e, V.EmptyGolden):
             err = _error(C.ERR_NOT_FOUND, "골든셋이 비어 있음", vid)

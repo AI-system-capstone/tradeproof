@@ -73,7 +73,15 @@ B_URL=http://localhost:8100 D_URL=http://localhost:8300 uvicorn c_replay.api.mai
 - 화면은 C 서버 한 곳만 부른다. B·D는 C의 `/api/b/…`, `/api/d/…` 중계를 거친다. 그래서 B·D에 브라우저 호출 허용(CORS)이 필요 없다.
 - 중계는 화면이 쓰는 경로만 넘긴다(명세 `docs/openapi/c_replay.json`의 `/api/{service}/{path}`).
 - 검증은 B가 만든 검증 ID 하나로 따라간다: 게이트·지표는 B의 `GET /bundles/{id}/validation`, 달라진 거래는 같은 ID로 C의 `/diffs`.
-- 서버 없이 화면만 볼 때: `c_replay/ui/admin.html?mock=1`
+- 화면 맨 위에 현재 운영 번들(active)과 카나리 번들(canary, 일부 트래픽에만 배포 중)을 보여 준다.
+  - B의 `GET /bundles/active`를 읽는다. 화면을 열 때, 승인·롤백 뒤, 새로고침 버튼을 누를 때 다시 읽는다.
+- 검증이 queued·running이면 C의 `GET /validations/{id}`로 경과 시간과 진행 막대(골든셋·Replay 처리 건수)를 보여 준다.
+  - 서버는 5초마다 다시 조회한다. 경과 시간은 브라우저가 1초마다 세고, 막대는 새 값까지 5초 동안 천천히 늘어난다.
+  - 단계는 두 줄(① 골든셋, ② Replay)로 보여 준다. 최근 처리 속도로 "이 단계 약 N초 남음"을 10초 단위로 보여 준다.
+  - 다시 조회해도 단계가 같으면 숫자·막대만 고친다. 화면 읽기 프로그램은 단계가 바뀔 때만 읽어 준다.
+  - 처리 건수는 검증 Job이 `validations.progress`에 적는다. 처음·마지막 건과 그 사이 2초마다 한 번 적는다.
+  - 이미 만든 DB에는 `common/schema/54_c_replay_20261120.sql`을 적용해야 `progress` 컬럼이 생긴다.
+- 서버 없이 화면만 볼 때: `c_replay/ui/admin.html?mock=1` (진행 중 화면은 `?mock=running`)
 
 이미지 빌드 (저장소 루트에서):
 
