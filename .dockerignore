@@ -15,6 +15,6 @@ data/
 # 이미지에 필요 없는 것
 docs/
 deploy/
-d_platform/helm/
+# d_platform/helm/ 은 배포 API 이미지가 쓴다 (argo 드라이버가 클러스터 안에서 helm upgrade)
 d_platform/k8s/
 d_platform/monitoring/

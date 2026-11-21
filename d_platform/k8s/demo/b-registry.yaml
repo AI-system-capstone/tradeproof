@@ -1,0 +1,58 @@
+# 시연 키트(scripts/demo_up.sh)용 B 레지스트리 배포. 네임스페이스 tradeproof.
+# B 가 후보 번들마다 C 검증 Job 을 직접 만든다(VALIDATION_RUNNER=kubernetes) → Job 생성 권한(RBAC)이 필요하다.
+# ConfigMap b-registry-files 는 demo_up.sh 가 만든다:
+#   publisher.pub        반입 ZIP 서명을 확인할 공개키 (scripts/demo_sign.sh 가 만든 data/demo/keys/vendor.pub)
+#   validation-job.json  C 검증 Job 양식 (d_platform/k8s/demo/validation-job.json)
+# D 배포 API 는 클러스터 안 d-platform:8300 (d_platform/k8s/platform/d-platform.yaml)
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: b-registry, namespace: tradeproof }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: b-registry-jobs, namespace: tradeproof }
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: b-registry-jobs, namespace: tradeproof }
+subjects: [{ kind: ServiceAccount, name: b-registry, namespace: tradeproof }]
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: b-registry-jobs }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: b-registry, namespace: tradeproof, labels: { app.kubernetes.io/part-of: tradeproof } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: b-registry } }
+  template:
+    metadata: { labels: { app: b-registry, app.kubernetes.io/part-of: tradeproof } }
+    spec:
+      serviceAccountName: b-registry
+      containers:
+        - name: b-registry
+          image: tradeproof/b-registry:dev
+          imagePullPolicy: Never
+          command: ["sh", "-c", "python -m b_registry.cli check-db && uvicorn b_registry.api.main:app --host 0.0.0.0 --port 8100"]
+          envFrom: [{ secretRef: { name: tradeproof-env } }]
+          env:
+            - { name: TRUST_KEY, value: /run/registry/publisher.pub }
+            - { name: VALIDATION_RUNNER, value: kubernetes }
+            - { name: VALIDATION_JOB_TEMPLATE, value: /run/registry/validation-job.json }
+            - { name: VALIDATION_NAMESPACE, value: tradeproof }
+            - { name: VALIDATION_CALLBACK_BASE_URL, value: "http://b-registry:8100" }
+            - { name: DEPLOYMENT_URL, value: "http://d-platform:8300" }
+          ports: [{ containerPort: 8100 }]
+          readinessProbe: { httpGet: { path: /healthz, port: 8100 }, periodSeconds: 5 }
+          volumeMounts: [{ name: files, mountPath: /run/registry }]
+      volumes: [{ name: files, configMap: { name: b-registry-files } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: b-registry, namespace: tradeproof }
+spec:
+  selector: { app: b-registry }
+  ports: [{ port: 8100, targetPort: 8100 }]

@@ -53,7 +53,15 @@ metadata:
 spec:
   ingressClassName: {{ .Values.ingress.className }}
   rules:
-    - host: {{ .Values.ingress.host | quote }}
+    {{- $hosts := list }}
+    {{- if .Values.ingress.host }}{{ $hosts = append $hosts .Values.ingress.host }}{{ end }}
+    {{- /* matchAnyHost: 호스트 이름 없는 요청도 받는다 (부하 생성기가 localhost 로 보냄).
+           호스트 규칙을 남겨 두는 이유: 호스트 없는 요청은 nginx 기본 서버로 가서 /healthz 를 nginx 가 가로챈다 */}}
+    {{- if or .Values.ingress.matchAnyHost (not .Values.ingress.host) }}{{ $hosts = append $hosts "" }}{{ end }}
+    {{- range $hosts }}
+    - {{- with . }}
+      host: {{ . | quote }}
+      {{- end }}
       http:
         paths:
           - path: /
@@ -63,3 +71,4 @@ spec:
                 name: a-screening-stable
                 port:
                   name: http
+    {{- end }}
