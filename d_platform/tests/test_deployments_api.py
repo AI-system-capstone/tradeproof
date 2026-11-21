@@ -359,3 +359,78 @@ def test_unapproved_initial_bundle_is_still_409(clock):
     client = TestClient(app)
     client.app.state.registry.statuses["B-7"] = "candidate"
     assert_error(client.post("/deployments", json={"bundle_id": "B-7"}, headers=ACTOR), 409, "CONFLICT")
+
+
+# ---------------------------------------------------------------- 백그라운드 확인 (RECONCILE_SECONDS)
+def _wait(cond, seconds=3.0):
+    import time
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if cond():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_watch_finishes_deployment_without_anyone_asking():
+    """화면이 아무도 조회하지 않아도 D 가 스스로 진행을 확인해 반영 완료·B 통보까지 한다."""
+    store, reg = MemoryStore(), FakeRegistry(frozenset({"B-8"}))
+    app = create_app(store=store, driver=FakeDriver(step_seconds=0.02), registry=reg,
+                     env={"BUNDLE_ID": "B-7", "RECONCILE_SECONDS": "0.05"})
+    with TestClient(app) as client:                     # with: 시작·종료 처리(백그라운드 확인)가 돈다
+        dep_id = client.post("/deployments", json={"bundle_id": "B-8"}, headers=ACTOR).json()["deployment_id"]
+        assert _wait(lambda: store.get(dep_id).status == "succeeded")
+        assert [(t["bundle_id"], t["to"]) for t in reg.transitions] == [("B-8", "active")]
+
+
+def test_watch_rolls_back_when_analysis_fails():
+    store, reg = MemoryStore(), FakeRegistry(frozenset({"B-9"}))
+    app = create_app(store=store, driver=FakeDriver(step_seconds=0.02, fail_bundles=frozenset({"B-9"})),
+                     registry=reg, env={"BUNDLE_ID": "B-7", "RECONCILE_SECONDS": "0.05"})
+    with TestClient(app) as client:
+        dep_id = client.post("/deployments", json={"bundle_id": "B-9"}, headers=ACTOR).json()["deployment_id"]
+        assert _wait(lambda: store.get(dep_id).status == "rolled_back")
+        assert store.get(dep_id).rollback_reason == "analysis_failed"
+        assert [(t["bundle_id"], t["to"]) for t in reg.transitions] == [("B-9", "cancelled")]
+
+
+def test_watch_off_by_default(client, clock):
+    """RECONCILE_SECONDS 가 없으면(기본 0) 조회될 때만 확인한다 (기존 동작)."""
+    dep_id = start(client)["deployment_id"]
+    clock.tick(STEP * 3)
+    assert client.app.state.store.get(dep_id).status == "pending"
+    assert client.get(f"/deployments/{dep_id}").json()["status"] == "succeeded"
+
+
+def test_watch_does_not_judge_while_start_is_applying():
+    """배포 시작(helm 적용) 도중에는 백그라운드 확인이 끼어들지 않는다 (11/21 k3d 에서 찾은 경쟁 문제)."""
+    import threading
+
+    applying = threading.Event()
+
+    class SlowStart(FakeDriver):
+        def start(self, dep):
+            applying.set()
+            import time
+            time.sleep(0.3)                      # helm upgrade 가 몇 초 걸리는 것 흉내
+
+        def observe(self, dep, now):
+            if applying.is_set() and not getattr(self, "started", False):
+                raise AssertionError("시작이 끝나기 전에 확인했음")
+            return super().observe(dep, now)
+
+    driver = SlowStart(step_seconds=60)
+    orig = driver.start
+    def start(dep):
+        orig(dep)
+        driver.started = True
+    driver.start = start
+    store = MemoryStore()
+    app = create_app(store=store, driver=driver, registry=FakeRegistry(frozenset({"B-8"})),
+                     env={"BUNDLE_ID": "B-7", "RECONCILE_SECONDS": "0.02"})
+    with TestClient(app) as client:
+        r = client.post("/deployments", json={"bundle_id": "B-8"}, headers=ACTOR)
+        assert r.status_code == 202
+        dep_id = r.json()["deployment_id"]
+        assert not _wait(lambda: store.get(dep_id).status == "failed", 0.5)
+        assert store.get(dep_id).status in ("pending", "progressing")

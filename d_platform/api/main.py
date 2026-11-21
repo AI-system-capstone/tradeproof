@@ -22,6 +22,8 @@
   BUNDLE_ID              배포 이력이 없을 때의 최초 stable 번들 (기본 B-7 = contracts.BASELINE_BUNDLE)
   CORS_ALLOW_ORIGINS     브라우저에서 직접 부를 수 있는 출처(쉼표 구분). 운영 화면(C) 용, 기본 없음
   CANARY_STEPS           canary 단계(쉼표 구분), 기본 10,50,100
+  RECONCILE_SECONDS      진행 중인 배포를 이 간격(초)으로 스스로 확인한다. 0(기본)이면 조회될 때만 확인
+                         (감시가 canary 를 중단하면 화면을 안 열어 둬도 바로 직전 번들로 되돌리려고)
 """
 from __future__ import annotations
 
@@ -29,8 +31,10 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Callable
 
@@ -135,7 +139,38 @@ def create_app(store=None, driver=None, registry=None,
     initial_bundle = env.get("BUNDLE_ID", "B-7")
     steps = [int(s) for s in env.get("CANARY_STEPS", "10,50,100").split(",")]
 
-    app = FastAPI(title="TradeProof d_platform — 배포 API", version="0.1.0")
+    reconcile_seconds = float(env.get("RECONCILE_SECONDS", "0"))
+    # 조회 요청과 백그라운드 확인이 같은 배포를 동시에 확정·롤백하지 않도록 (롤백이 두 번 일어나지 않게)
+    lock = threading.RLock()
+    stop = threading.Event()
+
+    def watch() -> None:
+        """진행 중인 배포를 주기적으로 확인한다. 감시(AnalysisRun)가 canary 를 중단하면 여기서 롤백까지 한다."""
+        while not stop.wait(reconcile_seconds):
+            try:
+                running = store.in_progress()
+                if running is not None:
+                    reconcile(running)
+                for dep in store.latest(5):           # B 에 못 알린 결과도 다시 알린다
+                    if dep.analysis.get("registry_sync") == "pending":
+                        reconcile(dep)
+            except Exception as e:  # noqa: BLE001  확인이 실패해도 다음 주기에 다시 한다
+                _log(level="warning", event="watch_failed", error=f"{type(e).__name__}: {e}")
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        thread = None
+        if reconcile_seconds > 0:
+            thread = threading.Thread(target=watch, name="deployment-watch", daemon=True)
+            thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            if thread is not None:
+                thread.join(timeout=5)
+
+    app = FastAPI(title="TradeProof d_platform — 배포 API", version="0.1.0", lifespan=lifespan)
     app.state.store, app.state.driver, app.state.registry = store, driver, registry
 
     origins = sorted(_csv(env.get("CORS_ALLOW_ORIGINS")))
@@ -224,6 +259,11 @@ def create_app(store=None, driver=None, registry=None,
 
     def reconcile(dep: M.Deployment) -> M.Deployment:
         """진행 중인 배포를 드라이버가 본 실제 상태에 맞춰 deployments 에 적는다."""
+        with lock:
+            # 기다리는 동안 다른 쪽이 먼저 확정했을 수 있다 → 저장된 최신 상태로 판단
+            return _reconcile(store.get(dep.deployment_id) or dep)
+
+    def _reconcile(dep: M.Deployment) -> M.Deployment:
         if not dep.in_progress:
             change = dep.analysis.get("registry_change")
             if dep.analysis.get("registry_sync") == "pending" and change:   # B 에 못 알린 결과를 다시 알린다
@@ -323,21 +363,24 @@ def create_app(store=None, driver=None, registry=None,
             status=M.PENDING, requested_by=x_actor, steps=list(steps),
             analysis={"result": "running", "checks": []}, created_at=now, updated_at=now,
         )
-        try:
-            store.create(dep)
-        except InProgressExists:
-            other = store.in_progress()
-            raise ApiError(409, ERR_CONFLICT, "진행 중인 배포가 있음",
-                           other.deployment_id if other else None) from None
-        # B 에는 canary 를 보내지 않는다: B 가 이 요청의 202 를 받은 뒤 스스로 canary 로 바꾼다 (B PR #8, 11/17).
-        try:
-            driver.start(dep)
-        except DriverError as e:        # 시작하지 못한 배포는 failed 로 닫아 다음 배포를 막지 않는다
-            # B 에도 알리지 않는다. B 는 이 요청의 응답(503)을 보고, 다시 물을 때 GET /deployments 의 failed 로 정리한다.
-            dep.analysis = {**dep.analysis, "result": "failed", "message": str(e)}
-            finish(dep, M.FAILED, clock())
-            store.save(dep)
-            raise
+        # 기록 → 클러스터 적용(helm) 이 끝날 때까지 백그라운드 확인이 끼어들지 않게 잠근다.
+        # (helm 이 끝나기 전에 보면 클러스터는 아직 직전 번들이라 "배포 밖에서 바뀜" 으로 잘못 실패 처리됨)
+        with lock:
+            try:
+                store.create(dep)
+            except InProgressExists:
+                other = store.in_progress()
+                raise ApiError(409, ERR_CONFLICT, "진행 중인 배포가 있음",
+                               other.deployment_id if other else None) from None
+            # B 에는 canary 를 보내지 않는다: B 가 이 요청의 202 를 받은 뒤 스스로 canary 로 바꾼다 (B PR #8, 11/17).
+            try:
+                driver.start(dep)
+            except DriverError as e:        # 시작하지 못한 배포는 failed 로 닫아 다음 배포를 막지 않는다
+                # B 에도 알리지 않는다. B 는 이 요청의 응답(503)을 보고, 다시 물을 때 GET /deployments 의 failed 로 정리한다.
+                dep.analysis = {**dep.analysis, "result": "failed", "message": str(e)}
+                finish(dep, M.FAILED, clock())
+                store.save(dep)
+                raise
         _log(level="info", event="deployment_started", deployment_id=dep.deployment_id,
              bundle_id=dep.bundle_id, previous_bundle_id=previous, actor=x_actor)
         response.headers["Location"] = f"/deployments/{dep.deployment_id}"
@@ -362,6 +405,10 @@ def create_app(store=None, driver=None, registry=None,
         actor = x_actor or body_actor
         if not actor:
             raise ApiError(422, ERR_VALIDATION, "X-Actor 헤더 또는 본문의 actor 가 필요함", deployment_id)
+        with lock:
+            return _rollback(deployment_id, actor, body)
+
+    def _rollback(deployment_id: str, actor: str, body: RollbackRequest | None):
         dep = load(deployment_id)
         was_succeeded = dep.status == M.SUCCEEDED
         if dep.analysis.get("initial"):

@@ -54,11 +54,31 @@ spec:
             failureThreshold: 3
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
+          {{- with .Values.api.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.api.volumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
   strategy:
     canary:
       stableService: a-screening-stable
       canaryService: a-screening-canary
       scaleDownDelaySeconds: {{ .Values.canary.scaleDownDelaySeconds }}
+      {{- if .Values.analysis.enabled }}
+      # canary 동안 후보 번들 지표를 계속 검사한다 (templates/analysis.yaml). 실패하면 Argo 가 중단 → D 가 롤백
+      analysis:
+        templates:
+          - templateName: a-screening-canary
+        startingStep: 1
+        args:
+          - name: candidate
+            value: {{ $bundle | quote }}
+          - name: stable
+            value: {{ .Values.bundle.stable | quote }}
+      {{- end }}
       trafficRouting:
         nginx:
           stableIngress: a-screening     # Argo 가 a-screening-a-screening-canary Ingress 를 만들어 가중치를 조절한다
