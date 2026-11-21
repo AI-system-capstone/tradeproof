@@ -1,0 +1,41 @@
+{
+  "apiVersion": "batch/v1",
+  "kind": "Job",
+  "metadata": {
+    "name": "registry-replay-template",
+    "labels": { "app": "c-validation" }
+  },
+  "spec": {
+    "backoffLimit": 0,
+    "activeDeadlineSeconds": 3600,
+    "ttlSecondsAfterFinished": 86400,
+    "template": {
+      "metadata": { "labels": { "app": "c-validation" } },
+      "spec": {
+        "restartPolicy": "Never",
+        "terminationGracePeriodSeconds": 30,
+        "containers": [
+          {
+            "name": "c-validation",
+            "image": "tradeproof/c-replay-job:dev",
+            "imagePullPolicy": "Never",
+            "command": ["python", "-m", "c_replay.job"],
+            "envFrom": [{ "secretRef": { "name": "tradeproof-env" } }],
+            "env": [
+              { "name": "B_URL", "value": "http://b-registry:8100" },
+              { "name": "REGISTRY_MODE", "value": "http" }
+            ],
+            "volumeMounts": [
+              { "name": "docs", "mountPath": "/app/data/docs", "readOnly": true },
+              { "name": "sanctions", "mountPath": "/app/data/sanctions", "readOnly": true }
+            ]
+          }
+        ],
+        "volumes": [
+          { "name": "docs", "hostPath": { "path": "/data/tradeproof/docs", "type": "Directory" } },
+          { "name": "sanctions", "hostPath": { "path": "/data/tradeproof/sanctions", "type": "Directory" } }
+        ]
+      }
+    }
+  }
+}

@@ -24,11 +24,11 @@
 - [ ] compose에 A 서비스 2개(`a-screening` API, `a-ocr-worker`) 연결 — A 코드가 `BUNDLE_ID`를 읽는 변경이 `main`에 들어온 뒤. 그때까지 A의 번들 목록은 B-7~B-10이라 `BUNDLE_ID=B-1`로는 뜨지 않는다
 - [x] 배포 API: 미승인 409, 진행 중 배포 409, `deployments` 기록 (가짜 드라이버)
 - [x] k3s + ingress-nginx + Argo Rollouts: `helm/a-screening` 차트(더미 이미지), `BUNDLE_ID` 주입, canary 10→50→100 수동 승격·abort·undo 확인 (DEP-03·04·05). 데이터 계층(`k8s/data/`)도 올림
-- [ ] 차트에 A의 실제 이미지 2개(API·워커) 넣기 — A의 `BUNDLE_ID` 변경이 `main`에 들어온 뒤
+- [x] 차트에 A의 실제 이미지 2개(API·워커) (A #23), 샘플 서류 볼륨 선택 값(`api.volumes`·`worker.volumes`)
 - [ ] TODO(A와 확정): 워커 canary — A 제안은 "워커는 하나, 번들은 접수 때 거래마다 고정(`screening_jobs.bundle_id`), canary는 API Rollout만 나눈다". 워커 지표는 A의 API `/metrics`가 DB에서 `bundle_id`별로 집계(`tradeproof_screening_failed_total`, `tradeproof_screening_processing_seconds_avg`)
 - [ ] Prometheus 수집(MON-01), AnalysisTemplate로 단계별 분석 → 기준 초과 시 자동 중단 → 직전 번들 복원(MON-02). B에는 배포 API가 `cancelled`를 보낸다
 - [x] 배포 API 실제 드라이버(`DEPLOY_DRIVER=argo`): `deploy/values-dev.yaml`을 쓰고 Helm으로 canary 시작, 롤백(진행 중·반영 뒤 같은 방식, undo 없음), 밖에서 중단된 배포 감지. k3s에서 확인
-- [ ] 배포 API를 k3s 안에서 띄우기 — 이미지에 `helm`·`kubectl`(+ argo rollouts 플러그인)과 차트를 넣고, Rollout·Ingress·Secret 권한(RBAC)을 준다. 지금은 WSL에서 kubeconfig로 실행
+- [x] 배포 API를 클러스터 안에서 띄우기: 이미지에 helm·kubectl·Argo Rollouts 플러그인·A 차트(`Dockerfile`), 배포 파일·권한(`k8s/platform/d-platform.yaml`). 시연 키트가 같이 올린다 (11/21)
 - [ ] 감지 시간·전환 시간 측정 도구
 - [ ] 트래픽·이상 입력 도구 (TST-07·08)
 - [ ] 검증 Job(골든셋 검증 + Replay) 템플릿(Indexed Job)·RBAC (C·B와 협의)
@@ -100,6 +100,8 @@
 - 상태값·ID 접두사를 `common/contracts.py`·`common/ids.py`로 옮기기
 
 ## 시연 환경 (k3s)
+
+**시연 키트 (k3d, 명령 하나로):** [`k8s/demo/README.md`](k8s/demo/README.md) — `scripts/demo_up.sh`가 클러스터·A·B·C·데이터 계층·최초 번들 B-7까지 올린다. 아래는 그 구성의 바탕이 된 k3s 수동 절차와 측정값이다.
 
 k3s(`--disable traefik`) + ingress-nginx + Argo Rollouts가 설치돼 있어야 한다. 네임스페이스는 `tradeproof`.
 Argo Rollouts는 `kubectl apply --server-side`로 설치한다(일반 apply는 `rollouts`·`analysisruns` CRD가 너무 커서 실패).
