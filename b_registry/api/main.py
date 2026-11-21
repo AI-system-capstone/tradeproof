@@ -14,6 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from common import contracts as C
 from b_registry import contracts as B
 from b_registry.api.schemas import ValidationCallback, ValidationRunResult, ApprovalRequest, DeploymentRequest, DeploymentResult, ActiveBundles, BundleResult, ErrorResponse, ImportAccepted, BundleRegistered, Transition, TransitionResult, VerificationResult
+from b_registry.api.schemas import ValidationRetryRequest, DeploymentRecoveryRequest, DeploymentRecoveryResult
 from b_registry.config import Settings
 from b_registry.db import Bundle, AIModel, SanctionsList, Database, Import, iso
 from b_registry.storage import Artifacts, StorageUnavailable, make_store
@@ -21,7 +22,7 @@ from b_registry.verify.replay import ValidationJobRunner, RunnerUnavailable
 from b_registry.verify.release import ReleaseService
 from b_registry.verify.workflow import Conflict, ImportService, NotFound, transition
 from b_registry.verify.worker import ReplayWorker
-from b_registry.verify.deployment import DeploymentClient, DeploymentUnavailable, request_deployment
+from b_registry.verify.deployment import DeploymentClient, DeploymentUnavailable, request_deployment, recover_deployment
 from b_registry.verify.validation import ValidationFailure
 
 logger = logging.getLogger(__name__)
@@ -215,6 +216,22 @@ def create_app(cfg=None, db=None, store=None, deployment_client=None, validation
         result = transition(db, bundle_id, body.to, actor, body.reason)
         worker.notify()
         return result
+
+    @app.post("/bundles/{bundle_id}/validations", status_code=202, response_model=ValidationRunResult,
+              response_model_exclude_none=True, summary="Retry an execution-failed validation")
+    def retry_validation(bundle_id: str, body: ValidationRetryRequest, request: Request):
+        if request.headers.get("X-Actor", body.actor) != body.actor:
+            raise HTTPException(422, "X-Actor and actor must match")
+        result = releases.start(bundle_id, body.actor, body.reason, retry_only=True)
+        worker.notify()
+        return result
+
+    @app.post("/bundles/{bundle_id}/deployment-recovery", response_model=DeploymentRecoveryResult,
+              summary="Release a pending request after operator confirmation on D")
+    def recover_pending_deployment(bundle_id: str, body: DeploymentRecoveryRequest, request: Request):
+        if request.headers.get("X-Actor", body.actor) != body.actor:
+            raise HTTPException(422, "X-Actor and actor must match")
+        return recover_deployment(db, bundle_id, body.actor, body.reason, body.expected_changed_at, deployment_client)
 
     @app.post("/bundles/{bundle_id}/validation-results/{validation_id}", response_model=ValidationRunResult,
               response_model_exclude_none=True)

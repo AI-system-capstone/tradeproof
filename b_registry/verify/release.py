@@ -7,24 +7,34 @@ from common import contracts as C
 from b_registry.db import Bundle, iso, now
 from b_registry.verify.gate import evaluate, policy, has_passed_validation
 from b_registry.verify.workflow import Conflict, NotFound, record, deployment_attempt
+from b_registry.verify.replay import RunnerUnavailable
 
 
 class ReleaseService:
     def __init__(self, db, cfg, runner):
         self.db, self.cfg, self.runner = db, cfg, runner
 
-    def start(self, bid, actor, reason, baseline=None):
+    def start(self, bid, actor, reason, baseline=None, *, retry_only=False):
         with self.db.transaction() as s:
             bundle = s.get(Bundle, bid)
             if bundle is None:
                 raise NotFound("Bundle not found")
             current = bundle.validation or {}
+            if retry_only and (bundle.status != C.REGISTRY_CANDIDATE
+                               or current.get("status") != C.REGISTRY_VALIDATION_FAILED):
+                raise Conflict("Only an execution-failed candidate can be retried; gate failures are not retryable here")
             if current.get("status") in C.REGISTRY_VALIDATION_PENDING:
                 if baseline is not None and baseline != current["baseline_bundle_id"]:
                     raise Conflict("A different validation is already running")
                 return current
-            if current.get("status") == C.REGISTRY_VALIDATION_FAILED and self.runner.state(current) == "running":
-                raise Conflict("Previous validation Job is still running; finish it before retrying")
+            if current.get("status") == C.REGISTRY_VALIDATION_FAILED:
+                try:
+                    self.runner.check()
+                    state = self.runner.state(current)
+                except Exception as error:
+                    raise RunnerUnavailable("Cannot confirm previous validation Job state; retry was not started") from error
+                if state not in ("failed", "succeeded", "missing"):
+                    raise Conflict("Previous validation Job is still running; finish it before retrying")
             if bundle.status not in (C.REGISTRY_CANDIDATE, C.REGISTRY_VALIDATION_FAILED_BUNDLE):
                 raise Conflict("Only candidates or failed validation bundles can be validated")
             if deployment_attempt(bundle).get("state") in ("pending", "accepted"):
@@ -43,6 +53,10 @@ class ReleaseService:
                    "created_at": iso(now()), "policy": policy(), "gate": None,
                    "result": None, "error": None}
             bundle.validation_id, bundle.validation = vid, run
+            if current:
+                bundle.history = [*(bundle.history or []), {"from": bundle.status, "to": bundle.status,
+                    "actor": actor, "reason": reason, "changed_at": iso(now()),
+                    "previous_validation": current}]
             bundle.history = [*(bundle.history or []), {"from":bundle.status, "to":bundle.status,
                 "actor":actor, "reason":reason, "changed_at":iso(now()), "validation_id":vid}]
             return run
