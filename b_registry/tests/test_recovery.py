@@ -37,23 +37,48 @@ def recovery_body(stamp):
             "expected_changed_at": stamp, "confirmed_not_received": True}
 
 
-def test_unicode_actor_is_not_sent_and_does_not_block_deployment(service, monkeypatch):
+def test_unicode_actor_is_sent_in_body_with_ascii_safe_header(service, monkeypatch):
     bid = ready(service)
     calls = []
     def post(url, **kwargs):
+        httpx.Headers(kwargs["headers"])          # must be a valid (ASCII) header
         calls.append(kwargs)
-        return httpx.Response(202, json={"bundle_id": bid, "deployment_id": "DP-retry", "status": "pending"})
+        return httpx.Response(202, json={"bundle_id": bid, "deployment_id": "DP-1", "status": "pending"})
     monkeypatch.setattr(httpx, "post", post)
     client = client_for(service, DeploymentClient("http://d:8300"))
     response = client.post("/approvals", json={"bundle_id":bid,"decision":"approve","actor":"지윤아","reason":"승인"})
-    assert response.status_code == 503 and "ASCII X-Actor" in response.json()["message"]
-    assert calls == []
+    assert response.status_code == 202 and response.json()["status"] == "canary"
+    assert calls[0]["json"] == {"bundle_id": bid, "actor": "지윤아"}
+    assert calls[0]["headers"]["X-Actor"] == "%EC%A7%80%EC%9C%A4%EC%95%84"
+
+
+def test_d_503_start_failure_allows_approving_again(service, monkeypatch):
+    """D answers 503 when it could not start (it records a failed row); B must not cancel the bundle."""
+    bid = ready(service)
+    replies = [httpx.Response(503, json={"code": "SERVICE_UNAVAILABLE", "message": "cluster", "target_id": None}),
+               httpx.Response(202, json={"bundle_id": bid, "deployment_id": "DP-2", "status": "pending"})]
+    monkeypatch.setattr(httpx, "post", lambda url, **kw: replies.pop(0))
+    client = client_for(service, DeploymentClient("http://d:8300"))
+    body = {"bundle_id":bid,"decision":"approve","actor":"operator","reason":"deploy"}
+    assert client.post("/approvals", json=body).status_code == 503
     with service.db.sessions() as s:
-        bundle = s.get(Bundle, bid)
-        assert deployment_attempt(bundle)["state"] == "failed"
-        assert bundle.history[-1]["actor"] == "지윤아"
-    response = client.post("/approvals", json={"bundle_id":bid,"decision":"approve","actor":"yoona","reason":"retry"})
-    assert response.status_code == 202 and len(calls) == 1
+        assert deployment_attempt(s.get(Bundle, bid))["state"] == "failed"
+    response = client.post("/approvals", json=body)
+    assert response.status_code == 202 and response.json()["deployment_id"] == "DP-2"
+
+
+def test_find_uses_newest_row_when_bundle_has_several(monkeypatch):
+    rows = [{"bundle_id":"B-9","deployment_id":"DP-new","status":"progressing"},
+            {"bundle_id":"B-9","deployment_id":"DP-old","status":"failed"}]
+    monkeypatch.setattr(httpx,"get",lambda *a,**kw:httpx.Response(200,json=rows,request=httpx.Request("GET","http://d/deployments")))
+    assert DeploymentClient("http://d").find("B-9")["deployment_id"] == "DP-new"
+
+
+def test_find_ignores_unexpected_rows_of_other_bundles(monkeypatch):
+    rows = [{"bundle_id":"B-3","deployment_id":"DP-x","status":"some-new-status"},
+            {"bundle_id":"B-9","deployment_id":"DP-9","status":"succeeded"}]
+    monkeypatch.setattr(httpx,"get",lambda *a,**kw:httpx.Response(200,json=rows,request=httpx.Request("GET","http://d/deployments")))
+    assert DeploymentClient("http://d").find("B-9")["deployment_id"] == "DP-9"
 
 
 @pytest.mark.parametrize("error_type", [httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout])
@@ -160,7 +185,7 @@ def test_recovery_rechecks_pending_identity_after_lookup(service):
     ([],DeploymentNotFound),
     ([{"bundle_id":"other","deployment_id":"DP-other","status":"succeeded"}]*100,DeploymentUnavailable),
     ([{}],DeploymentUnavailable),
-    ([{"bundle_id":"other"}],DeploymentUnavailable),
+    ([{"bundle_id":"other"}],DeploymentNotFound),
 ])
 def test_listing_does_not_treat_truncation_as_proof(monkeypatch, rows, expected):
     monkeypatch.setattr(httpx,"get",lambda *a,**kw:httpx.Response(200,json=rows,request=httpx.Request("GET","http://d/deployments")))

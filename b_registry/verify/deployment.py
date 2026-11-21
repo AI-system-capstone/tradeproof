@@ -1,4 +1,6 @@
 """B owns deployment requests; D owns traffic changes. No automatic POST retries."""
+from urllib.parse import quote
+
 import httpx
 from sqlalchemy import select
 from b_registry.db import Bundle, iso, now
@@ -27,18 +29,17 @@ class DeploymentClient:
         self.url = url.rstrip("/")
 
     def request(self, bid, actor):
-        # D currently accepts the actor only in a header. Do not silently encode
-        # or replace the name: D would persist the wrong actor without a contract change.
+        # The original actor (e.g. a Korean name) travels in the JSON body; D records it as-is.
+        # HTTP headers are ASCII-only, so X-Actor carries the percent-encoded form (D decodes it).
         try:
-            httpx.Headers({"X-Actor": actor})
-        except (UnicodeError, ValueError) as error:
-            raise DeploymentNotSent("D currently requires an ASCII X-Actor; request was not sent. "
-                                    "Unicode actor support requires a D API change") from error
-        try:
-            response = httpx.post(self.url + "/deployments", json={"bundle_id": bid},
-                                  headers={"X-Actor": actor}, timeout=httpx.Timeout(5, connect=2))
+            response = httpx.post(self.url + "/deployments", json={"bundle_id": bid, "actor": actor},
+                                  headers={"X-Actor": quote(actor, safe="")}, timeout=httpx.Timeout(5, connect=2))
             if 400 <= response.status_code < 500:
                 raise DeploymentRejected(f"D rejected deployment: HTTP {response.status_code}")
+            if response.status_code == 503:
+                # D answers 503 only when it could not start the deployment (cluster or registry
+                # unavailable); it records that attempt as failed, so approving again is safe.
+                raise DeploymentNotSent("D could not start the deployment (HTTP 503); approve again to retry")
             if response.status_code != 202:
                 raise DeploymentUnavailable("D deployment acceptance could not be confirmed")
             return self._check(response.json(), bid)
@@ -59,13 +60,15 @@ class DeploymentClient:
             for item in rows:
                 if not isinstance(item.get("bundle_id"), str) or not item["bundle_id"]:
                     raise DeploymentUnavailable("Invalid D deployment listing")
-                self._check(item, item["bundle_id"])
-            matches = [item for item in rows if item.get("bundle_id") == bid]
+            # Only this bundle's rows must match the contract; other bundles' rows are not our concern.
+            matches = [self._check(item, bid) for item in rows if item["bundle_id"] == bid]
             if not matches and len(rows) < 100:
                 raise DeploymentNotFound("No deployment found; operator confirmation is required before recovery")
-            if len(matches) != 1:
+            if not matches:
                 raise DeploymentUnavailable("Deployment outcome is unknown; POST was not retried")
-            return self._check(matches[0], bid)
+            # D lists newest first. An earlier attempt for the same bundle (e.g. a failed start
+            # answered with 503) may remain; the newest row is the one this request created.
+            return matches[0]
         except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as error:
             raise DeploymentUnavailable("Cannot reconcile D deployment outcome") from error
 
