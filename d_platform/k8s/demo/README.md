@@ -92,6 +92,29 @@ canary 비율을 직접 보려면 터미널에서:
 for i in $(seq 40); do curl -s -H 'Host: tradeproof.local' localhost:8081/healthz | python3 -c 'import json,sys;print(json.load(sys.stdin)["bundle_id"])'; done | sort | uniq -c
 ```
 
+### 감시 → 자동 롤백 (MON-02)
+
+canary 동안 Prometheus가 A의 지표를 번들별로 모으고, Argo가 10초마다 후보 번들을 검사합니다(`d_platform/helm/a-screening/templates/analysis.yaml`).
+
+| 기준 | 값 | 넘으면 |
+|---|---|---|
+| 처리 시간: 후보 평균 / 운영 번들 평균 | 2배 이하 | 두 번째 측정까지 넘으면 Argo가 canary 중단 |
+| 처리 실패: 후보 실패 / 후보 판정 건수 | 10% 이하 | 〃 |
+| 판단 시작 | 후보가 5건 이상 처리한 뒤 | 그 전에는 시간대로 진행 |
+
+중단되면 D 배포 API가 5초 안에 알아채(화면을 안 열어 둬도) 직전 번들로 되돌리고 B에 `cancelled`를 알립니다.
+
+1. `5-MON-slow-model-v3N.zip`을 반입합니다. 정확도는 기준 이상이라 **게이트를 통과**합니다(처리 시간만 느린 모델, `scripts/demo/models/slow.json` — 임시, A 확인 필요).
+2. 승인한 뒤 바로 다른 터미널에서 심사 트래픽을 넣습니다.
+
+   ```bash
+   scripts/demo_traffic.sh          # 초당 1건, 5분. 샘플 서류로 실제 OCR 심사 (A 의 loadgen.py)
+   ```
+3. 50% 단계쯤에서 후보의 처리 시간이 기준을 넘어 canary가 멈추고 B-7로 돌아갑니다. 운영 화면에서 배포는 `rolled_back`(`analysis_failed`), 번들은 `cancelled`.
+4. 개선 모델(`4-S4-…`)은 같은 트래픽에서 감시를 통과해 끝까지 반영됩니다.
+
+Prometheus 화면: `kubectl --context k3d-tradeproof -n tradeproof port-forward svc/prometheus 9090` → http://localhost:9090 (예: `tradeproof_screening_processing_seconds_avg`).
+
 ## 5. 다시 하기 / 끄기
 
 ```bash
@@ -148,6 +171,20 @@ WSL2 우분투, 메모리 8GB·CPU 4개(`.wslconfig`), Docker Desktop, k3d v5.8.
 | D 파드 안 번들 값 파일 | 반영 뒤 `stable: B-12`, 롤백 뒤 직전 번들로 다시 씀 |
 | `scripts/demo_reset.sh` 뒤 | D 조회 정상(최초 번들 B-7 `succeeded`), 샘플 접수 정상 |
 
+### 감시 → 자동 롤백 (2026-11-21)
+
+| 확인 | 결과 |
+|---|---|
+| 느린 모델(2.4배 확대) 검증 | 게이트 통과: 정확도 0.89 → 0.93, 미탐 0 (검증 354초) |
+| 느린 모델 canary + 트래픽(초당 1건) | 50% 단계에서 처리 시간 3.9배 → `processing-time-ratio` 실패 2회 → Argo 중단 → **D가 스스로 롤백**(조회 없이), B: 후보 `cancelled`. 승인부터 롤백까지 약 70초 |
+| 개선 모델 canary + 트래픽 | 처리 시간 0.9배, 감시 통과 → `succeeded`, B: `active` |
+| Host 헤더 입구 비율 | 10%: 1~2/20, 50%: 9/20, 100%: 20/20 |
+| `demo_up.sh` 재실행 | 지금 운영 번들(B의 active)로 A를 다시 설치 — 운영 번들이 바뀌지 않음 |
+
+- 처음 기준(1.5배, 최소 3건)에서는 같은 설정의 모델끼리도 6건일 때 1.49배까지 흔들렸다 → 2배·최소 5건으로 올렸다(느린 모델은 3.9배라 여유가 있다). 바꾼 기준으로 느린 모델을 다시 돌려 보지는 않았다.
+- 분석 쿼리는 `argo-rollouts` 네임스페이스의 컨트롤러가 보낸다 → Prometheus 주소는 네임스페이스까지 적는다(`prometheus.tradeproof.svc`). 짧은 이름이면 연속 오류로 중단된다(처음 확인 때 겪음).
+- 호스트 없는 ingress 규칙만 두면 nginx가 `/healthz`를 가로챈다 → 호스트 규칙을 남기고 호스트 없는 규칙을 더한다(`ingress.matchAnyHost`).
+
 ## 7. 이 폴더의 파일 (D)
 
 | 파일 | 내용 |
@@ -160,4 +197,4 @@ WSL2 우분투, 메모리 8GB·CPU 4개(`.wslconfig`), Docker Desktop, k3d v5.8.
 
 D 배포 API는 `d_platform/k8s/platform/d-platform.yaml`로 클러스터 안에서 돈다(11/20부터). B·C는 `http://d-platform:8300`으로 부른다.
 
-아직 남은 것 (D): 지표를 보고 스스로 롤백(AnalysisTemplate).
+감시·자동 롤백: 위 "감시 → 자동 롤백". Prometheus는 `d_platform/k8s/monitoring/prometheus.yaml`.

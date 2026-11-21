@@ -8,7 +8,8 @@
 # 결과 (data/ 아래라 git 에 안 올라감):
 #   data/demo/keys/vendor.pem, vendor.pub   서명 키 (B 가 vendor.pub 를 신뢰 키로 씀 → 키를 바꾸면 demo_up.sh 를 다시 실행)
 #   data/demo/packages/initial/             model-v3.zip, list-v14.zip  (처음 B-7 을 만드는 데 씀, demo_up.sh 가 자동으로 올림)
-#   data/demo/packages/team-X/              1-S1-tampered, 2-S1-corrupt, 3-S5-degraded-model-v2N, 4-S4-improved-model-v1N
+#   data/demo/packages/team-X/              1-S1-tampered, 2-S1-corrupt, 3-S5-degraded-model-v2N, 4-S4-improved-model-v1N,
+#                                           5-MON-slow-model-v3N (게이트는 통과, canary 감시에서 처리 시간으로 자동 롤백)
 set -euo pipefail
 source "$(dirname "$0")/demo/lib.sh"
 need_tools docker
@@ -44,14 +45,16 @@ sign sanctions_list list-v14 data/sanctions/list-v14.json "$P/initial/list-v14.z
 
 i=0
 for s in $SETS; do
-  g=$((START + i)); d=$((START + 10 + i)); i=$((i + 1))
-  out="$PACKAGES/team-$s"; mkdir -p "$out" "$STATE/models/model-v$g" "$STATE/models/model-v$d"
+  g=$((START + i)); d=$((START + 10 + i)); w=$((START + 20 + i)); i=$((i + 1))
+  out="$PACKAGES/team-$s"; mkdir -p "$out" "$STATE/models/model-v$g" "$STATE/models/model-v$d" "$STATE/models/model-v$w"
   rm -f "$out"/*.zip
   cp scripts/demo/models/improved.json "$STATE/models/model-v$g/model_config.json"
   cp scripts/demo/models/degraded.json "$STATE/models/model-v$d/model_config.json"
-  say "team-$s: 개선 model-v$g, 저하 model-v$d"
+  cp scripts/demo/models/slow.json "$STATE/models/model-v$w/model_config.json"
+  say "team-$s: 개선 model-v$g, 저하 model-v$d, 느림 model-v$w"
   sign ocr_model "model-v$d" "$(rel "$STATE/models/model-v$d")" "$P/team-$s/3-S5-degraded-model-v$d.zip"
   sign ocr_model "model-v$g" "$(rel "$STATE/models/model-v$g")" "$P/team-$s/4-S4-improved-model-v$g.zip"
+  sign ocr_model "model-v$w" "$(rel "$STATE/models/model-v$w")" "$P/team-$s/5-MON-slow-model-v$w.zip"
   run python -m b_registry.signer tamper "$P/team-$s/4-S4-improved-model-v$g.zip" "$P/team-$s/1-S1-tampered.zip"
   run python -m b_registry.signer corrupt "$P/team-$s/4-S4-improved-model-v$g.zip" "$P/team-$s/2-S1-corrupt.zip"
 done

@@ -65,7 +65,12 @@ say "4/8 데이터 계층 (scripts/k3s_data_up.sh)"
 ENV_FILE=.env scripts/k3s_data_up.sh >/dev/null
 kn get pods
 
-say "5/8 골든셋·과거 거래 적재"
+say "5/8 빠진 표 추가 · 골든셋·과거 거래 적재"
+# Postgres 는 데이터 폴더가 비어 있을 때만 common/schema 를 적용한다. 이미 만든 DB 에는 나중에 생긴 표·컬럼이 없다.
+# A·C·D 파일은 IF NOT EXISTS 라 다시 적용해도 그대로다 (B 표는 B 의 migrate-db 가 맞춘다).
+for f in common/schema/10_a_screening.sql common/schema/30_c_replay.sql common/schema/40_d_platform.sql          common/schema/5*_c_replay_*.sql; do
+  [ -f "$f" ] && psql_in < "$f" && echo "  $(basename "$f")"
+done
 if [ "$(sql "select to_regclass('golden_labels') is not null and (select count(*) from golden_labels) = 100" 2>/dev/null || true)" = t ]; then
   echo "  이미 있음 (golden_labels 100)"
 else
@@ -85,8 +90,11 @@ kn rollout status deploy/c-replay --timeout=300s
 deploy_platform
 
 say "7/8 포트포워드"
-[ -f "$STATE/values-bundle.yaml" ] || write_bundle_values
 start_bg
+# A 를 다시 설치할 때는 지금 운영 중인 번들(B 의 active)로 (예전 파일의 B-7 로 되돌리면 canary 가 새로 시작됨)
+active=$(curl -s --max-time 5 "http://localhost:$B_PORT/bundles/active" 2>/dev/null \
+  | python3 -c 'import json,sys; print((json.load(sys.stdin).get("active") or {}).get("bundle_id") or "")' 2>/dev/null || true)
+write_bundle_values "${active:-B-7}"
 
 say "8/8 최초 번들 B-7"
 if [ "$(curl -s "http://localhost:$B_PORT/bundles" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')" = 0 ]; then
