@@ -208,7 +208,7 @@ def _res(c, tx_id, bundle, cls, at, shadow=False):
               "VALUES (%s, %s, %s, %s, %s)", (tx_id, bundle, cls, shadow, at))
 
 
-def _job(c, tx_id, bundle, status):
+def _screening_job(c, tx_id, bundle, status):
     c.execute("INSERT INTO screening_jobs (tx_id, bundle_id, status, input) VALUES (%s, %s, %s, '{}')",
               (tx_id, bundle, status))
 
@@ -221,9 +221,9 @@ def test_read_past_one_row_per_tx(pg):
     _res(c, "TX-0001", "B-7", P, "2026-11-01"); _res(c, "TX-0001", "B-8", H, "2026-11-02")
     # 0002: Job 이 B-7 로 처리 -> Job 의 번들 기록 (더 최근 B-8 기록이 있어도)
     _res(c, "TX-0002", "B-7", R, "2026-11-01"); _res(c, "TX-0002", "B-8", H, "2026-11-02")
-    _job(c, "TX-0002", "B-7", "completed")
+    _screening_job(c, "TX-0002", "B-7", "completed")
     # 0003: 처리 중 -> 뺀다
-    _res(c, "TX-0003", "B-7", P, "2026-11-01"); _job(c, "TX-0003", "B-7", "processing")
+    _res(c, "TX-0003", "B-7", P, "2026-11-01"); _screening_job(c, "TX-0003", "B-7", "processing")
     # 0004: 섀도 기록만 -> 뺀다 (기록 없음)
     _res(c, "TX-0004", "B-9", P, "2026-11-01", shadow=True)
     # 0005: 같은 시각 두 건 -> result_id 가 큰 것
