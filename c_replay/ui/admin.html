@@ -34,7 +34,7 @@
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.danger { color: var(--bad); border-color: var(--bad); }
   .out { margin-top: 10px; overflow-x: auto; }
-  .out:empty { display: none; }
+  .out:empty, [data-cerr]:empty, [data-stale]:empty { display: none; }
   table { border-collapse: collapse; width: 100%; }
   th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--muted); font-weight: 500; white-space: nowrap; }
@@ -268,7 +268,10 @@ refreshActive();
 async function showImport() {
   const r = await api('b', 'GET', `/imports/${seg(need($('importId')))}`);
   if (!r.status) return '<p class="muted">처리 중 (B 가 202 로 답함). 잠시 뒤 다시 조회하세요</p>';
-  if (r.bundle_id) $('bundleId').value = r.bundle_id;
+  if (r.bundle_id) {
+    $('bundleId').value = r.bundle_id;
+    loadBundle(r.bundle_id);
+  }
   return `<p>결과 ${statusTag(r.status)} ${r.bundle_id ? `· 번들 <b>${esc(r.bundle_id)}</b>` : ''}</p>
     ${r.reason ? `<p class="${r.status === 'REJECTED' ? 'err' : 'muted'}">사유: ${esc(r.reason)}</p>` : ''}`;
 }
@@ -304,15 +307,22 @@ async function showBundle(id) {
   if (dep) $('deployId').value = dep.deployment_id;
   return `${kv(b)}
     <table><tr><th>모델 파일</th><td>${esc(b.model && b.model.uri)}</td></tr><tr><th>리스트 파일</th><td>${esc(b.list && b.list.uri)}</td></tr></table>
-    ${await validationOrError(vRes)}`;
+    ${await validationOrError(vRes, b)}`;
 }
-$('btnBundle').onclick = () => {
+function loadBundle(rawId) {
   let id;
-  run($('bundleOut'), () => showBundle(id = seg(need($('bundleId')))), () => showBundle(id));
-};
-async function validationOrError(vRes) {
+  return run($('bundleOut'), () => showBundle(id = seg(rawId ?? need($('bundleId')))), () => showBundle(id));
+}
+$('btnBundle').onclick = () => loadBundle();
+async function validationOrError(vRes, b) {
   if (vRes.status === 'rejected') {
-    if (/^(NOT_FOUND|404)\b/.test(vRes.reason.message)) return '<h3>검증</h3><p class="muted">아직 검증이 없음</p>';
+    if (/^(NOT_FOUND|404)\b/.test(vRes.reason.message)) {
+      // 기준 번들이 있는 candidate 번들은 B 가 자동으로 검증을 시작하므로, 등록 직후 404 여도 계속 조회한다
+      if (b && b.status === 'candidate' && b.base_bundle_id) {
+        return `<h3>검증</h3><p class="muted">${statusTag('queued')} 검증 시작 대기 중…</p>${PENDING}`;
+      }
+      return '<h3>검증</h3><p class="muted">아직 검증이 없음</p>';
+    }
     return `<h3>검증</h3><p class="err">검증 조회 실패: ${esc(vRes.reason.message)}</p>`;
   }
   return showValidation(vRes.value);
@@ -376,7 +386,9 @@ const announceText = (v, c) => v.status === 'queued' ? '검증 대기 중'
 function patchLive(out) {
   const box = out.querySelector('[data-live]');
   if (!LIVE || !box || box.dataset.live !== LIVE.vid) return false;
-  const { v, c } = LIVE, p = c && c.progress;
+  const { v, c, cErr } = LIVE, p = c && c.progress;
+  const errEl = out.querySelector('[data-cerr]');
+  if (errEl) errEl.textContent = cErr;
   if (box.dataset.key !== liveKey(v, c)) {   // 상태·단계가 바뀜: 이 칸만 다시 그리고 알린다
     box.innerHTML = liveInner(v, c);
     box.dataset.key = liveKey(v, c);
@@ -390,7 +402,8 @@ function patchLive(out) {
     row.querySelector('[data-count]').textContent = `${p.done}/${p.total} (${pctOf(p)}%)`;
     row.querySelector('[data-eta]').textContent = remaining(v.validation_id, p);
   }
-  box.querySelector('[data-stale]').textContent = staleText(p);
+  const staleEl = box.querySelector('[data-stale]');
+  if (staleEl) staleEl.textContent = staleText(p);
   return true;
 }
 // 검증 한 건: 상태·게이트·지표는 B 가 받은 결과, 달라진 거래는 같은 검증 ID 로 C 에서
@@ -399,14 +412,17 @@ async function showValidation(v) {
   if (v.status === 'queued' || v.status === 'running') {  // 끝날 때까지 자동으로 다시 조회
     let c = null, cErr = '';
     try { c = await api('c', 'GET', `/validations/${seg(v.validation_id)}`); }
-    catch (e) { cErr = `<p class="muted">진행 상황 조회 실패 (C): ${esc(e.message)}</p>`; }
+    catch (e) {
+      // 검증 Job 이 C 에 행을 만들기 전(404)이면 정상 대기 상태로 본다
+      if (!/^(NOT_FOUND|404)\b/.test(e.message)) cErr = `진행 상황 조회 실패 (C): ${e.message}`;
+    }
     if (c && c.status !== 'queued' && c.status !== 'running') c = null;  // C 에서는 이미 끝남: B 가 결과를 받으면 다음 조회에 반영된다
     const now = c ? { ...v, status: c.status, created_at: c.created_at } : v;
-    LIVE = { vid: v.validation_id, v: now, c };
+    LIVE = { vid: v.validation_id, v: now, c, cErr };
     // data-live 칸 안의 잦은 변화(경과 시간 등)는 읽지 않는다(aria-live=off). 단계가 바뀔 때만 data-announce 로 알린다
     return `<h3>검증 ${esc(v.validation_id)}</h3><p class="muted">기준 ${esc(v.baseline_bundle_id)} → 후보 ${esc(v.bundle_id)}</p>
       <div data-live="${esc(v.validation_id)}" data-key="${esc(liveKey(now, c))}" aria-live="off">${liveInner(now, c)}</div>
-      <p class="sr-only" data-announce aria-live="polite"></p>${cErr}${PENDING}`;
+      <p class="sr-only" data-announce aria-live="polite"></p><p class="muted" data-cerr>${esc(cErr)}</p>${PENDING}`;
   }
   const head = `<h3>검증 ${esc(v.validation_id)}</h3><p>${statusTag(v.status)} 기준 ${esc(v.baseline_bundle_id)} → 후보 ${esc(v.bundle_id)}</p>`;
   if (v.status === 'failed') return `${head}<p class="err">${esc(v.error)}</p>${gateHtml(v.gate)}`;
@@ -433,8 +449,11 @@ const decide = async decision => {
     const r = await api('b', 'POST', '/approvals', body);
     sent = true;
     if (decision === 'reject') return `${tag('반려됨', 'bad')} <span class="muted">${esc(r.from)} → ${esc(r.to)}</span>`;
-    if (r.replacement_bundle_id) return `${tag('배포 안 됨', 'bad')} <span class="muted">운영 번들이 바뀌어 이 번들은 ${esc(r.status)} 처리됨</span>
+    if (r.replacement_bundle_id) {
+      $('bundleId').value = r.replacement_bundle_id;
+      return `${tag('배포 안 됨', 'bad')} <span class="muted">운영 번들이 바뀌어 이 번들은 ${esc(r.status)} 처리됨</span>
       <p>대체 번들 <b>${esc(r.replacement_bundle_id)}</b> 이(가) 만들어짐. 다시 검증하고 승인해야 함</p>`;
+    }
     if (r.status !== 'canary' && r.status !== 'active') {
       return `${tag('배포 시작 안 됨', 'bad')} <span class="muted">번들 상태가 ${statusTag(r.status)} 이므로 새 배포가 시작되지 않았습니다${r.deployment_id ? ` (기존 배포 ID ${esc(r.deployment_id)})` : ''}</span>`;
     }
