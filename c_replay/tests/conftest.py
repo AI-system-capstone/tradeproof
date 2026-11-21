@@ -25,6 +25,7 @@ def store(request):
         pytest.skip("TEST_DATABASE_URL 없음")
     import psycopg
     with psycopg.connect(dsn) as c:
-        c.execute((ROOT / "common" / "schema" / "30_c_replay.sql").read_text(encoding="utf-8"))
+        for name in ("30_c_replay.sql", "54_c_replay_20261120.sql"):
+            c.execute((ROOT / "common" / "schema" / name).read_text(encoding="utf-8"))
         c.execute("TRUNCATE validations CASCADE")
     return PostgresStore(dsn)

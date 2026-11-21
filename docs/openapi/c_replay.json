@@ -159,10 +159,22 @@
           "golden": { "oneOf": [{ "$ref": "#/components/schemas/GoldenResult" }, { "type": "null" }] },
           "replay": { "oneOf": [{ "$ref": "#/components/schemas/ReplayResult" }, { "type": "null" }] },
           "error": { "oneOf": [{ "$ref": "#/components/schemas/Error" }, { "type": "null" }], "description": "status = failed 일 때 사유" },
+          "progress": { "oneOf": [{ "$ref": "#/components/schemas/Progress" }, { "type": "null" }], "description": "running 동안 검증 Job이 주기적으로 적는 처리 건수 (운영 화면의 진행 막대). 처리 시작 전이면 null. 끝난 뒤에는 마지막 값이 남는다" },
           "requested_by": { "type": "string", "description": "검증을 시작시킨 쪽 (B가 만든 Job이면 b_registry)" },
           "created_at": { "type": "string", "format": "date-time" },
           "started_at": { "type": ["string", "null"], "format": "date-time" },
           "finished_at": { "type": ["string", "null"], "format": "date-time" }
+        }
+      },
+      "Progress": {
+        "type": "object",
+        "description": "검증 진행 상황. 검증 Job이 처음·마지막 건과 그 사이 2초마다 한 번 적는다",
+        "required": ["stage", "done", "total", "updated_at"],
+        "properties": {
+          "stage": { "type": "string", "enum": ["golden", "replay"], "description": "golden: 골든셋 검증 · replay: Replay" },
+          "done": { "type": "integer", "minimum": 0, "description": "처리한 건수", "examples": [37] },
+          "total": { "type": "integer", "minimum": 0, "description": "golden: 골든셋 건수 × 번들 2개 (운영·후보 번들로 각각 처리) · replay: 과거 거래 건수", "examples": [200] },
+          "updated_at": { "type": "string", "format": "date-time", "description": "검증 Job이 마지막으로 적은 시각" }
         }
       },
       "GoldenResult": {

@@ -1,10 +1,11 @@
 """검증(validation) 저장소. DATABASE_URL 이 있으면 Postgres, 없으면 메모리(로컬 테스트용, 프로세스 하나만).
 
-Postgres 에 쓰는 곳 (common/schema/30_c_replay.sql): validations, validation_diffs
+Postgres 에 쓰는 곳 (common/schema/30_c_replay.sql, 54_c_replay_20261120.sql): validations, validation_diffs
 
   API       get() / list() / diffs() / stats() / ping()          (조회만)
   검증 Job   create() -> start() -> complete() 또는 fail()     (조건이 안 맞으면 아무것도 쓰지 않고 False)
             create(validation_id=...) 는 B 가 만든 검증 ID 를 그대로 쓴다 (없으면 직접 만든다)
+            progress()    running 동안 처리 건수를 적는다 (운영 화면의 진행 막대)
             fail_stale()  Job 이 죽어서 진행 중으로 남은 오래된 검증을 failed 로 (create 전에 부른다)
 
 두 저장소는 같은 모양의 dict 를 돌려준다 (API 응답 그대로, docs/openapi/c_replay.json 의 Validation·Diff).
@@ -26,6 +27,8 @@ UP, DOWN = "up", "down"
 DIRECTIONS = (UP, DOWN)
 
 _TIMES = ("created_at", "started_at", "finished_at")
+GOLDEN, REPLAY = "golden", "replay"     # 진행 단계 (progress.stage)
+STAGES = (GOLDEN, REPLAY)
 
 
 class InProgressExists(Exception):
@@ -51,6 +54,15 @@ def _out(row: dict) -> dict:
         if d[k] is not None:
             d[k] = d[k].astimezone(timezone.utc).isoformat(timespec="milliseconds")
     return d
+
+
+def _progress(stage: str, done: int, total: int) -> dict:
+    if stage not in STAGES:
+        raise ValueError(f"stage 는 {STAGES} 중에서 ({stage!r})")
+    if not 0 <= done <= total:
+        raise ValueError(f"0 <= done <= total 이어야 함 (done={done}, total={total})")
+    return {"stage": stage, "done": done, "total": total,
+            "updated_at": _now().isoformat(timespec="milliseconds")}
 
 
 def _check_diffs(diffs: list[dict]) -> None:
@@ -86,7 +98,7 @@ class MemoryStore:
                 raise ValueError(f"이미 있는 검증 ID: {validation_id}")
             row = {"validation_id": validation_id or new_validation_id(), "bundle_id": bundle_id,
                    "baseline_bundle_id": baseline_bundle_id, "status": QUEUED,
-                   "golden": None, "replay": None, "error": None, "requested_by": requested_by,
+                   "golden": None, "replay": None, "error": None, "progress": None, "requested_by": requested_by,
                    "created_at": _now(), "started_at": None, "finished_at": None}
             self._rows[row["validation_id"]] = row
             return _out(row)
@@ -110,6 +122,16 @@ class MemoryStore:
             if row is None or row["status"] != QUEUED:
                 return False
             row.update(status=RUNNING, started_at=_now())
+            return True
+
+    def progress(self, validation_id: str, stage: str, done: int, total: int) -> bool:
+        """진행 상황을 적는다. running 이 아니면 아무것도 하지 않고 False."""
+        p = _progress(stage, done, total)
+        with self._lock:
+            row = self._rows.get(validation_id)
+            if row is None or row["status"] != RUNNING:
+                return False
+            row["progress"] = p
             return True
 
     def complete(self, validation_id: str, golden: dict, replay: dict, diffs: list[dict]) -> bool:
@@ -163,7 +185,7 @@ class MemoryStore:
                                          for b, r in last.items()}}
 
 
-_COLS = ("validation_id", "bundle_id", "baseline_bundle_id", "status", "golden", "replay", "error",
+_COLS = ("validation_id", "bundle_id", "baseline_bundle_id", "status", "golden", "replay", "error", "progress",
          "requested_by", "created_at", "started_at", "finished_at")
 _SELECT = f"SELECT {', '.join(_COLS)} FROM validations"
 _DIFF_COLS = ("tx_id", "direction", "before", "after", "fields_changed")
@@ -191,7 +213,7 @@ class PostgresStore:
 
     def create(self, bundle_id: str, baseline_bundle_id: str, requested_by: str,
                validation_id: str | None = None) -> dict:
-        row = (validation_id or new_validation_id(), bundle_id, baseline_bundle_id, QUEUED, None, None, None,
+        row = (validation_id or new_validation_id(), bundle_id, baseline_bundle_id, QUEUED, None, None, None, None,
                requested_by, _now(), None, None)
         try:
             with self._conn() as c:
@@ -220,6 +242,12 @@ class PostgresStore:
             return c.execute("UPDATE validations SET status = 'running', started_at = %s "
                              "WHERE validation_id = %s AND status = 'queued'",
                              (_now(), validation_id)).rowcount == 1
+
+    def progress(self, validation_id: str, stage: str, done: int, total: int) -> bool:
+        p = _progress(stage, done, total)
+        with self._conn() as c:
+            return c.execute("UPDATE validations SET progress = %s WHERE validation_id = %s AND status = 'running'",
+                             (self._jsonb(p), validation_id)).rowcount == 1
 
     def complete(self, validation_id: str, golden: dict, replay: dict, diffs: list[dict]) -> bool:
         _check_diffs(diffs)

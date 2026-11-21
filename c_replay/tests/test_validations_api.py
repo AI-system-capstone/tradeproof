@@ -72,7 +72,8 @@ def test_new_validation_is_queued(client):
     body = client.get(f"/validations/{vid}").json()
     assert body == {
         "validation_id": vid, "bundle_id": "B-9", "baseline_bundle_id": "B-7",
-        "status": "queued", "golden": None, "replay": None, "error": None, "requested_by": "b_registry",
+        "status": "queued", "golden": None, "replay": None, "error": None, "progress": None,
+        "requested_by": "b_registry",
         "created_at": body["created_at"], "started_at": None, "finished_at": None,
     }
     assert body["created_at"].endswith("+00:00")
@@ -269,6 +270,17 @@ def test_proxy_passes_allowed_request_and_response_through():
     assert str(seen[-1].url) == "http://d:8300/deployments/DP-1"
 
 
+def test_proxy_passes_active_bundles():
+    import httpx
+    seen = []
+    def handler(req):
+        seen.append(req)
+        return httpx.Response(200, json={"active": {"bundle_id": "B-7"}, "canary": None})
+    r = proxy_client(handler).get("/api/b/bundles/active")
+    assert r.status_code == 200 and r.json()["active"]["bundle_id"] == "B-7"
+    assert str(seen[0].url) == "http://b:8100/bundles/active"
+
+
 def test_proxy_keeps_upstream_error_status_and_body():
     import httpx
     c = proxy_client(lambda req: httpx.Response(409, json={"code": "CONFLICT", "message": "m", "target_id": None}))
@@ -344,3 +356,38 @@ def test_fail_stale_only_old_in_progress_of_same_bundle(store):
     store.fail_stale("B-6", timedelta(seconds=-60), err)
     assert store.get(done)["status"] == "completed"                       # 끝난 것은 그대로
     store.create("B-9", "B-7", "b_registry")                              # 정리 뒤에는 새 검증을 만들 수 있다
+
+
+# ---------------------------------------------------------------- 진행 상황 (검증 Job 이 running 동안 적음)
+def test_progress_is_null_until_job_writes_it(client):
+    vid = register(client)["validation_id"]
+    assert client.get(f"/validations/{vid}").json()["progress"] is None
+    assert client.app.state.store.progress(vid, "golden", 0, 10) is False      # queued 에는 적지 않는다
+
+
+def test_progress_is_returned_while_running(client):
+    s = client.app.state.store
+    vid = register(client)["validation_id"]
+    s.start(vid)
+    assert s.progress(vid, "golden", 37, 200) is True
+    p = client.get(f"/validations/{vid}").json()["progress"]
+    assert (p["stage"], p["done"], p["total"]) == ("golden", 37, 200) and p["updated_at"]
+    assert s.progress(vid, "replay", 5, 120) is True
+    assert client.get("/validations").json()["items"][0]["progress"]["stage"] == "replay"
+
+
+def test_progress_not_written_after_finish(client):
+    s = client.app.state.store
+    vid = register(client)["validation_id"]
+    s.start(vid)
+    s.fail(vid, {"code": C.ERR_INTERNAL, "message": "x", "target_id": vid})
+    assert s.progress(vid, "replay", 1, 2) is False
+
+
+@pytest.mark.parametrize("args", [("ocr", 1, 2), ("golden", 3, 2), ("golden", -1, 2)])
+def test_progress_rejects_bad_values(client, args):
+    s = client.app.state.store
+    vid = register(client)["validation_id"]
+    s.start(vid)
+    with pytest.raises(ValueError):
+        s.progress(vid, *args)
