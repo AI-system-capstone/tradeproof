@@ -28,6 +28,8 @@
 | `GET /bundles/active`            | —                            | 200 `{active: 번들 또는 null, canary: 번들 또는 null}`                                 |
 | `GET /bundles/{id}`              | —                            | 모델·리스트 ID·원본 ZIP URI·상태·생성 시각     |
 | `POST /bundles/{id}/transitions` | `{to, actor, reason}`        | 200 `{from, to, changed_at}`                                |
+| `POST /bundles/{id}/validations` | `{actor, reason}` | 실행 오류로 실패한 후보 재검증, 202 새 검증 실행 정보 / 진행 중·게이트 불합격 409 |
+| `POST /bundles/{id}/deployment-recovery` | `{actor, reason, expected_changed_at, confirmed_not_received: true}` | 미접수 확인 후 pending 해제, 200 `{bundle_id, status, request_state}` |
 | `POST /bundles/{id}/validation-results/{validation_id}` | C 완료/실패 결과 (아래 명세) | 200 저장된 검증·게이트 결과; 불일치 409, 잘못된 결과 422 |
 | `GET /bundles/{id}/validation` | — | 200 검증 상태·결과 요약·게이트 판정 / 실행 등록 전·최초 검증 생략 시 404 |
 | `POST /approvals` | `{bundle_id, decision: approve/reject, actor, reason}` | 승인: 202 카나리 접수 / 200 재조합 후보, 반려: 200 상태 전이 |
@@ -137,7 +139,7 @@ python -m b_registry.signer corrupt model.zip corrupted.zip
 
 ## 다른 모듈 연결
 
-B는 C의 `POST /validations`를 호출하지 않습니다. 자동 검증 Job 실행과 C 완료 통보 수신는 아래 M2 절차를 사용합니다. 운영 클러스터의 Job 이미지·RBAC와 C 검증 실행 진입점은 C·D가 제공해야 합니다. A·C·D 코드는 이 변경에서 수정하지 않습니다.
+B는 C의 `POST /validations`를 호출하지 않습니다. 자동 검증 Job 실행과 C 완료 통보 수신은 아래 M2 절차를 사용합니다. 운영 클러스터의 Job 이미지·RBAC와 C 검증 실행 진입점은 C·D가 제공해야 합니다. A·C·D 코드는 이 변경에서 수정하지 않습니다.
 
 ## B에서 D로 배포 요청
 
@@ -145,9 +147,33 @@ B는 C의 `POST /validations`를 호출하지 않습니다. 자동 검증 Job �
 
 기준이 같으면 B가 `DEPLOYMENT_URL`(기본 `http://d-platform:8300`)의 `POST /deployments`에 `{bundle_id}`와 `X-Actor`를 보냅니다. D는 이때 B에서 approved 상태를 조회할 수 있습니다. D의 202 접수를 확인한 뒤 B가 canary로 전이하고 deployment_id를 반환합니다. `POST /bundles/{id}/transitions`의 직접 canary 요청은 409로 막습니다. D의 완료(active)·중단(cancelled) 통보는 기존 transitions API를 사용합니다.
 
-요청 대기는 기존 history에 deployment_request로 기록합니다. D의 명시적 4xx 거절은 B 409이며 approved를 유지합니다. 타임아웃·5xx·응답 오류는 503이며 결과 미확인 요청으로 남깁니다. 같은 배포 요청을 다시 보내면 POST를 반복하지 않고 D의 최근 배포 목록에서 결과를 찾습니다. 미확인 상태에서는 다른 배포와 상태 전이를 막습니다. 최근 100건에서 결과가 없거나 중복되면 자동 재요청하지 않으므로 D 상태를 확인하는 운영 조치가 필요합니다.
+요청 대기는 기존 history에 deployment_request로 기록합니다. D의 명시적 4xx 거절은 B 409이며 approved를 유지합니다. 전송 전 이름 인코딩 오류·연결 거부·연결/풀 대기 시간 초과는 요청 이력 state=failed와 503으로 남겨 재승인할 수 있습니다. 전송 이후 읽기/쓰기 오류·응답 시간 초과·5xx는 접수 여부 불명이므로 pending을 유지합니다. 같은 배포 요청의 재호출은 POST를 반복하지 않고 D 조회로 확인합니다.
 
-D의 구 rolled_back 콜백은 현재 B 상태 계약과 다르며 D 담당자 연동 작업이 필요합니다. 이번 변경은 D 코드를 수정하지 않습니다. 검증 결과 수집·게이트·승인은 아래 M2 API가 담당합니다.
+현재 D는 `X-Actor` 헤더만 지원하므로 한글 이름의 배포 요청은 전송 전 503으로 거부합니다. B 이력에는 원래 이름을 보존하며 pending으로 잠기지 않습니다. **한글 이름으로 실제 배포하려면 D가 JSON actor 등을 지원하는 계약 변경이 필요합니다.** B만 이름을 퍼센트 인코딩하거나 영문으로 바꾸지 않습니다. 계약 변경 전에는 영문 운영자 ID를 사용합니다. 이미 cancelled/superseded가 된 배포를 다시 승인하면 409이며, canary/active의 중복 요청만 기존 배포 결과를 반환합니다.
+
+### 미확정 배포 요청 복구
+
+D가 접수한 요청은 기존 `POST /bundles/{id}/deployments` 재호출로 연결합니다. **D에 접수된 배포도, 아직 처리 중인 원래 HTTP 요청도 없음을 운영자가 확인한 경우에만** 아래 API로 잠금을 해제합니다. 이 API는 자동으로 D에 배포하지 않습니다.
+
+```http
+POST /bundles/B-8/deployment-recovery
+Content-Type: application/json
+```
+
+```json
+{
+  "actor": "operator",
+  "reason": "D 담당자가 원래 요청 종료 및 미접수를 확인함",
+  "expected_changed_at": "2026-11-21T00:00:00+00:00",
+  "confirmed_not_received": true
+}
+```
+
+expected_changed_at은 `GET /bundles/{id}`의 history에서 마지막 deployment_request 항목의 changed_at을 그대로 전달합니다. 승인된 번들의 현재 pending 요청과 일치해야 합니다. B도 D 목록을 재조회하며, 기존 배포가 발견되면 409, D 연결 장애·잘못된 응답·조회 한도 100건으로 미접수를 판단할 수 없으면 503으로 해제하지 않습니다. 목록에 없다는 사실만으로 운영자 확인을 대신할 수 없습니다.
+
+성공은 200 `{"bundle_id":"B-8","status":"approved","request_state":"failed"}`입니다. 원래 pending 기록을 보존하고 해제한 actor/reason/시각·확인 사실을 history에 추가합니다. 이후 배포 승인을 다시 요청합니다. 오래된 changed_at 또는 동시 요청으로 이력이 바뀌면 409입니다. 이전 코드에서 막힌 pending 기록에도 같은 절차를 사용합니다.
+
+D의 최초 번들 즉시 적용 및 active/cancelled 콜백은 현재 코드에 구현되어 있습니다. 실제 클러스터 연동 완료 여부는 별도로 검증해야 합니다.
 
 ## M2 검증·게이트·승인
 
@@ -158,6 +184,16 @@ D의 구 rolled_back 콜백은 현재 B 상태 계약과 다르며 D 담당자 �
 5. 운영 화면은 `GET /bundles/{id}/validation`으로 진행 상태·C 결과·게이트 사유를 조회합니다. C 실행 실패·콜백 대기 시간 초과는 validation.status=failed로 남으며 배포를 허용하지 않습니다. 잘못된 콜백은 422, 다른 실행/기준 ID 또는 확정 결과 변경은 409입니다. 동일 결과 재전송은 200으로 처리합니다.
 6. `POST /approvals`에 `{bundle_id, decision: "approve", actor, reason}`을 보내면 승인 기록 후 D에 배포 요청합니다. D 접수 확인 시 canary로 전이하고 202 `{bundle_id, status, deployment_id}`를 반환합니다. decision=reject는 validated 번들을 rejected로 바꾸고 200 `{from, to, changed_at}`를 반환합니다.
 7. 배포 승인 시 운영 기준이 바뀌었으면 새 candidate를 재조합하고 200 `{bundle_id, status, replacement_bundle_id}`를 반환합니다. 새 후보도 자동 검증하며, 결과 확인 후 다시 배포 승인해야 합니다. 기존 검증·승인은 복사하지 않습니다.
+
+### 실행 오류 후 재검증
+
+`POST /bundles/{id}/validations`에 `{"actor":"시우","reason":"검증 이미지 수정 후 재실행"}`을 보냅니다. actor는 최대 64자, reason은 최대 500자이며, 한글은 JSON 바디로 전달할 수 있습니다. 최초 검증의 자동 실행과 C 결과 콜백 방식은 유지합니다.
+
+- bundle.status=candidate 및 validation.status=failed인 실행 오류 건만 허용합니다. 게이트 불합격(validation_failed), 검증 진행 중, 이미 승인/배포된 번들은 409입니다.
+- 이전 Job이 running이면 409, 상태 조회가 실패하면 503이며 새 검증은 등록하지 않습니다.
+- 이전 Job이 종료되었거나 없으면 새 validation_id·queued 상태로 202를 반환합니다. 응답 구조는 기존 GET /bundles/{id}/validation과 같습니다.
+- 이전 검증 결과는 history의 previous_validation에 보존합니다. 이전 ID로 늦게 오는 콜백은 409이며 새 결과를 덮어쓰지 않습니다.
+- C 운영 화면의 중계 허용 경로와 '다시 검증' 버튼 연결은 C 담당 작업입니다.
 
 ### C 결과 통보 계약
 
@@ -194,4 +230,4 @@ D의 구 rolled_back 콜백은 현재 B 상태 계약과 다르며 D 담당자 �
 - B가 VALIDATION_ID, BUNDLE_ID, BASELINE_BUNDLE_ID, REQUESTED_BY, VALIDATION_CALLBACK_URL을 설정합니다. API로 임의 실행 명령이나 이미지를 받지 않습니다. 컨테이너/Job 이름은 검증 ID로 고정하여 응답 유실 시 같은 실행을 확인합니다.
 - 기본 결과 대기 제한은 3600초입니다. 완료 Job/컨테이너는 C 결과와 B 처리가 끝날 때까지 유지합니다. B는 실행물을 자동 삭제하지 않습니다.
 
-현재 저장소의 C에는 이 환경변수를 받는 Job 진입점이 없습니다. C가 전달된 VALIDATION_ID로 실행하고 완료/실패 결과를 B 콜백으로 보내는 연결이 필요합니다. D도 최초 B-7을 이미 운영 중인 번들로 간주하는 기본 동작과 구 rolled_back 통보를 점검해야 합니다. 따라서 B 테스트 통과가 실제 클러스터 전체 연동 완료를 뜻하지 않습니다.
+현재 C Job 진입점과 콜백 전송은 구현되어 있습니다. 다만 C Job 이미지의 a_screening/registry.py 포함 여부·모델 ZIP 위치 연결 및 배포 템플릿/데이터 마운트는 C·A·D와 점검해야 합니다. B 배포 YAML의 실제 파일 리뷰는 [연동 점검 기록](docs/INTEGRATION.md#2026-11-21-시연-복구-연동-점검)을 참고하세요. B 테스트 통과가 실제 클러스터 전체 연동 완료를 뜻하지 않습니다.

@@ -106,7 +106,7 @@ def test_http_client_sends_d_contract(monkeypatch):
     result = DeploymentClient("http://platform:8300").request("B-9", "reviewer")
     assert result["deployment_id"] == "DP-1"
     assert seen[0][0] == "http://platform:8300/deployments"
-    assert seen[0][1]["json"] == {"bundle_id":"B-9"}
+    assert seen[0][1]["json"] == {"bundle_id":"B-9", "actor":"reviewer"}
     assert seen[0][1]["headers"] == {"X-Actor":"reviewer"}
 
 

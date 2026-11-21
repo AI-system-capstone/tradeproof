@@ -91,6 +91,28 @@ class DeploymentResult(StrictModel):
     replacement_bundle_id: str | None = None
 
 
+class ValidationRetryRequest(DeploymentRequest):
+    actor: str = Field(min_length=1, max_length=64)
+
+
+class DeploymentRecoveryRequest(DeploymentRequest):
+    expected_changed_at: str = Field(min_length=1, max_length=80)
+    confirmed_not_received: Literal[True]
+
+    @field_validator("confirmed_not_received", mode="before")
+    @classmethod
+    def explicit_confirmation(cls, value):
+        if value is not True:
+            raise ValueError("Explicit true confirmation is required")
+        return value
+
+
+class DeploymentRecoveryResult(StrictModel):
+    bundle_id: str
+    status: str
+    request_state: Literal["failed"]
+
+
 class ValidationCallback(StrictModel):
     validation_id: str
     bundle_id: str

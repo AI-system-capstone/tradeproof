@@ -1,4 +1,6 @@
 """B owns deployment requests; D owns traffic changes. No automatic POST retries."""
+from urllib.parse import quote
+
 import httpx
 from sqlalchemy import select
 from b_registry.db import Bundle, iso, now
@@ -14,19 +16,36 @@ class DeploymentRejected(Exception):
     pass
 
 
+class DeploymentNotSent(DeploymentUnavailable):
+    """The deployment POST was not sent; retrying cannot duplicate it."""
+
+
+class DeploymentNotFound(DeploymentUnavailable):
+    """No matching deployment in a complete D listing (not proof of no in-flight POST)."""
+
+
 class DeploymentClient:
     def __init__(self, url):
         self.url = url.rstrip("/")
 
     def request(self, bid, actor):
+        # The original actor (e.g. a Korean name) travels in the JSON body; D records it as-is.
+        # HTTP headers are ASCII-only, so X-Actor carries the percent-encoded form (D decodes it).
         try:
-            response = httpx.post(self.url + "/deployments", json={"bundle_id": bid},
-                                  headers={"X-Actor": actor}, timeout=httpx.Timeout(5, connect=2))
+            response = httpx.post(self.url + "/deployments", json={"bundle_id": bid, "actor": actor},
+                                  headers={"X-Actor": quote(actor, safe="")}, timeout=httpx.Timeout(5, connect=2))
             if 400 <= response.status_code < 500:
                 raise DeploymentRejected(f"D rejected deployment: HTTP {response.status_code}")
+            if response.status_code == 503:
+                # D answers 503 only when it could not start the deployment (cluster or registry
+                # unavailable); it records that attempt as failed, so approving again is safe.
+                raise DeploymentNotSent("D could not start the deployment (HTTP 503); approve again to retry")
             if response.status_code != 202:
                 raise DeploymentUnavailable("D deployment acceptance could not be confirmed")
             return self._check(response.json(), bid)
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout,
+                httpx.UnsupportedProtocol, httpx.InvalidURL) as error:
+            raise DeploymentNotSent("Could not connect to D; deployment request was not sent") from error
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as error:
             raise DeploymentUnavailable("D deployment acceptance could not be confirmed") from error
 
@@ -35,10 +54,21 @@ class DeploymentClient:
             response = httpx.get(self.url + "/deployments", params={"limit": 100},
                                  timeout=httpx.Timeout(5, connect=2))
             response.raise_for_status()
-            matches = [item for item in response.json() if item.get("bundle_id") == bid]
-            if len(matches) != 1:
+            rows = response.json()
+            if not isinstance(rows, list) or any(not isinstance(item, dict) for item in rows):
+                raise DeploymentUnavailable("Invalid D deployment listing")
+            for item in rows:
+                if not isinstance(item.get("bundle_id"), str) or not item["bundle_id"]:
+                    raise DeploymentUnavailable("Invalid D deployment listing")
+            # Only this bundle's rows must match the contract; other bundles' rows are not our concern.
+            matches = [self._check(item, bid) for item in rows if item["bundle_id"] == bid]
+            if not matches and len(rows) < 100:
+                raise DeploymentNotFound("No deployment found; operator confirmation is required before recovery")
+            if not matches:
                 raise DeploymentUnavailable("Deployment outcome is unknown; POST was not retried")
-            return self._check(matches[0], bid)
+            # D lists newest first. An earlier attempt for the same bundle (e.g. a failed start
+            # answered with 503) may remain; the newest row is the one this request created.
+            return matches[0]
         except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as error:
             raise DeploymentUnavailable("Cannot reconcile D deployment outcome") from error
 
@@ -58,6 +88,41 @@ def _attempt(bundle, actor, reason, state, deployment_id=None):
         "deployment_request": {"state": state, "deployment_id": deployment_id}}]
 
 
+def _attempt_time(bundle):
+    return next((entry["changed_at"] for entry in reversed(bundle.history or [])
+                 if "deployment_request" in entry), None)
+
+
+def recover_deployment(db, bid, actor, reason, expected_changed_at, client):
+    """Release only the exact pending request the operator checked on D.
+
+    The API additionally requires explicit confirmation that D has no accepted
+    or in-flight request. A short listing alone cannot establish that fact.
+    """
+    def check(bundle):
+        if bundle is None:
+            raise NotFound("Bundle not found")
+        if (bundle.status != "approved" or deployment_attempt(bundle).get("state") != "pending"
+                or _attempt_time(bundle) != expected_changed_at):
+            raise Conflict("Pending deployment changed; reload the bundle before recovery")
+
+    with db.sessions() as s:
+        check(s.get(Bundle, bid))
+    try:
+        client.find(bid)
+    except DeploymentNotFound:
+        pass
+    else:
+        raise Conflict("D already has this deployment; reconcile through the deployment API")
+    with db.transaction() as s:
+        bundle = s.get(Bundle, bid)
+        check(bundle)
+        _attempt(bundle, actor, reason, "failed")
+        bundle.history = [*bundle.history[:-1], {**bundle.history[-1],
+            "recovery": {"pending_changed_at": expected_changed_at, "confirmed_not_received": True}}]
+        return {"bundle_id": bid, "status": bundle.status, "request_state": "failed"}
+
+
 def request_deployment(db, bid, actor, reason, client):
     # Commit the intent before HTTP: D can read the still-approved B bundle,
     # and a timeout/restart must not cause a duplicate POST.
@@ -67,6 +132,8 @@ def request_deployment(db, bid, actor, reason, client):
             raise NotFound("Bundle not found")
         attempt = deployment_attempt(bundle)
         if attempt.get("state") == "accepted":
+            if bundle.status not in ("canary", "active"):
+                raise Conflict("This deployment ended; the bundle cannot be approved again")
             return {"bundle_id": bid, "status": bundle.status,
                     "deployment_id": attempt["deployment_id"]}
         all_bundles = list(s.scalars(select(Bundle)))
@@ -92,20 +159,28 @@ def request_deployment(db, bid, actor, reason, client):
                         "replacement_bundle_id": rebuilt["replacement_bundle_id"]}
             bundle.previous_active_id = active.bundle_id if active else None
             _attempt(bundle, actor, reason, "pending")
+        expected_changed_at = _attempt_time(bundle)
     try:
         accepted = client.find(bid) if recovering else client.request(bid, actor)
-    except DeploymentRejected as error:
+    except (DeploymentRejected, DeploymentNotSent) as error:
         with db.transaction() as s:
             bundle = s.get(Bundle, bid)
-            _attempt(bundle, actor, str(error), "rejected")
+            if (deployment_attempt(bundle).get("state") == "pending"
+                    and _attempt_time(bundle) == expected_changed_at):
+                _attempt(bundle, actor, str(error), "failed" if isinstance(error, DeploymentNotSent) else "rejected")
+        if isinstance(error, DeploymentNotSent):
+            raise
         raise Conflict(str(error)) from error
     # Unknown results deliberately remain pending; repeat requests only query D.
     with db.transaction() as s:
         bundle = s.get(Bundle, bid)
         existing = deployment_attempt(bundle)
         if existing.get("state") == "accepted":
+            if bundle.status not in ("canary", "active"):
+                raise Conflict("This deployment ended; the bundle cannot be approved again")
             return {"bundle_id": bid, "status": bundle.status, "deployment_id": existing["deployment_id"]}
-        if existing.get("state") != "pending" or bundle.status != "approved":
+        if (existing.get("state") != "pending" or bundle.status != "approved"
+                or _attempt_time(bundle) != expected_changed_at):
             raise Conflict("Deployment intent changed")
         if accepted["status"] in ("rolled_back", "failed"):
             record(bundle, "cancelled", actor, reason)
