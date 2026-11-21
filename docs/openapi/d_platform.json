@@ -13,14 +13,21 @@
           {
             "name": "x-actor",
             "in": "header",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": "string",
-              "minLength": 1,
-              "description": "요청한 사람·모듈",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "요청한 사람·모듈 (퍼센트 인코딩 가능). 본문 actor 가 있으면 생략 가능",
               "title": "X-Actor"
             },
-            "description": "요청한 사람·모듈"
+            "description": "요청한 사람·모듈 (퍼센트 인코딩 가능). 본문 actor 가 있으면 생략 가능"
           }
         ],
         "requestBody": {
@@ -417,13 +424,30 @@
             "examples": [
               "B-8"
             ]
+          },
+          "actor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor",
+            "examples": [
+              "지윤아"
+            ]
           }
         },
         "type": "object",
         "required": [
           "bundle_id"
         ],
-        "title": "DeploymentRequest"
+        "title": "DeploymentRequest",
+        "description": "요청은 B(M2)가 보낸다. 담당자 이름은 본문 actor 에 원문 그대로 (한글 가능).\nHTTP 헤더는 ASCII 만 되므로 X-Actor 는 퍼센트 인코딩해 보내도 된다 (D 가 풀어서 기록)."
       },
       "DeploymentResponse": {
         "properties": {

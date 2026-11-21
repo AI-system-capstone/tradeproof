@@ -34,6 +34,7 @@ import sys
 import threading
 import time
 import uuid
+from urllib.parse import unquote
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Callable
@@ -80,8 +81,10 @@ def _log(**fields) -> None:
 
 
 class DeploymentRequest(BaseModel):
-    # TODO(B 확인 필요): 요청은 B(M2)가 보낸다. 지금은 bundle_id 만 받는다 (approval_id 등은 정해지면 추가)
+    """요청은 B(M2)가 보낸다. 담당자 이름은 본문 actor 에 원문 그대로 (한글 가능).
+    HTTP 헤더는 ASCII 만 되므로 X-Actor 는 퍼센트 인코딩해 보내도 된다 (D 가 풀어서 기록)."""
     bundle_id: str = Field(min_length=1, max_length=64, examples=["B-8"])
+    actor: str | None = Field(default=None, min_length=1, max_length=100, examples=["지윤아"])
 
 
 class RollbackRequest(BaseModel):
@@ -337,7 +340,14 @@ def create_app(store=None, driver=None, registry=None,
     @app.post("/deployments", status_code=202, response_model=DeploymentResponse,
               responses={404: _ERR, 409: _ERR, 422: _ERR, 503: _ERR}, summary="배포 시작")
     def create_deployment(body: DeploymentRequest, response: Response,
-                          x_actor: str = Header(min_length=1, description="요청한 사람·모듈")):
+                          x_actor: str | None = Header(default=None, min_length=1,
+                                                       description="요청한 사람·모듈 (퍼센트 인코딩 가능). 본문 actor 가 있으면 생략 가능")):
+        header_actor = unquote(x_actor) if x_actor else None
+        if header_actor and body.actor and header_actor != body.actor:
+            raise ApiError(422, ERR_VALIDATION, "X-Actor 헤더와 본문의 actor 가 다름", body.bundle_id)
+        x_actor = body.actor or header_actor
+        if not x_actor:
+            raise ApiError(422, ERR_VALIDATION, "X-Actor 헤더 또는 본문의 actor 가 필요함", body.bundle_id)
         running = store.in_progress()
         if running is not None and reconcile(running).in_progress:
             raise ApiError(409, ERR_CONFLICT, "진행 중인 배포가 있음", running.deployment_id)
