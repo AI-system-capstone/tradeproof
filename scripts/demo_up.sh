@@ -6,11 +6,11 @@
 # 하는 일 (d_platform/k8s/demo/README.md):
 #   1. k3d 클러스터(k3s) 생성 — traefik 끔, 입구 포트 $INGRESS_PORT, data/ 를 노드의 /data/tradeproof 로 마운트
 #   2. ingress-nginx + Argo Rollouts 설치
-#   3. 이미지 빌드(A·B·C) → 클러스터로 import
+#   3. 이미지 빌드(A·B·C·D) → 클러스터로 import
 #   4. 데이터 계층: scripts/k3s_data_up.sh (Postgres + SeaweedFS + 버킷 + Secret)
 #   5. 골든셋·과거 거래 적재 (data/db/seed.sql)
-#   6. B 레지스트리·C 운영 화면 배포 (d_platform/k8s/demo/)
-#   7. 포트포워드 + D 배포 API(argo 드라이버) 실행 — 터미널을 닫아도 계속 돈다
+#   6. B 레지스트리·C 운영 화면 (d_platform/k8s/demo/), D 배포 API (d_platform/k8s/platform/) 배포
+#   7. 포트포워드 — 터미널을 닫아도 계속 돈다
 #   8. 최초 번들: model-v3·list-v14 반입 → B-7 → A 차트 설치 → B-7 승인
 # kubectl 은 이 클러스터 전용 kubeconfig(data/demo/kit/kubeconfig)와 --context k3d-$CLUSTER 로만 부른다.
 set -euo pipefail
@@ -31,6 +31,12 @@ if ! k3d cluster list -o json | python3 -c "import json,sys; sys.exit(0 if any(c
     --kubeconfig-update-default=false --kubeconfig-switch-context=false --wait
 else
   k3d cluster start "$CLUSTER" >/dev/null 2>&1 || true
+  # PC·WSL·Docker 를 다시 켜면 노드에 붙은 data/ 가 빈 폴더로 남을 때가 있다 (Docker 가 먼저 컨테이너를 띄움).
+  # 그러면 A 파드가 샘플 서류 볼륨을 못 붙여 Unknown·ContainerCreating 에 멈춘다 → 클러스터를 껐다 켜서 다시 붙인다.
+  if ! docker exec "k3d-$CLUSTER-server-0" test -d /data/tradeproof/docs 2>/dev/null; then
+    echo "  노드에서 data/ 가 안 보여 클러스터를 다시 시작한다"
+    k3d cluster stop "$CLUSTER" >/dev/null && k3d cluster start "$CLUSTER" >/dev/null
+  fi
 fi
 k3d kubeconfig get "$CLUSTER" > "$KUBECONFIG"
 k get nodes
@@ -47,12 +53,13 @@ for spec in "a_screening/Dockerfile screening-api tradeproof/a-screening:dev" \
             "a_screening/Dockerfile ocr-worker tradeproof/a-ocr-worker:dev" \
             "c_replay/Dockerfile api tradeproof/c-replay:dev" \
             "c_replay/Dockerfile job tradeproof/c-replay-job:dev" \
-            "b_registry/Dockerfile - tradeproof/b-registry:dev"; do
+            "b_registry/Dockerfile - tradeproof/b-registry:dev" \
+            "d_platform/Dockerfile - tradeproof/d-platform:dev"; do
   read -r f target tag <<<"$spec"
   echo "  build $tag"
   if [ "$target" = - ]; then docker build -q -f "$f" -t "$tag" . >/dev/null; else docker build -q -f "$f" --target "$target" -t "$tag" . >/dev/null; fi
 done
-k3d image import -c "$CLUSTER" tradeproof/a-screening:dev tradeproof/a-ocr-worker:dev tradeproof/c-replay:dev tradeproof/c-replay-job:dev tradeproof/b-registry:dev
+k3d image import -c "$CLUSTER" tradeproof/a-screening:dev tradeproof/a-ocr-worker:dev tradeproof/c-replay:dev tradeproof/c-replay-job:dev tradeproof/b-registry:dev tradeproof/d-platform:dev
 
 say "4/8 데이터 계층 (scripts/k3s_data_up.sh)"
 ENV_FILE=.env scripts/k3s_data_up.sh >/dev/null
@@ -68,15 +75,16 @@ else
 fi
 echo "  golden_labels $(sql 'select count(*) from golden_labels'), transactions $(sql 'select count(*) from transactions')"
 
-say "6/8 B 레지스트리·C 운영 화면"
+say "6/8 B 레지스트리·C 운영 화면·D 배포 API"
 kn create configmap b-registry-files --from-file=publisher.pub="$KEYS/vendor.pub" \
   --from-file=validation-job.json=d_platform/k8s/demo/validation-job.json --dry-run=client -o yaml | k apply -f - >/dev/null
 k apply -f d_platform/k8s/demo/b-registry.yaml -f d_platform/k8s/demo/c-replay.yaml >/dev/null
 kn rollout restart deploy/b-registry deploy/c-replay >/dev/null   # 키·이미지가 바뀌었을 수 있음
 kn rollout status deploy/b-registry --timeout=300s
 kn rollout status deploy/c-replay --timeout=300s
+deploy_platform
 
-say "7/8 포트포워드 + D 배포 API (argo)"
+say "7/8 포트포워드"
 [ -f "$STATE/values-bundle.yaml" ] || write_bundle_values
 start_bg
 

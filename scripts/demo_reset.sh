@@ -35,10 +35,11 @@ if [ "$(kn get rollout a-screening -o jsonpath='{.status.phase}')" != Healthy ];
 fi
 # 번들 구성 캐시를 비우려고 다시 띄운다 (리셋 뒤에는 같은 번들 ID 가 다른 모델을 가리킬 수 있음).
 # A 심사 API 는 B-7 이 B 에 다시 생긴 뒤(5단계)에 재시작해야 준비 상태가 된다.
-kn rollout restart deploy/a-ocr-worker deploy/b-registry deploy/c-replay >/dev/null
+kn rollout restart deploy/a-ocr-worker deploy/b-registry deploy/c-replay deploy/d-platform >/dev/null
 kn rollout status deploy/b-registry --timeout=300s >/dev/null
+kn rollout status deploy/d-platform --timeout=300s >/dev/null
 
-say "4/5 포트포워드 + D 다시 시작"
+say "4/5 포트포워드 다시 붙이기"
 start_bg
 
 say "5/5 최초 번들 B-7 반입·승인"

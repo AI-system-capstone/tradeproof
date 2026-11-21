@@ -28,7 +28,7 @@
 - [ ] TODO(A와 확정): 워커 canary — A 제안은 "워커는 하나, 번들은 접수 때 거래마다 고정(`screening_jobs.bundle_id`), canary는 API Rollout만 나눈다". 워커 지표는 A의 API `/metrics`가 DB에서 `bundle_id`별로 집계(`tradeproof_screening_failed_total`, `tradeproof_screening_processing_seconds_avg`)
 - [ ] Prometheus 수집(MON-01), AnalysisTemplate로 단계별 분석 → 기준 초과 시 자동 중단 → 직전 번들 복원(MON-02). B에는 배포 API가 `cancelled`를 보낸다
 - [x] 배포 API 실제 드라이버(`DEPLOY_DRIVER=argo`): `deploy/values-dev.yaml`을 쓰고 Helm으로 canary 시작, 롤백(진행 중·반영 뒤 같은 방식, undo 없음), 밖에서 중단된 배포 감지. k3s에서 확인
-- [ ] 배포 API를 k3s 안에서 띄우기 — 이미지에 `helm`·`kubectl`(+ argo rollouts 플러그인)과 차트를 넣고, Rollout·Ingress·Secret 권한(RBAC)을 준다. 지금은 WSL에서 kubeconfig로 실행
+- [x] 배포 API를 클러스터 안에서 띄우기: 이미지에 helm·kubectl·Argo Rollouts 플러그인·A 차트(`Dockerfile`), 배포 파일·권한(`k8s/platform/d-platform.yaml`). 시연 키트가 같이 올린다 (11/21)
 - [ ] 감지 시간·전환 시간 측정 도구
 - [ ] 트래픽·이상 입력 도구 (TST-07·08)
 - [ ] 검증 Job(골든셋 검증 + Replay) 템플릿(Indexed Job)·RBAC (C·B와 협의)
