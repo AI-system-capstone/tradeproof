@@ -30,6 +30,7 @@
   input[type=text] { min-width: 0; width: 180px; }
   input.wide { flex: 1; }
   button { cursor: pointer; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.danger { color: var(--bad); border-color: var(--bad); }
   .out { margin-top: 10px; overflow-x: auto; }
@@ -191,7 +192,7 @@ async function run(out, fn, again) {
   out.innerHTML = '<span class="muted">불러오는 중…</span>';
   try { out.innerHTML = await fn(); }
   catch (e) { out.innerHTML = `<span class="err">${esc(e.message)}</span>`; }
-  finally { buttons.forEach(b => { b.disabled = false; }); }
+  finally { buttons.forEach(b => { b.disabled = b.dataset.locked === '1'; }); }
   if (again && out.querySelector('[data-pending]')) poll(out, again, gen);
 }
 function need(input) {
@@ -230,11 +231,21 @@ $('btnUpload').onclick = () => run($('importOut'), async () => {
 
 // 2. 검증·승인 (UI-02)
 const num = v => typeof v === 'number' ? +v.toFixed(4) : v;
+function setApprovalButtons(b) {
+  const approveOk = !b || b.status === 'validated' || b.status === 'approved' || (b.status === 'candidate' && !b.base_bundle_id);
+  const rejectOk = !b || b.status === 'validated';
+  for (const [el, ok] of [[$('btnApprove'), approveOk], [$('btnReject'), rejectOk]]) {
+    el.dataset.locked = ok ? '' : '1';
+    el.disabled = !ok;
+  }
+}
+$('bundleId').oninput = () => setApprovalButtons(null);
 async function showBundle(id) {
   // 번들과 검증을 따로 처리한다: 검증 조회가 실패해도 번들 정보는 보여 준다
   const [bRes, vRes] = await Promise.allSettled([api('b', 'GET', `/bundles/${id}`), api('b', 'GET', `/bundles/${id}/validation`)]);
-  if (bRes.status === 'rejected') throw bRes.reason;
+  if (bRes.status === 'rejected') { setApprovalButtons(null); throw bRes.reason; }
   const b = bRes.value;
+  setApprovalButtons(b);
   // 배포 요청이 받아들여졌으면 배포 ID 를 3구역 칸에 채운다
   const dep = (b.history || []).map(h => h.deployment_request).filter(d => d && d.state === 'accepted' && d.deployment_id).at(-1);
   if (dep) $('deployId').value = dep.deployment_id;
@@ -291,6 +302,9 @@ const decide = async decision => {
     if (decision === 'reject') return `${tag('반려됨', 'bad')} <span class="muted">${esc(r.from)} → ${esc(r.to)}</span>`;
     if (r.replacement_bundle_id) return `${tag('배포 안 됨', 'bad')} <span class="muted">운영 번들이 바뀌어 이 번들은 ${esc(r.status)} 처리됨</span>
       <p>대체 번들 <b>${esc(r.replacement_bundle_id)}</b> 이(가) 만들어짐. 다시 검증하고 승인해야 함</p>`;
+    if (r.status !== 'canary' && r.status !== 'active') {
+      return `${tag('배포 시작 안 됨', 'bad')} <span class="muted">번들 상태가 ${statusTag(r.status)} 이므로 새 배포가 시작되지 않았습니다${r.deployment_id ? ` (기존 배포 ID ${esc(r.deployment_id)})` : ''}</span>`;
+    }
     $('deployId').value = r.deployment_id;
     return `${tag('승인됨', 'ok')} 배포 요청함 · 배포 ID <b>${esc(r.deployment_id)}</b> <span class="muted">번들 상태 ${esc(r.status)}</span>`;
   });
