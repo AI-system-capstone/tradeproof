@@ -64,6 +64,10 @@
   @media (max-width: 600px) { .diff-grid { grid-template-columns: 1fr; } }
   .diff-card { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
   .diff-card h4 { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
+  /* 잠금 풀기 줄: 평소엔 흐리게, 쓸 수 있을 때(.on)만 경고색 */
+  .recover { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); }
+  .recover.on { border-color: var(--warn); background: var(--warn-bg); color: var(--text); }
+  .note { margin: 6px 0 0; padding-left: 1.3em; }
 </style>
 </head>
 <body>
@@ -96,9 +100,15 @@
     </div>
     <div class="out" id="bundleOut" aria-live="polite"></div>
     <div class="row" style="margin-top:10px">
-      <input type="text" class="wide" id="reason" placeholder="승인·반려 사유" aria-label="승인·반려 사유">
+      <input type="text" class="wide" id="reason" placeholder="사유 (승인·반려·다시 검증·잠금 풀기)" aria-label="사유">
       <button class="primary" id="btnApprove">승인</button>
       <button class="danger" id="btnReject">반려</button>
+      <button id="btnRetry" disabled data-locked="1" title="검증이 실행 오류로 끝난 후보(candidate) 번들일 때 켜짐">다시 검증</button>
+    </div>
+    <!-- 항상 보인다. 배포 요청이 pending(D 접수 여부 모름)일 때만 확인 칸이 켜지고, 체크해야 버튼이 켜진다 -->
+    <div class="row recover" id="recoverRow" title="배포 요청이 D 접수 여부 모름(pending)일 때 켜짐">
+      <label style="flex:1"><input type="checkbox" id="recoverOk" disabled> D 에 이 번들의 배포 요청이 없음(미접수)을 확인했습니다</label>
+      <button class="danger" id="btnRecover" disabled data-locked="1">배포 잠금 풀기</button>
     </div>
     <div class="out" id="approvalOut" aria-live="polite"></div>
   </section>
@@ -134,13 +144,21 @@
                                            -> 승인 202 {bundle_id, status, deployment_id} (D 에 배포까지 요청함)
                                               승인 200 {bundle_id, status, replacement_bundle_id} (대체 번들이 만들어짐)
                                               반려 200 {from, to, changed_at}
+      POST /bundles/{id}/validations       <- {actor, reason}  실행 오류로 failed 인 candidate 만 다시 검증
+                                           -> 202 새 검증 {validation_id, status:"queued", …} / 진행 중·게이트 불합격 409 / Job 상태 확인 불가 503
+      POST /bundles/{id}/deployment-recovery <- {actor, reason, expected_changed_at, confirmed_not_received:true}
+                                              expected_changed_at = history 의 마지막 deployment_request 항목의 changed_at
+                                           -> 200 {bundle_id, status:"approved", request_state:"failed"} (잠금만 풂. 배포는 다시 승인)
+                                              기록이 바뀜·D 에 배포가 있음 409 / D 조회 불가 503
+      history 의 deployment_request.state: pending(D 접수 여부 모름, 잠김) | accepted(접수됨) | failed(보내지 못함) | rejected(D 가 거절)
    C  GET  /validations/{id}               -> {status, created_at, started_at, progress:{stage:"golden"|"replay", done, total, updated_at} | null}
                                               검증이 queued·running 일 때만 부른다 (진행 막대·경과 시간용)
       GET  /validations/{id}/diffs         -> {items:[{tx_id, direction, before:{bundle_id, classification, reasons}, after:{bundle_id, classification, reasons}, fields_changed:[{field, before, after}]}], total}
    D  GET  /deployments/{id}               -> {deployment_id, bundle_id, status, weight, step_index, ...}
       POST /deployments/{id}/rollback      <- {actor, reason}
    파일로 열면(file://) C 주소는 ?c=… (기본 http://localhost:8200). ?mock=1 이면 서버 없이 예시 데이터로 화면만 본다.
-   ?mock=running 이면 검증이 진행 중인 화면을 본다 (조회할 때마다 처리 건수가 늘어난다). */
+   ?mock=running 이면 검증이 진행 중인 화면을 본다 (조회할 때마다 처리 건수가 늘어난다).
+   ?mock=failed 이면 검증이 실행 오류로 끝난 화면(다시 검증), ?mock=pending 이면 배포 요청이 잠긴 화면(배포 잠금 풀기)을 본다. */
 const q = new URLSearchParams(location.search);
 const C_URL = q.get('c') || (location.protocol === 'file:' ? 'http://localhost:8200' : '');
 const BASE = { b: C_URL + '/api/b', c: C_URL, d: C_URL + '/api/d' };
@@ -201,6 +219,31 @@ if (MOCK && q.get('mock') === 'running') {
   Object.assign(MOCK['GET b/bundles'], { status: 'candidate', history: [] });
   Object.assign(MOCK['GET b/bundles/validation'], { status: 'running', finished_at: null, gate: null, result: null });
 }
+// ?mock=failed: 검증 Job 실행 오류 → '다시 검증'을 누르면 새 검증이 queued 로 만들어지고 진행 화면으로 넘어간다
+if (MOCK && q.get('mock') === 'failed') {
+  Object.assign(MOCK['GET b/bundles'], { status: 'candidate', history: [] });
+  Object.assign(MOCK['GET b/bundles/validation'], { status: 'failed', gate: null, result: null,
+    error: 'C execution failed: ModuleNotFoundError: No module named c_replay.gate' });
+  MOCK['POST b/bundles/validations'] = () => {
+    const run = { validation_id: 'RP-9b1d2c3e4f5a6b7c8d9e0f1a2b3c4d5e', bundle_id: 'B-9', baseline_bundle_id: 'B-7',
+      status: 'queued', created_at: new Date().toISOString(), gate: null, result: null, error: null };
+    MOCK['GET b/bundles/validation'] = { ...run, status: 'running' };
+    return run;
+  };
+}
+// ?mock=pending: B 가 D 에 배포 요청을 보냈지만 답을 못 받음 → 확인 후 '배포 잠금 풀기' → failed 기록이 붙고 다시 승인 가능
+if (MOCK && q.get('mock') === 'pending') {
+  const pending = { from: 'approved', to: 'approved', actor: 'kim', reason: '정확도 개선 확인', changed_at: '2026-11-21T06:10:00+00:00',
+    deployment_request: { state: 'pending', deployment_id: null } };
+  Object.assign(MOCK['GET b/bundles'], { status: 'approved', history: [...MOCK['GET b/bundles'].history,
+    { from: 'validated', to: 'approved', actor: 'kim', reason: '정확도 개선 확인', changed_at: '2026-11-21T06:10:00+00:00' }, pending] });
+  MOCK['POST b/bundles/deployment-recovery'] = () => {
+    MOCK['GET b/bundles'].history.push({ from: 'approved', to: 'approved', actor: 'kim', reason: 'D 담당자와 미접수 확인',
+      changed_at: new Date().toISOString(), deployment_request: { state: 'failed', deployment_id: null },
+      recovery: { pending_changed_at: pending.changed_at, confirmed_not_received: true } });
+    return { bundle_id: 'B-9', status: 'approved', request_state: 'failed' };
+  };
+}
 
 const $ = id => document.getElementById(id);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -209,7 +252,7 @@ const seg = v => encodeURIComponent(v.trim());
 async function api(svc, method, path, body) {
   if (MOCK) {
     const segs = path.split('?')[0].split('/').filter(Boolean);
-    const key = `${method} ${svc}/${segs[0]}${['diffs', 'validation', 'active'].includes(segs.at(-1)) ? '/' + segs.at(-1) : ''}`;
+    const key = `${method} ${svc}/${segs[0]}${['diffs', 'validation', 'active', 'validations', 'deployment-recovery'].includes(segs.at(-1)) ? '/' + segs.at(-1) : ''}`;
     const m = MOCK[`${key}:${body && body.decision}`] || MOCK[key];
     return typeof m === 'function' ? m() : m;
   }
@@ -313,26 +356,77 @@ $('btnUpload').onclick = () => run($('importOut'), async () => {
 
 // 2. 검증·승인 (UI-02)
 const num = v => typeof v === 'number' ? +v.toFixed(4) : v;
-function setApprovalButtons(b) {
+// B 가 번들 history 에 남긴 마지막 배포 요청 (B 의 deployment_attempt 와 같은 규칙: deployment_request 가 있는 마지막 항목)
+function lastAttempt(b) {
+  const h = (b.history || []).filter(e => e.deployment_request).at(-1);
+  return h ? { ...h.deployment_request, changed_at: h.changed_at, actor: h.actor, reason: h.reason, recovery: h.recovery } : null;
+}
+// 마지막으로 조회한 번들. '배포 잠금 풀기'는 이 조회에서 본 요청 시각(expected_changed_at)을 B 에 보낸다
+let CUR = null;
+const lock = (el, ok) => { el.dataset.locked = ok ? '' : '1'; el.disabled = !ok; };
+// 2구역 버튼을 번들 상태에 맞춘다. b = null 이면 번들을 아직 조회하지 않음 (승인·반려만 켠다)
+function setApprovalButtons(b, v = null) {
+  const a = b && lastAttempt(b);
   const approveOk = !b || b.status === 'validated' || b.status === 'approved' || (b.status === 'candidate' && !b.base_bundle_id);
   const rejectOk = !b || b.status === 'validated';
-  for (const [el, ok] of [[$('btnApprove'), approveOk], [$('btnReject'), rejectOk]]) {
-    el.dataset.locked = ok ? '' : '1';
-    el.disabled = !ok;
-  }
+  const retryOk = !!b && b.status === 'candidate' && !!v && v.status === 'failed';   // 실행 오류만. 게이트 불합격은 validation_failed
+  const recoverOk = !!b && b.status === 'approved' && !!a && a.state === 'pending';
+  const same = CUR && b && CUR.bundle_id === b.bundle_id && CUR.attempt && a && CUR.attempt.changed_at === a.changed_at;
+  if (!same) $('recoverOk').checked = false;   // 다른 번들·다른 요청이면 확인을 다시 받는다
+  CUR = b ? { bundle_id: b.bundle_id, attempt: a, recoverOk } : null;
+  lock($('btnApprove'), approveOk);
+  lock($('btnReject'), rejectOk);
+  lock($('btnRetry'), retryOk);   // 버튼은 항상 보이고 켜짐·꺼짐만 바뀐다
+  $('recoverOk').disabled = !recoverOk;
+  if (!recoverOk) $('recoverOk').checked = false;
+  $('recoverRow').classList.toggle('on', recoverOk);
+  lock($('btnRecover'), recoverOk && $('recoverOk').checked);
 }
 $('bundleId').oninput = () => setApprovalButtons(null);
+$('recoverOk').onchange = () => lock($('btnRecover'), !!CUR && CUR.recoverOk && $('recoverOk').checked);
+
+// 배포 요청 상태 (B 가 D 에 보낸 요청이 어떻게 됐는지)
+function attemptHtml(b, a) {
+  if (!a) return '';
+  const when = `<span class="muted">${esc(a.changed_at)} · ${esc(a.actor)}</span>`;
+  const reason = a.reason ? `<p class="muted">사유: ${esc(a.reason)}</p>` : '';
+  const again = b.status === 'approved';   // 다시 승인할 수 있는 상태
+  let body;
+  if (a.state === 'accepted') {
+    body = `<p>${tag('D 접수됨', 'ok')} 배포 ID <b>${esc(a.deployment_id)}</b> (3. 배포에서 조회) ${when}</p>`;
+  } else if (a.state === 'pending') {
+    body = `<p>${tag('D 접수 여부 모름', 'bad')} ${when}</p>
+      <p>B 가 D 에 배포 요청을 보냈지만 답을 받지 못했습니다. 이 번들은 배포가 잠겼고, 그동안 다른 번들도 배포할 수 없습니다.</p>
+      <ol class="note">
+        <li>먼저 <b>승인</b>을 다시 누릅니다. B 는 새 요청을 보내지 않고 D 에 접수됐는지만 다시 확인합니다.</li>
+        <li>그래도 풀리지 않으면 D 담당자와 D 에 이 번들의 배포가 없는지 확인합니다.</li>
+        <li>없으면 아래 확인 칸을 체크하고 <b>배포 잠금 풀기</b>를 누릅니다. 잠금만 풀리고 배포는 다시 승인해야 합니다.</li>
+      </ol>`;
+  } else if (a.state === 'failed') {
+    body = `<p>${tag(a.recovery ? '잠금 풀림' : 'D 에 보내지 못함', 'bad')} ${when}</p>${reason}
+      <p class="muted">${a.recovery ? '운영자가 D 에 요청이 없음을 확인하고 잠금을 풀었습니다.' : '요청이 D 에 닿기 전에 실패해서 중복 배포 걱정은 없습니다.'}
+      ${again ? ' 원인을 확인한 뒤 <b>승인</b>을 다시 누르면 새로 요청합니다.' : ''}</p>`;
+  } else if (a.state === 'rejected') {
+    body = `<p>${tag('D 가 거절함', 'bad')} ${when}</p>${reason}
+      <p class="muted">D 가 요청을 받지 않았습니다.${again ? ' 원인을 고친 뒤 <b>승인</b>을 다시 누르면 새로 요청합니다.' : ''}</p>`;
+  } else {
+    body = `<p>${tag(a.state || '알 수 없음')} ${when}</p>${reason}`;
+  }
+  return `<h3>배포 요청 (B → D)</h3>${body}`;
+}
+
 async function showBundle(id) {
   // 번들과 검증을 따로 처리한다: 검증 조회가 실패해도 번들 정보는 보여 준다
   const [bRes, vRes] = await Promise.allSettled([api('b', 'GET', `/bundles/${id}`), api('b', 'GET', `/bundles/${id}/validation`)]);
   if (bRes.status === 'rejected') { setApprovalButtons(null); throw bRes.reason; }
-  const b = bRes.value;
-  setApprovalButtons(b);
+  const b = bRes.value, a = lastAttempt(b);
+  setApprovalButtons(b, vRes.status === 'fulfilled' ? vRes.value : null);
   // 배포 요청이 받아들여졌으면 배포 ID 를 3구역 칸에 채운다
   const dep = (b.history || []).map(h => h.deployment_request).filter(d => d && d.state === 'accepted' && d.deployment_id).at(-1);
   if (dep) $('deployId').value = dep.deployment_id;
   return `${kv(b)}
     <table><tr><th>모델 파일</th><td>${esc(b.model && b.model.uri)}</td></tr><tr><th>리스트 파일</th><td>${esc(b.list && b.list.uri)}</td></tr></table>
+    ${attemptHtml(b, a)}
     ${await validationOrError(vRes, b)}`;
 }
 function loadBundle(rawId) {
@@ -547,7 +641,11 @@ async function showValidation(v) {
       <p class="sr-only" data-announce aria-live="polite"></p><p class="muted" data-cerr>${esc(cErr)}</p>${PENDING}`;
   }
   const head = `<h3>검증 ${esc(v.validation_id)}</h3><p>${statusTag(v.status)} 기준 ${esc(v.baseline_bundle_id)} → 후보 ${esc(v.bundle_id)}</p>`;
-  if (v.status === 'failed') return `${head}<p class="err">${esc(v.error)}</p>${gateHtml(v.gate)}`;
+  if (v.status === 'failed') {   // 실행 오류 (게이트 불합격과 다르다: 그건 completed + 번들 validation_failed)
+    return `${head}<p class="err">실행 오류: ${esc(v.error)}</p>
+      <p class="muted">검증 Job 이 끝까지 돌지 못했습니다. 원인을 고친 뒤 아래 <b>다시 검증</b>을 누르면 새 검증을 시작합니다 (후보(candidate) 번들만).</p>
+      ${gateHtml(v.gate)}`;
+  }
   const g = v.result && v.result.golden, rp = v.result && v.result.replay;
   if (!g || !rp) return head + gateHtml(v.gate);
   let diffs, diffErr = '';
@@ -588,6 +686,44 @@ const decide = async decision => {
 };
 $('btnApprove').onclick = () => decide('approve');
 $('btnReject').onclick = () => decide('reject');
+
+// B 의 409·503 에 이 동작에서의 뜻을 붙인다. 원래 메시지도 괄호로 남긴다
+function explain(e, notes) {
+  const note = notes[e.message.split(':')[0]];
+  return note ? new Error(`${note} (${e.message})`) : e;
+}
+// 버튼 동작 뒤에 번들(과 운영 번들)을 다시 조회한다. 버튼 잠금이 풀린 뒤에 부른다
+async function act(fn, after) {
+  let sent = false;
+  await run($('approvalOut'), async () => { const html = await fn(); sent = html !== ''; return html; });
+  if (sent) { $('btnBundle').click(); if (after) after(); }
+}
+
+// 다시 검증 (B-1): 실행 오류로 끝난 후보의 검증을 새로 시작. 시작되면 번들 조회가 진행 막대를 따라간다
+$('btnRetry').onclick = () => act(async () => {
+  const id = need($('bundleId')), actor = need($('actor')), reason = need($('reason'));
+  if (!confirm(`번들 ${id}의 검증을 다시 실행할까요?\n골든셋과 Replay 를 처음부터 다시 돌립니다`)) return '';
+  const r = await api('b', 'POST', `/bundles/${seg(id)}/validations`, { actor, reason }).catch(e => { throw explain(e, {
+    CONFLICT: '다시 검증할 수 없음: 진행 중인 검증이 있거나, 실행 오류가 아닌 게이트 불합격입니다',
+    SERVICE_UNAVAILABLE: '이전 검증 Job 상태를 확인하지 못해 시작하지 않았습니다. 잠시 뒤 다시 누르세요' }); });
+  return `${tag('다시 검증 시작', 'ok')} 새 검증 <b>${esc(r.validation_id)}</b> ${statusTag(r.status)}`;
+});
+
+// 배포 잠금 풀기 (B-3): pending 요청을 운영자 확인으로 failed 로 닫는다. 배포는 하지 않는다
+$('btnRecover').onclick = () => act(async () => {
+  const id = need($('bundleId')), actor = need($('actor')), reason = need($('reason'));
+  const a = CUR && CUR.bundle_id === id && CUR.attempt;
+  if (!a || a.state !== 'pending') throw new Error('번들을 다시 조회하세요 (잠긴 배포 요청이 없음)');
+  if (!$('recoverOk').checked) throw new Error('D 에 요청이 없음을 확인했다는 칸을 체크하세요');
+  if (!confirm(`번들 ${id}의 배포 잠금을 풀까요?\n요청 시각 ${a.changed_at}\nD 에 이 번들의 배포가 없음을 확인한 경우에만 누르세요. 배포는 다시 승인해야 합니다`)) return '';
+  const r = await api('b', 'POST', `/bundles/${seg(id)}/deployment-recovery`, {
+    actor, reason, expected_changed_at: a.changed_at, confirmed_not_received: true,
+  }).catch(e => { throw explain(e, {
+    CONFLICT: '잠금을 풀지 않음: 그 사이 배포 요청 기록이 바뀌었거나 D 에 이 번들의 배포가 있습니다. 번들을 다시 조회하세요',
+    SERVICE_UNAVAILABLE: '잠금을 풀지 않음: B 가 D 의 배포 목록을 확인하지 못했습니다' }); });
+  return `${tag('잠금 풀림', 'ok')} 번들 ${esc(r.bundle_id)} ${statusTag(r.status)} <span class="muted">요청 기록 ${esc(r.request_state)}</span>
+    <p>자동으로 배포하지 않습니다. 배포하려면 <b>승인</b>을 다시 누르세요</p>`;
+}, refreshActive);
 
 // 3. 배포 상태·롤백
 async function showDeploy(id) {

@@ -46,7 +46,8 @@ log = logging.getLogger("c_replay")
 # 아무 주소나 넘기지 않도록 화면이 쓰는 경로만 허용한다. ID 자리에는 영문·숫자·_·- 만 (.. 같은 경로 조작 차단).
 _ID = r"[A-Za-z0-9_-]+"
 PROXY_ROUTES = {
-    ("b", "POST"): ("imports", "approvals"),
+    # bundles/{id}/validations: 실행 오류로 끝난 검증 다시 실행, deployment-recovery: 미접수 배포 요청 잠금 풀기 (B PR #31)
+    ("b", "POST"): ("imports", "approvals", f"bundles/{_ID}/validations", f"bundles/{_ID}/deployment-recovery"),
     ("b", "GET"): (f"imports/{_ID}", "bundles/active", f"bundles/{_ID}", f"bundles/{_ID}/validation"),
     ("d", "GET"): (f"deployments/{_ID}",),
     ("d", "POST"): (f"deployments/{_ID}/rollback",),

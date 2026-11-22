@@ -23,8 +23,8 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 검증 결과 | C(M3) → B(M2) · 운영 화면(C) | C가 POST /bundles/{id}/validation-results/{validation_id}로 세 ID·status(completed/failed)·golden·replay·error 통보. B가 결과 저장·게이트 판정 후 200 반환, ID/확정 결과 충돌 409·잘못된 결과 422. 운영 화면은 B 결과 조회, 거래 diff는 기존 C 조회 사용. 내부 통보 API 접근 제한은 D 네트워크 정책으로 적용 | 1차 |
 | 게이트·승인 | 운영 화면(C) ↔ B(M2) | 반입 후 자동 검증. GET /bundles/{id}/validation으로 결과·게이트 조회. POST /approvals 승인 시 D 배포 요청까지 진행(202 카나리 접수, 기준 변경 시 200 재조합 후보·자동 재검증), 반려 시 200 상태 전이. 정확도 90% 이상·Replay 전체 처리 기준. 최초 번들은 검증 생략 후 배포 승인 | 1차 |
 | 배포 | 운영 화면(C) → B(M2) → D | B `POST /bundles/{id}/deployments`에 `{actor, reason}`. 기준 변경 시 재조합 후 200 replacement_bundle_id 반환·재검증 필요. 일치하면 B가 D `POST /deployments`에 `{bundle_id}`와 X-Actor를 보내고 접수 확인 후 canary로 변경, 202 deployment_id 반환 | 1차 |
-| 검증 재실행 | 운영 화면(C) → B | POST /bundles/{id}/validations에 {actor, reason}. 실행 오류로 failed인 candidate만 재검증(202 새 검증 정보). 진행 중 Job·게이트 불합격은 409, Job 상태 확인 불가 503. C 중계 허용 경로·버튼 추가 필요 | 1차 |
-| 미확정 배포 복구 | 운영자(C/운영 도구) → B ↔ D | POST /bundles/{id}/deployment-recovery에 {actor, reason, expected_changed_at, confirmed_not_received:true}. D가 원래 요청 종료·미접수를 확인한 뒤 호출. B가 D 재조회 후 pending 해제(200); 기존 배포·오래된 요청 409, D 조회 불가/불완전 503. 자동 배포하지 않으며 이후 재승인 | 1차 |
+| 검증 재실행 | 운영 화면(C) → B | POST /bundles/{id}/validations에 {actor, reason}. 실행 오류로 failed인 candidate만 재검증(202 새 검증 정보). 진행 중 Job·게이트 불합격은 409, Job 상태 확인 불가 503. 운영 화면 2구역 '다시 검증' 버튼(C 중계 `/api/b/bundles/{id}/validations`) | 1차 |
+| 미확정 배포 복구 | 운영자(C/운영 도구) → B ↔ D | POST /bundles/{id}/deployment-recovery에 {actor, reason, expected_changed_at, confirmed_not_received:true}. D가 원래 요청 종료·미접수를 확인한 뒤 호출. B가 D 재조회 후 pending 해제(200); 기존 배포·오래된 요청 409, D 조회 불가/불완전 503. 자동 배포하지 않으며 이후 재승인. 운영 화면 2구역 '배포 잠금 풀기'(확인 칸 체크 필수, C 중계 `/api/b/bundles/{id}/deployment-recovery`) | 1차 |
 | 배포 담당자·재승인 | 운영 화면(C) → B → D | D의 X-Actor 원문 계약 유지. 비ASCII·연결 전 실패는 B 요청 이력 failed로 남겨 전체 배포 잠금 방지. 한글 이름 지원은 D의 JSON actor/헤더 디코딩 계약 협의 필요(미적용). cancelled/superseded 재승인은 B 409 | 1차 |
 | 배포 상태·롤백 | D → B · 운영 화면(C) | `GET /deployments/{id}`, `POST /deployments/{id}/rollback` | 1차 |
 | 운영 화면 중계 | 운영 화면(C) → C → B·D | 운영 화면은 C 서버 한 곳만 부르고, C의 `/api/b/…`, `/api/d/…`가 정해 둔 경로만 B·D에 그대로 전달한다(B·D의 CORS 불필요). C에 환경변수 `B_URL`·`D_URL` 필요 | 1차 |
@@ -89,3 +89,4 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 2026-11-17 | C 강민성 | 1절에 운영 화면 중계(C → B·D) 추가 |
 | 2026-11-17 | A 지윤아 | A가 번들 구성을 B에서 받음: `REGISTRY_MODE=http` 면 `GET /bundles/{id}` → 모델·리스트 ZIP(`payload/model_config.json`, `payload/sanctions.json`). 기본 `local` 은 기존처럼 `contracts.BUNDLES`. D 차트 `a-screening` 을 A 실제 이미지로 바꾸고 `REGISTRY_MODE=http` 설정 (k3s 에 B 가 있어야 함) |
 | 2026-11-21 | B 박시우 | 실행 오류 재검증·미확정 배포 복구 API 추가, 취소 번들 재승인 409. C 중계/버튼 연결 및 D 한글 actor 계약 협의 요청. 미전송 배포 실패는 재승인 가능하며 응답 유실은 접수 확인 전 자동 재전송하지 않음. B 배포 YAML 미제공으로 실제 리뷰 대기 |
+| 2026-11-22 | C 강민성 | 운영 화면에 재검증·배포 잠금 풀기 연결: C 중계 허용 경로 2개 추가, 2구역에 '다시 검증'·'배포 잠금 풀기' 버튼과 배포 요청 상태(pending·accepted·failed·rejected) 표시 |
