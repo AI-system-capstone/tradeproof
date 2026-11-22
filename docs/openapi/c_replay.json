@@ -99,7 +99,7 @@
       "get": {
         "tags": ["ui"],
         "summary": "운영 화면용 B·D 중계 (조회)",
-        "description": "환경변수 `B_URL`·`D_URL`의 서버로 그대로 전달하고 응답(상태 코드·본문)을 그대로 돌려준다. 허용 경로: B `imports/{id}`, `bundles/{id}`, `bundles/{id}/validation`, D `deployments/{id}`. 넘기는 헤더는 `Content-Type`, `X-Actor`, `X-Request-ID`만.",
+        "description": "환경변수 `B_URL`·`D_URL`의 서버로 그대로 전달하고 응답(상태 코드·본문)을 그대로 돌려준다. 허용 경로: B `imports/{id}`, `bundles`(목록), `bundles/active`, `bundles/{id}`, `bundles/{id}/validation`, D `deployments`(최근 목록, `?limit=`), `deployments/{id}`. 쿼리 문자열도 그대로 넘긴다. 넘기는 헤더는 `Content-Type`, `X-Actor`, `X-Request-ID`만.",
         "operationId": "proxyGet",
         "responses": { "200": { "description": "B·D 응답 그대로" }, "404": { "$ref": "#/components/responses/NotFound" }, "503": { "$ref": "#/components/responses/Unavailable" } }
       },

@@ -302,6 +302,19 @@ def test_proxy_passes_revalidation_and_deployment_recovery(path, body, status):
     assert json.loads(req.read()) == body   # 한글 담당자 이름도 본문 그대로
 
 
+def test_proxy_passes_lists_for_id_pickers_with_query():
+    """ID 입력란의 고르기 목록: B 번들 목록, D 최근 배포 목록 (?limit= 도 그대로 넘긴다)."""
+    import httpx
+    seen = []
+    def handler(req):
+        seen.append(req)
+        return httpx.Response(200, json=[])
+    c = proxy_client(handler)
+    assert c.get("/api/b/bundles").status_code == 200
+    assert c.get("/api/d/deployments?limit=50").status_code == 200
+    assert [str(r.url) for r in seen] == ["http://b:8100/bundles", "http://d:8300/deployments?limit=50"]
+
+
 def test_proxy_keeps_upstream_error_status_and_body():
     import httpx
     c = proxy_client(lambda req: httpx.Response(409, json={"code": "CONFLICT", "message": "m", "target_id": None}))
@@ -310,7 +323,7 @@ def test_proxy_keeps_upstream_error_status_and_body():
 
 
 @pytest.mark.parametrize("method,path", [
-    ("GET", "/api/b/bundles"),                       # 목록은 화면이 쓰지 않는다
+    ("POST", "/api/b/bundles"),                      # 목록은 조회(GET)만
     ("POST", "/api/b/bundles/B-9/transitions"),      # 상태 직접 변경은 넘기지 않는다
     ("GET", "/api/b/bundles/../imports"),            # 경로 조작
     ("GET", "/api/x/bundles/B-9"),                   # 모르는 서비스

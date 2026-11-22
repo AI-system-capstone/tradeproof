@@ -73,13 +73,21 @@
   .banner.ok { border-color: var(--ok); background: var(--ok-bg); }
   .banner p { margin: 4px 0 0; }
   details { margin-top: 8px; }
+  /* 탭: 반입·검증·승인 / 배포. 운영 번들은 두 탭 위에 늘 보인다 */
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
+  .tabs [role=tab] { border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; padding: 7px 14px;
+                     background: none; color: var(--muted); margin-bottom: -1px; }
+  .tabs [role=tab][aria-selected=true] { background: var(--panel); border-color: var(--line); color: var(--text); font-weight: 600; }
+  .tab-badge { margin-left: 4px; }
+  .panel { display: grid; gap: 16px; min-width: 0; }
+  .panel[hidden] { display: none; }
   summary { cursor: pointer; }
 </style>
 </head>
 <body>
 <header>
   <h1>TradeProof 운영 화면</h1>
-  <label class="row muted">담당자 <input type="text" id="actor" placeholder="이름"></label>
+  <label class="row muted">담당자 <input type="text" id="actor" placeholder="이름" value="K"></label>
 </header>
 <main>
   <section>
@@ -87,12 +95,19 @@
     <div class="out" id="activeOut" aria-live="polite"></div>
   </section>
 
+  <div class="tabs" role="tablist" aria-label="작업">
+    <button type="button" role="tab" id="tabReview" aria-controls="panelReview" aria-selected="true">반입·검증·승인</button>
+    <button type="button" role="tab" id="tabDeploy" aria-controls="panelDeploy" aria-selected="false" tabindex="-1">배포<span class="tab-badge" id="deployBadge"></span></button>
+  </div>
+
+  <div class="panel" role="tabpanel" id="panelReview" aria-labelledby="tabReview">
   <section>
     <h2>1. 반입</h2>
     <div class="row">
       <input type="file" id="importFile" accept=".zip" aria-label="반입 ZIP 파일">
       <button class="primary" id="btnUpload">업로드</button>
-      <input type="text" id="importId" placeholder="반입 ID" aria-label="반입 ID">
+      <input type="text" id="importId" list="importList" placeholder="반입 ID (고르거나 입력)" aria-label="반입 ID" autocomplete="off">
+      <datalist id="importList"></datalist>
       <button id="btnImport">조회</button>
     </div>
     <div class="out" id="importOut" aria-live="polite"></div>
@@ -101,7 +116,8 @@
   <section>
     <h2>2. 검증·승인</h2>
     <div class="row">
-      <input type="text" id="bundleId" placeholder="번들 ID (예: B-9)" aria-label="번들 ID">
+      <input type="text" id="bundleId" list="bundleList" placeholder="번들 ID (고르거나 입력)" aria-label="번들 ID" autocomplete="off">
+      <datalist id="bundleList"></datalist>
       <button id="btnBundle">조회</button>
     </div>
     <div class="out" id="bundleOut" aria-live="polite"></div>
@@ -118,17 +134,21 @@
     </div>
     <div class="out" id="approvalOut" aria-live="polite"></div>
   </section>
+  </div>
 
+  <div class="panel" role="tabpanel" id="panelDeploy" aria-labelledby="tabDeploy" hidden>
   <section>
-    <h2>3. 배포</h2>
+    <h2>배포</h2>
     <div class="row">
-      <input type="text" id="deployId" placeholder="배포 ID (D 가 알려 줌)" aria-label="배포 ID">
+      <input type="text" id="deployId" list="deployList" placeholder="배포 ID (고르거나 입력)" aria-label="배포 ID" autocomplete="off">
+      <datalist id="deployList"></datalist>
       <button id="btnDeploy">조회</button>
       <input type="text" id="rollbackReason" placeholder="롤백 사유 (선택)" aria-label="롤백 사유">
       <button class="danger" id="btnRollback" disabled data-locked="1" title="배포를 조회한 뒤, 진행 중이거나 전체 반영된 배포일 때 켜짐">롤백</button>
     </div>
     <div class="out" id="deployOut" aria-live="polite"></div>
   </section>
+  </div>
 </main>
 
 <dialog id="diffDlg" aria-labelledby="diffTitle">
@@ -239,6 +259,15 @@ function mockDeploy(fail) {
   };
 }
 if (MOCK && ['canary', 'rollback'].includes(q.get('mock'))) MOCK['GET d/deployments'] = mockDeploy(q.get('mock') === 'rollback');
+// ID 고르기 목록 목업 (B GET /bundles 는 오래된 순, D GET /deployments 는 최신 순)
+if (MOCK) {
+  const b = (bundle_id, status, model_id, created_at) => ({ bundle_id, status, model_id, list_id: 'list-v14', created_at });
+  MOCK['GET b/bundles/list'] = [b('B-7', 'active', 'model-v3', '2026-11-10T09:00:00Z'), b('B-8', 'validation_failed', 'model-v2N', '2026-11-15T10:00:00Z'),
+    b('B-9', MOCK['GET b/bundles'].status, 'model-v4', '2026-11-16T09:00:00Z'), b('B-10', 'candidate', 'model-v5', '2026-11-17T08:30:00Z')];
+  MOCK['GET d/deployments/list'] = [
+    { deployment_id: 'DP-1', bundle_id: 'B-9', previous_bundle_id: 'B-7', status: 'progressing', created_at: '2026-11-16T10:05:00Z' },
+    { deployment_id: 'DP-0', bundle_id: 'B-7', previous_bundle_id: 'B-7', status: 'succeeded', created_at: '2026-11-10T09:05:00Z' }];
+}
 
 // ?mock=running: 조회할 때마다 골든셋 200건(100건 × 번들 2개) → Replay 120건 순으로 처리 건수가 늘어난다
 function mockRunning() {
@@ -288,7 +317,8 @@ const seg = v => encodeURIComponent(v.trim());
 async function api(svc, method, path, body) {
   if (MOCK) {
     const segs = path.split('?')[0].split('/').filter(Boolean);
-    const key = `${method} ${svc}/${segs[0]}${['diffs', 'validation', 'active', 'validations', 'deployment-recovery'].includes(segs.at(-1)) ? '/' + segs.at(-1) : ''}`;
+    const list = method === 'GET' && segs.length === 1 && ['bundles', 'deployments'].includes(segs[0]) ? '/list' : '';
+    const key = `${method} ${svc}/${segs[0]}${list}${['diffs', 'validation', 'active', 'validations', 'deployment-recovery'].includes(segs.at(-1)) ? '/' + segs.at(-1) : ''}`;
     const m = MOCK[`${key}:${body && body.decision}`] || MOCK[key];
     return typeof m === 'function' ? m(body) : m;
   }
@@ -371,7 +401,8 @@ refreshActive();
 
 // 1. 반입 (UI-01)
 async function showImport() {
-  const r = await api('b', 'GET', `/imports/${seg(need($('importId')))}`);
+  const id = need($('importId')), r = await api('b', 'GET', `/imports/${seg(id)}`);
+  rememberImport({ import_id: id, filename: r.filename, status: r.status, bundle_id: r.bundle_id });
   if (!r.status) return '<p class="muted">처리 중 (B 가 202 로 답함). 잠시 뒤 다시 조회하세요</p>';
   if (r.bundle_id) {
     $('bundleId').value = r.bundle_id;
@@ -387,6 +418,7 @@ $('btnUpload').onclick = () => run($('importOut'), async () => {
   const form = new FormData();
   form.append('package', file);
   $('importId').value = (await api('b', 'POST', '/imports', form)).import_id;
+  rememberImport({ import_id: $('importId').value, filename: file.name });
   return showImport();
 });
 
@@ -429,7 +461,7 @@ function attemptHtml(b, a) {
   const again = b.status === 'approved';   // 다시 승인할 수 있는 상태
   let body;
   if (a.state === 'accepted') {
-    body = `<p>${tag('D 접수됨', 'ok')} 배포 ID <b>${esc(a.deployment_id)}</b> (3. 배포에서 조회) ${when}</p>`;
+    body = `<p>${tag('D 접수됨', 'ok')} 배포 ID <b>${esc(a.deployment_id)}</b> ${when} <button type="button" class="link" data-goto="deploy">배포 탭에서 보기</button></p>`;
   } else if (a.state === 'pending') {
     body = `<p>${tag('D 접수 여부 모름', 'bad')} ${when}</p>
       <p>B 가 D 에 배포 요청을 보냈지만 답을 받지 못했습니다. 이 번들은 배포가 잠겼고, 그동안 다른 번들도 배포할 수 없습니다.</p>
@@ -457,7 +489,7 @@ async function showBundle(id) {
   if (bRes.status === 'rejected') { setApprovalButtons(null); throw bRes.reason; }
   const b = bRes.value, a = lastAttempt(b);
   setApprovalButtons(b, vRes.status === 'fulfilled' ? vRes.value : null);
-  // 배포 요청이 받아들여졌으면 배포 ID 를 3구역 칸에 채운다
+  // 배포 요청이 받아들여졌으면 배포 ID 를 배포 탭 칸에 채운다
   const dep = (b.history || []).map(h => h.deployment_request).filter(d => d && d.state === 'accepted' && d.deployment_id).at(-1);
   if (dep) $('deployId').value = dep.deployment_id;
   return `${kv(b)}
@@ -717,7 +749,7 @@ const decide = async decision => {
     }
     $('deployId').value = r.deployment_id;
     started = true;
-    return `${tag('승인됨', 'ok')} 배포 요청함 · 배포 ID <b>${esc(r.deployment_id)}</b> <span class="muted">번들 상태 ${esc(r.status)} · 3. 배포에서 진행을 따라갑니다</span>`;
+    return `${tag('승인됨', 'ok')} 배포 요청함 · 배포 ID <b>${esc(r.deployment_id)}</b> <span class="muted">번들 상태 ${esc(r.status)}</span> <button type="button" class="link" data-goto="deploy">배포 탭에서 진행 보기</button>`;
   });
   if (sent) { $('btnBundle').click(); refreshActive(); }  // 버튼 잠금이 풀린 뒤에 번들·운영 번들을 다시 조회
   if (started) followDeploy();   // canary 단계·감시 결과를 자동 조회로 따라간다
@@ -763,7 +795,7 @@ $('btnRecover').onclick = () => act(async () => {
     <p>자동으로 배포하지 않습니다. 배포하려면 <b>승인</b>을 다시 누르세요</p>`;
 }, refreshActive);
 
-// 3. 배포 상태·롤백 (D PR #30: canary 동안 지표 감시, 기준을 넘으면 D 가 스스로 롤백)
+// 배포 탭: 배포 상태·롤백 (D PR #30: canary 동안 지표 감시, 기준을 넘으면 D 가 스스로 롤백)
 // D 응답: {status, weight, step_index, steps, rollback_reason: manual | analysis_failed,
 //          analysis: {result, checks:[{step_index, weight, result}], message, registry_sync, registry_change, rollback, initial}}
 // Argo 가 감시 실패로 멈추면 실패한 단계는 checks 에 들어오지 않는다 → 단계 상태는 step_index·status 로 정한다
@@ -835,6 +867,7 @@ async function showDeploy(id) {
   try { d = await api('d', 'GET', `/deployments/${id}`); }
   catch (e) { setRollbackButton(null); throw e; }
   setRollbackButton(d);
+  setDeployBadge(d);
   // 진행 중이던 배포가 끝났으면(자동 롤백 포함) 운영 번들과 같은 번들의 2구역을 다시 읽는다
   const before = DEP_LAST.get(d.deployment_id);
   DEP_LAST.set(d.deployment_id, d.status);
@@ -863,6 +896,83 @@ $('btnRollback').onclick = () => run($('deployOut'), async () => {
   refreshActive();  // 롤백하면 운영·카나리 번들이 바뀐다
   return showDeploy(seg(id));
 });
+
+// 탭: 반입·검증·승인 / 배포. 주소 끝 #deploy 면 배포 탭으로 연다 (새로고침해도 유지)
+// 다른 탭에 있어도 자동 조회는 계속 돈다 (승인 뒤 배포 진행·자동 롤백을 놓치지 않게) → 배포 탭 이름 옆에 상태를 띄운다
+const TABS = { review: ['tabReview', 'panelReview'], deploy: ['tabDeploy', 'panelDeploy'] };
+function showTab(name, focus = false) {
+  for (const [key, [tab, panel]] of Object.entries(TABS)) {
+    const on = key === name;
+    $(tab).setAttribute('aria-selected', String(on));
+    $(tab).tabIndex = on ? 0 : -1;
+    $(panel).hidden = !on;
+  }
+  if (focus) $(TABS[name][0]).focus();
+  try { history.replaceState(null, '', location.pathname + location.search + (name === 'deploy' ? '#deploy' : '')); } catch (e) { /* file:// 등 */ }
+}
+$('tabReview').onclick = () => showTab('review');
+$('tabDeploy').onclick = () => showTab('deploy');
+document.querySelector('[role=tablist]').addEventListener('keydown', e => {   // ← → Home End 로 탭 이동
+  const keys = Object.keys(TABS), cur = keys.findIndex(k => $(TABS[k][0]).getAttribute('aria-selected') === 'true');
+  const next = { ArrowRight: cur + 1, ArrowLeft: cur - 1, Home: 0, End: keys.length - 1 }[e.key];
+  if (next === undefined) return;
+  e.preventDefault();
+  showTab(keys[(next + keys.length) % keys.length], true);
+});
+document.addEventListener('click', e => {   // 결과 문구 안의 "배포 탭에서 보기"
+  const go = e.target.closest('[data-goto]');
+  if (go) showTab(go.dataset.goto, true);
+});
+// 배포 탭 이름 옆 상태: 진행 중이면 파랑, 롤백·실패면 빨강, 반영이면 초록
+function setDeployBadge(d) {
+  const s = d && d.status;
+  $('deployBadge').innerHTML = !s ? '' : tag(DEP_NOTE[s] || s, s === 'succeeded' ? 'ok' : ['rolled_back', 'failed'].includes(s) ? 'bad' : '');
+}
+showTab(location.hash === '#deploy' ? 'deploy' : 'review');
+
+// ID 입력란의 고르기 목록 (datalist): 고르면 바로 조회, 목록에 없는 ID 는 직접 입력해도 된다
+// - 번들: B GET /bundles (최신 먼저), 배포: D GET /deployments?limit=50 (최신 먼저)
+// - 반입: B 에 목록 API 가 없어 이 브라우저에서 올리거나 조회한 반입만 기억한다 (localStorage, 최근 30건)
+const IMPORTS_KEY = 'tradeproof.admin.imports';
+function recentImports() {
+  try { return JSON.parse(localStorage.getItem(IMPORTS_KEY) || '[]'); } catch (e) { return []; }
+}
+function rememberImport(r) {
+  const old = recentImports().find(x => x.import_id === r.import_id) || {};
+  const merged = { ...old, ...Object.fromEntries(Object.entries(r).filter(([, v]) => v !== undefined && v !== null)), at: old.at || new Date().toISOString() };
+  try { localStorage.setItem(IMPORTS_KEY, JSON.stringify([merged, ...recentImports().filter(x => x.import_id !== r.import_id)].slice(0, 30))); } catch (e) { /* 저장 못 해도 화면은 동작 */ }
+  refreshPicker('importId', true);
+}
+const when = t => t ? String(t).replace('T', ' ').slice(5, 16) : '';   // MM-DD HH:MM
+const PICKERS = {
+  importId: { list: 'importList', go: () => $('btnImport').click(),
+    load: async () => recentImports().map(x => [x.import_id,
+      `${x.filename || '-'} · ${x.status || '처리 중'}${x.bundle_id ? ` → ${x.bundle_id}` : ''} · ${when(x.at)}`]) },
+  bundleId: { list: 'bundleList', go: () => loadBundle(),
+    load: async () => (await api('b', 'GET', '/bundles')).slice().reverse().map(b => [b.bundle_id,
+      `${b.status}${NOTE[b.status] ? ` · ${NOTE[b.status]}` : ''} · ${b.model_id} · ${b.list_id} · ${when(b.created_at)}`]) },
+  deployId: { list: 'deployList', go: () => $('btnDeploy').click(),
+    load: async () => (await api('d', 'GET', '/deployments?limit=50')).map(d => [d.deployment_id,
+      `${d.previous_bundle_id} → ${d.bundle_id} · ${d.status}${DEP_NOTE[d.status] ? ` · ${DEP_NOTE[d.status]}` : ''} · ${when(d.created_at)}`]) },
+};
+const PICKED_AT = {};
+async function refreshPicker(id, force = false) {
+  if (!force && Date.now() - (PICKED_AT[id] || 0) < 3000) return;   // 칸을 누를 때마다 다시 읽되 3초에 한 번만
+  PICKED_AT[id] = Date.now();
+  try {
+    $(PICKERS[id].list).innerHTML = (await PICKERS[id].load())
+      .map(([value, label]) => `<option value="${esc(value)}" label="${esc(label)}"></option>`).join('');
+  } catch (e) { /* 목록을 못 읽어도 직접 입력해서 조회할 수 있다 */ }
+}
+for (const [id, p] of Object.entries(PICKERS)) {
+  $(id).addEventListener('focus', () => refreshPicker(id));
+  $(id).addEventListener('input', e => {
+    // 목록에서 고른 경우만 바로 조회 (직접 치는 중에는 조회하지 않는다: B-1 을 치다 B-10 을 원할 수 있음)
+    if (e.inputType && e.inputType !== 'insertReplacementText') return;
+    if ([...$(p.list).options].some(o => o.value === $(id).value)) p.go();
+  });
+  refreshPicker(id, true);
+}
 </script>
 </body>
 </html>
