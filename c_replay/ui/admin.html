@@ -68,6 +68,12 @@
   .recover { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); }
   .recover.on { border-color: var(--warn); background: var(--warn-bg); color: var(--text); }
   .note { margin: 6px 0 0; padding-left: 1.3em; }
+  .banner { margin: 8px 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; }
+  .banner.bad { border-color: var(--bad); background: var(--bad-bg); }
+  .banner.ok { border-color: var(--ok); background: var(--ok-bg); }
+  .banner p { margin: 4px 0 0; }
+  details { margin-top: 8px; }
+  summary { cursor: pointer; }
 </style>
 </head>
 <body>
@@ -119,7 +125,7 @@
       <input type="text" id="deployId" placeholder="배포 ID (D 가 알려 줌)" aria-label="배포 ID">
       <button id="btnDeploy">조회</button>
       <input type="text" id="rollbackReason" placeholder="롤백 사유 (선택)" aria-label="롤백 사유">
-      <button class="danger" id="btnRollback">롤백</button>
+      <button class="danger" id="btnRollback" disabled data-locked="1" title="배포를 조회한 뒤, 진행 중이거나 전체 반영된 배포일 때 켜짐">롤백</button>
     </div>
     <div class="out" id="deployOut" aria-live="polite"></div>
   </section>
@@ -154,11 +160,15 @@
    C  GET  /validations/{id}               -> {status, created_at, started_at, progress:{stage:"golden"|"replay", done, total, updated_at} | null}
                                               검증이 queued·running 일 때만 부른다 (진행 막대·경과 시간용)
       GET  /validations/{id}/diffs         -> {items:[{tx_id, direction, before:{bundle_id, classification, reasons}, after:{bundle_id, classification, reasons}, fields_changed:[{field, before, after}]}], total}
-   D  GET  /deployments/{id}               -> {deployment_id, bundle_id, status, weight, step_index, ...}
+   D  GET  /deployments/{id}               -> {deployment_id, bundle_id, previous_bundle_id, status, weight, step_index, steps,
+                                               rollback_reason:"manual"|"analysis_failed"|null,
+                                               analysis:{result, checks, message, registry_sync, registry_change, rollback, initial}}
+                                              진행 중(pending·progressing)이면 5초마다 다시 조회. D 는 감시 기준을 넘으면 스스로 롤백한다 (D PR #30)
       POST /deployments/{id}/rollback      <- {actor, reason}
    파일로 열면(file://) C 주소는 ?c=… (기본 http://localhost:8200). ?mock=1 이면 서버 없이 예시 데이터로 화면만 본다.
    ?mock=running 이면 검증이 진행 중인 화면을 본다 (조회할 때마다 처리 건수가 늘어난다).
-   ?mock=failed 이면 검증이 실행 오류로 끝난 화면(다시 검증), ?mock=pending 이면 배포 요청이 잠긴 화면(배포 잠금 풀기)을 본다. */
+   ?mock=failed 이면 검증이 실행 오류로 끝난 화면(다시 검증), ?mock=pending 이면 배포 요청이 잠긴 화면(배포 잠금 풀기)을 본다.
+   ?mock=canary 이면 배포가 단계별로 올라가 전체 반영되는 화면, ?mock=rollback 이면 50% 단계에서 자동 롤백되는 화면을 본다. */
 const q = new URLSearchParams(location.search);
 const C_URL = q.get('c') || (location.protocol === 'file:' ? 'http://localhost:8200' : '');
 const BASE = { b: C_URL + '/api/b', c: C_URL, d: C_URL + '/api/d' };
@@ -199,10 +209,36 @@ const MOCK = !q.has('mock') ? null : {
       fields_changed: [{ field: 'vessel_name', before: 'MV PACIFIC DAWN', after: 'MV N0RTHERN STAR' }] }] },
   'GET c/validations': mockRunning(),
   'GET d/deployments': { deployment_id: 'DP-1', bundle_id: 'B-9', previous_bundle_id: 'B-7', status: 'progressing',
-    weight: 50, step_index: 1, steps: [10, 50, 100], requested_by: 'ops', created_at: '2026-11-16T10:05:00Z' },
-  'POST d/deployments': { deployment_id: 'DP-1', bundle_id: 'B-9', previous_bundle_id: 'B-7', status: 'rolled_back',
-    weight: 0, step_index: 1, steps: [10, 50, 100], rollback_reason: 'manual' },
+    weight: 50, step_index: 1, steps: [10, 50, 100], requested_by: 'ops', created_at: '2026-11-16T10:05:00Z',
+    analysis: { result: 'running', checks: [{ step_index: 0, weight: 10, result: 'passed', source: 'argo' }] } },
+  // 수동 롤백: 다음 조회부터 rolled_back(manual) 으로 보인다
+  'POST d/deployments': (body) => Object.assign(MOCK['GET d/deployments'], { status: 'rolled_back', weight: 0,
+    rollback_reason: 'manual', finished_at: new Date().toISOString(),
+    analysis: { ...MOCK['GET d/deployments'].analysis, result: 'failed', registry_sync: 'ok',
+      registry_change: { bundle_id: 'B-9', to: 'cancelled', reason: 'manual rollback' },
+      rollback: { actor: body && body.actor, reason: body && body.reason } } }),
 };
+// ?mock=canary: 조회할 때마다 10 → 50 → 100% 로 올라가 succeeded
+// ?mock=rollback: 50% 단계에서 감시 실패 → D 가 자동 롤백 (PR #30 의 느린 모델 시연과 같은 모양)
+function mockDeploy(fail) {
+  let calls = 0;
+  const base = { deployment_id: 'DP-1', bundle_id: 'B-9', previous_bundle_id: 'B-7', steps: [10, 50, 100],
+    requested_by: 'kim', created_at: new Date().toISOString(), rollback_reason: null };
+  const passed = n => [0, 1, 2].slice(0, n).map(i => ({ step_index: i, weight: base.steps[i], result: 'passed', source: 'argo' }));
+  return () => {
+    const n = calls++, now = new Date().toISOString();
+    if (fail && n >= 3) return { ...base, status: 'rolled_back', weight: 0, step_index: 1, rollback_reason: 'analysis_failed',
+      updated_at: now, finished_at: now, analysis: { result: 'failed', checks: passed(1), registry_sync: 'ok',
+        registry_change: { bundle_id: 'B-9', to: 'cancelled', reason: 'analysis_failed' },
+        message: 'RolloutAborted: Rollout aborted update to revision 3: Metric "latency-ratio" assessed Failed due to failed (2) > failureLimit (1)' } };
+    if (!fail && n >= 4) return { ...base, status: 'succeeded', weight: 100, step_index: 2, updated_at: now, finished_at: now,
+      analysis: { result: 'passed', checks: passed(3), registry_sync: 'ok', registry_change: { bundle_id: 'B-9', to: 'active', reason: 'succeeded' } } };
+    const step = n < 2 ? 0 : 1;
+    return { ...base, status: 'progressing', weight: base.steps[step], step_index: step, updated_at: now,
+      analysis: { result: 'running', checks: passed(step) } };
+  };
+}
+if (MOCK && ['canary', 'rollback'].includes(q.get('mock'))) MOCK['GET d/deployments'] = mockDeploy(q.get('mock') === 'rollback');
 
 // ?mock=running: 조회할 때마다 골든셋 200건(100건 × 번들 2개) → Replay 120건 순으로 처리 건수가 늘어난다
 function mockRunning() {
@@ -254,7 +290,7 @@ async function api(svc, method, path, body) {
     const segs = path.split('?')[0].split('/').filter(Boolean);
     const key = `${method} ${svc}/${segs[0]}${['diffs', 'validation', 'active', 'validations', 'deployment-recovery'].includes(segs.at(-1)) ? '/' + segs.at(-1) : ''}`;
     const m = MOCK[`${key}:${body && body.decision}`] || MOCK[key];
-    return typeof m === 'function' ? m() : m;
+    return typeof m === 'function' ? m(body) : m;
   }
   const opt = { method };
   if (body instanceof FormData) opt.body = body;
@@ -663,7 +699,7 @@ async function showValidation(v) {
       `<tr data-diff="${i}"><td><button type="button" class="link mono" data-diff="${i}">${esc(d.tx_id)}</button></td><td>${tag(d.direction === 'down' ? '낮아짐' : '높아짐', d.direction === 'down' ? 'bad' : '')}</td><td>${clsTag(d.before && d.before.classification)}</td><td>${clsTag(d.after && d.after.classification)}</td><td><button type="button" data-diff="${i}">상세 보기</button></td></tr>`).join('')}</table>` : ''}${diffErr}`;
 }
 const decide = async decision => {
-  let sent = false;
+  let sent = false, started = false;
   await run($('approvalOut'), async () => {
     const body = { bundle_id: need($('bundleId')), decision, actor: need($('actor')), reason: need($('reason')) };
     const ask = decision === 'approve' ? `번들 ${body.bundle_id}을(를) 승인할까요?\n승인하면 D 에 배포가 바로 요청됩니다` : `번들 ${body.bundle_id}을(를) 반려할까요?`;
@@ -680,9 +716,11 @@ const decide = async decision => {
       return `${tag('배포 시작 안 됨', 'bad')} <span class="muted">번들 상태가 ${statusTag(r.status)} 이므로 새 배포가 시작되지 않았습니다${r.deployment_id ? ` (기존 배포 ID ${esc(r.deployment_id)})` : ''}</span>`;
     }
     $('deployId').value = r.deployment_id;
-    return `${tag('승인됨', 'ok')} 배포 요청함 · 배포 ID <b>${esc(r.deployment_id)}</b> <span class="muted">번들 상태 ${esc(r.status)}</span>`;
+    started = true;
+    return `${tag('승인됨', 'ok')} 배포 요청함 · 배포 ID <b>${esc(r.deployment_id)}</b> <span class="muted">번들 상태 ${esc(r.status)} · 3. 배포에서 진행을 따라갑니다</span>`;
   });
   if (sent) { $('btnBundle').click(); refreshActive(); }  // 버튼 잠금이 풀린 뒤에 번들·운영 번들을 다시 조회
+  if (started) followDeploy();   // canary 단계·감시 결과를 자동 조회로 따라간다
 };
 $('btnApprove').onclick = () => decide('approve');
 $('btnReject').onclick = () => decide('reject');
@@ -725,21 +763,105 @@ $('btnRecover').onclick = () => act(async () => {
     <p>자동으로 배포하지 않습니다. 배포하려면 <b>승인</b>을 다시 누르세요</p>`;
 }, refreshActive);
 
-// 3. 배포 상태·롤백
-async function showDeploy(id) {
-  const d = await api('d', 'GET', `/deployments/${id}`);
-  return kv(d) + (d.status === 'pending' || d.status === 'progressing' ? PENDING : '');
+// 3. 배포 상태·롤백 (D PR #30: canary 동안 지표 감시, 기준을 넘으면 D 가 스스로 롤백)
+// D 응답: {status, weight, step_index, steps, rollback_reason: manual | analysis_failed,
+//          analysis: {result, checks:[{step_index, weight, result}], message, registry_sync, registry_change, rollback, initial}}
+// Argo 가 감시 실패로 멈추면 실패한 단계는 checks 에 들어오지 않는다 → 단계 상태는 step_index·status 로 정한다
+const DEP_RUNNING = ['pending', 'progressing'];
+const DEP_NOTE = { pending: '시작 대기', progressing: 'canary 진행 중', succeeded: '전체 반영', rolled_back: '롤백됨', failed: '실패' };
+const depTag = s => tag(DEP_NOTE[s] ? `${s} · ${DEP_NOTE[s]}` : s ?? '-', s === 'succeeded' ? 'ok' : ['rolled_back', 'failed'].includes(s) ? 'bad' : '');
+const DEP_LAST = new Map();   // 배포 ID -> 마지막으로 본 status (진행 중 → 끝으로 바뀐 순간을 알려고)
+
+// D-1·D-2: 단계마다 상태 하나 (통과·진행 중·중단·대기)
+function stepState(d, i) {
+  const check = (d.analysis && d.analysis.checks || []).find(c => c.step_index === i);
+  if (check && check.result === 'failed') return ['감시 실패', 'bad'];
+  if (d.status === 'succeeded' || (check && check.result === 'passed')) return ['통과', 'ok'];
+  if (i < d.step_index) return ['통과', 'ok'];
+  if (i > d.step_index) return [DEP_RUNNING.includes(d.status) ? '대기' : '진행 안 함', 'muted'];
+  if (d.status === 'rolled_back') return [d.rollback_reason === 'analysis_failed' ? '감시 실패 · 중단' : '중단', 'bad'];
+  if (d.status === 'failed') return ['실패', 'bad'];
+  return ['진행 중 · 감시 중', ''];
 }
-$('btnDeploy').onclick = () => {
+function stepsHtml(d) {
+  const steps = d.steps || [];
+  if (!steps.length) return '';
+  const rows = steps.map((w, i) => {
+    const [text, cls] = stepState(d, i);
+    const now = i === d.step_index && DEP_RUNNING.includes(d.status);
+    return `<tr${now ? ' style="font-weight:600"' : ''}><td>${i + 1}단계</td><td class="num">${esc(w)}%</td>
+      <td>${cls === 'muted' ? `<span class="muted">${esc(text)}</span>` : tag(text, cls)}</td></tr>`;
+  }).join('');
+  // 진행 막대 없이 지금 비율만 한 줄로 (단계별 비율은 아래 표)
+  const w = Math.max(0, Math.min(100, Number(d.weight) || 0));
+  return `<p>후보 트래픽 <b>${w}%</b> <span class="muted">→ ${esc(d.bundle_id)} · 나머지 → ${esc(d.previous_bundle_id)}</span></p>
+    <table><tr><th>단계</th><th>후보 트래픽</th><th>감시 결과</th></tr>${rows}</table>
+    <p class="muted">단계마다 후보 번들의 처리 시간·처리 실패율을 운영 번들과 비교합니다. 기준값은 A 차트의 <span class="mono">analysis</span> 값에서 정합니다.</p>`;
+}
+// D-3: 끝난 배포가 왜 그렇게 끝났는지
+function outcomeHtml(d) {
+  const a = d.analysis || {}, msg = a.message ? `<p class="muted">D 가 본 사유: <span class="mono">${esc(a.message)}</span></p>` : '';
+  if (a.initial) return `<div class="banner">${tag('최초 번들', 'ok')} canary 없이 운영 번들로 기록했습니다 (롤백 대상 아님)</div>`;
+  if (d.status === 'rolled_back' && d.rollback_reason === 'analysis_failed') {
+    return `<div class="banner bad">${tag('자동 롤백', 'bad')} <b>지표 감시 기준을 넘어 D 가 스스로 되돌렸습니다</b>
+      <p>${esc(d.step_index + 1)}단계(${esc((d.steps || [])[d.step_index])}%)에서 후보 ${esc(d.bundle_id)} 의 처리 시간 또는 처리 실패율이 기준을 넘었습니다.
+      트래픽은 모두 ${esc(d.previous_bundle_id)} 로 돌아갔고, B 에서 후보는 cancelled 입니다.</p>${msg}</div>`;
+  }
+  if (d.status === 'rolled_back') {
+    const r = a.rollback || {};
+    return `<div class="banner bad">${tag('수동 롤백', 'bad')} ${esc(r.actor || d.requested_by)} 이(가) 롤백했습니다${r.reason ? ` · 사유: ${esc(r.reason)}` : ''}
+      <p class="muted">트래픽은 모두 ${esc(d.previous_bundle_id)} 로 돌아갔습니다.</p></div>`;
+  }
+  if (d.status === 'failed') return `<div class="banner bad">${tag('배포 실패', 'bad')} 배포를 시작하지 못했거나 배포 밖에서 바뀌었습니다${msg}</div>`;
+  if (d.status === 'succeeded') return `<div class="banner ok">${tag('전체 반영', 'ok')} 모든 단계 감시를 통과해 ${esc(d.bundle_id)} 가 운영 번들이 되었습니다</div>`;
+  return '';
+}
+// D-4: D 가 배포 결과를 B 번들 상태에 반영했는지 (반영돼야 '현재 운영 번들'이 바뀐다)
+function registryHtml(d) {
+  const a = d.analysis || {}, c = a.registry_change, to = c ? ` (${esc(c.bundle_id)} → ${esc(c.to)})` : '';
+  if (!a.registry_sync) return DEP_RUNNING.includes(d.status) ? '' : '<p class="muted">B 반영: 기록 없음</p>';
+  const S = { ok: [tag('B 반영됨', 'ok'), ''], pending: [tag('B 반영 재시도 중'), 'D 가 B 에 다시 알릴 예정입니다. 그동안 B 번들 상태가 늦게 바뀝니다'],
+    rejected: [tag('B 가 거부', 'bad'), 'B 번들 상태와 실제 배포가 다를 수 있습니다. B·D 담당자 확인이 필요합니다'] };
+  const [t, note] = S[a.registry_sync] || [tag(a.registry_sync), ''];
+  return `<p>${t}${to}${note ? ` <span class="muted">${note}</span>` : ''}</p>`;
+}
+function setRollbackButton(d) {
+  // 진행 중·반영 완료만 롤백할 수 있다 (최초 번들·이미 끝난 롤백·실패는 D 가 409)
+  lock($('btnRollback'), !!d && !(d.analysis && d.analysis.initial) && [...DEP_RUNNING, 'succeeded'].includes(d.status));
+}
+$('deployId').oninput = () => setRollbackButton(null);
+async function showDeploy(id) {
+  let d;
+  try { d = await api('d', 'GET', `/deployments/${id}`); }
+  catch (e) { setRollbackButton(null); throw e; }
+  setRollbackButton(d);
+  // 진행 중이던 배포가 끝났으면(자동 롤백 포함) 운영 번들과 같은 번들의 2구역을 다시 읽는다
+  const before = DEP_LAST.get(d.deployment_id);
+  DEP_LAST.set(d.deployment_id, d.status);
+  if (DEP_RUNNING.includes(before) && !DEP_RUNNING.includes(d.status)) {
+    refreshActive();
+    if ($('bundleId').value.trim() === d.bundle_id) loadBundle(d.bundle_id);
+  }
+  const open = $('deployOut').querySelector('details[open]') ? ' open' : '';   // 자동 조회로 다시 그려도 펼친 상태 유지
+  const a = d.analysis || {};
+  return `<p><b>${esc(d.deployment_id)}</b> ${depTag(d.status)} <span class="muted">${esc(d.previous_bundle_id)} → ${esc(d.bundle_id)} · 요청 ${esc(d.requested_by)}</span></p>
+    ${outcomeHtml(d)}
+    ${a.initial ? '' : stepsHtml(d)}
+    ${registryHtml(d)}
+    <details${open}><summary class="muted">D 응답 전체</summary>${kv(d)}</details>
+    ${DEP_RUNNING.includes(d.status) ? PENDING : ''}`;
+}
+function followDeploy() {
   let id;
-  run($('deployOut'), () => showDeploy(id = seg(need($('deployId')))), () => showDeploy(id));
-};
+  return run($('deployOut'), () => showDeploy(id = seg(need($('deployId')))), () => showDeploy(id));
+}
+$('btnDeploy').onclick = followDeploy;
 $('btnRollback').onclick = () => run($('deployOut'), async () => {
   const id = need($('deployId')), actor = need($('actor')), reason = $('rollbackReason').value.trim();
   if (!confirm(`배포 ${id}을(를) 롤백할까요?\n사유: ${reason || '없음'}`)) return '';
-  const r = await api('d', 'POST', `/deployments/${seg(id)}/rollback`, { actor, reason });
+  await api('d', 'POST', `/deployments/${seg(id)}/rollback`, { actor, reason });
   refreshActive();  // 롤백하면 운영·카나리 번들이 바뀐다
-  return kv(r);
+  return showDeploy(seg(id));
 });
 </script>
 </body>

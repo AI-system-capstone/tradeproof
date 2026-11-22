@@ -89,4 +89,4 @@ API 상세(요청·응답 예시)는 각 모듈의 `docs/openapi/<모듈>.json`�
 | 2026-11-17 | C 강민성 | 1절에 운영 화면 중계(C → B·D) 추가 |
 | 2026-11-17 | A 지윤아 | A가 번들 구성을 B에서 받음: `REGISTRY_MODE=http` 면 `GET /bundles/{id}` → 모델·리스트 ZIP(`payload/model_config.json`, `payload/sanctions.json`). 기본 `local` 은 기존처럼 `contracts.BUNDLES`. D 차트 `a-screening` 을 A 실제 이미지로 바꾸고 `REGISTRY_MODE=http` 설정 (k3s 에 B 가 있어야 함) |
 | 2026-11-21 | B 박시우 | 실행 오류 재검증·미확정 배포 복구 API 추가, 취소 번들 재승인 409. C 중계/버튼 연결 및 D 한글 actor 계약 협의 요청. 미전송 배포 실패는 재승인 가능하며 응답 유실은 접수 확인 전 자동 재전송하지 않음. B 배포 YAML 미제공으로 실제 리뷰 대기 |
-| 2026-11-22 | C 강민성 | 운영 화면에 재검증·배포 잠금 풀기 연결: C 중계 허용 경로 2개 추가, 2구역에 '다시 검증'·'배포 잠금 풀기' 버튼과 배포 요청 상태(pending·accepted·failed·rejected) 표시 |
+| 2026-11-22 | C 강민성 | 운영 화면에 재검증·배포 잠금 풀기 연결: C 중계 허용 경로 2개 추가, 2구역에 '다시 검증'·'배포 잠금 풀기' 버튼과 배포 요청 상태(pending·accepted·failed·rejected) 표시. 3구역에 D 응답의 canary 단계·감시 결과(`analysis.checks`)·자동 롤백(`rollback_reason: analysis_failed`, `analysis.message`)·B 반영(`analysis.registry_sync`) 표시 (D PR #30 요청) |
