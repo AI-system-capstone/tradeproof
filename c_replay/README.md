@@ -73,6 +73,13 @@ B_URL=http://localhost:8100 D_URL=http://localhost:8300 uvicorn c_replay.api.mai
 - 화면은 C 서버 한 곳만 부른다. B·D는 C의 `/api/b/…`, `/api/d/…` 중계를 거친다. 그래서 B·D에 브라우저 호출 허용(CORS)이 필요 없다.
 - 중계는 화면이 쓰는 경로만 넘긴다(명세 `docs/openapi/c_replay.json`의 `/api/{service}/{path}`).
 - 검증은 B가 만든 검증 ID 하나로 따라간다: 게이트·지표는 B의 `GET /bundles/{id}/validation`, 달라진 거래는 같은 ID로 C의 `/diffs`.
+- 반입 ID·번들 ID·배포 ID 칸은 저장된 값을 고르는 목록(datalist)이 붙어 있다. 고르면 바로 조회하고, 직접 입력도 된다.
+  - 번들은 B `GET /bundles`, 배포는 D `GET /deployments?limit=50`에서 읽는다(최신 먼저). 칸을 누를 때 다시 읽는다(3초에 한 번).
+  - 반입은 B에 목록 API가 없어서, 이 브라우저에서 올리거나 조회한 반입만 기억한다(localStorage, 최근 30건).
+- 화면은 탭 두 개다: [반입·검증·승인] / [배포]. 주소 끝에 `#deploy`를 붙이면 배포 탭으로 연다.
+  - 현재 운영 번들은 두 탭 위에 늘 보인다.
+  - 다른 탭에 있어도 배포 자동 조회는 계속 돈다. 배포 탭 이름 옆에 상태(진행 중·롤백됨·전체 반영)를 띄운다.
+  - 승인으로 배포가 시작되면 결과 문구에 "배포 탭에서 진행 보기" 버튼이 나온다.
 - 화면 맨 위에 현재 운영 번들(active)과 카나리 번들(canary, 일부 트래픽에만 배포 중)을 보여 준다.
   - B의 `GET /bundles/active`를 읽는다. 화면을 열 때, 승인·롤백 뒤, 새로고침 버튼을 누를 때 다시 읽는다.
 - 검증이 queued·running이면 C의 `GET /validations/{id}`로 경과 시간과 진행 막대(골든셋·Replay 처리 건수)를 보여 준다.

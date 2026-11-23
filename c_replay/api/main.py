@@ -46,9 +46,11 @@ log = logging.getLogger("c_replay")
 # 아무 주소나 넘기지 않도록 화면이 쓰는 경로만 허용한다. ID 자리에는 영문·숫자·_·- 만 (.. 같은 경로 조작 차단).
 _ID = r"[A-Za-z0-9_-]+"
 PROXY_ROUTES = {
-    ("b", "POST"): ("imports", "approvals"),
-    ("b", "GET"): (f"imports/{_ID}", "bundles/active", f"bundles/{_ID}", f"bundles/{_ID}/validation"),
-    ("d", "GET"): (f"deployments/{_ID}",),
+    # bundles/{id}/validations: 실행 오류로 끝난 검증 다시 실행, deployment-recovery: 미접수 배포 요청 잠금 풀기 (B PR #31)
+    ("b", "POST"): ("imports", "approvals", f"bundles/{_ID}/validations", f"bundles/{_ID}/deployment-recovery"),
+    # bundles·deployments(목록): ID 입력란의 고르기 목록용
+    ("b", "GET"): (f"imports/{_ID}", "bundles", "bundles/active", f"bundles/{_ID}", f"bundles/{_ID}/validation"),
+    ("d", "GET"): ("deployments", f"deployments/{_ID}"),
     ("d", "POST"): (f"deployments/{_ID}/rollback",),
 }
 PROXY_HEADERS = ("content-type", "x-actor", "x-request-id")
@@ -248,8 +250,8 @@ def create_app(store=None, env: dict | None = None, transport: httpx.AsyncBaseTr
         headers = {k: v for k, v in request.headers.items() if k.lower() in PROXY_HEADERS}
         try:
             async with httpx.AsyncClient(transport=transport, timeout=PROXY_TIMEOUT) as client:
-                r = await client.request(request.method, f"{base.rstrip('/')}/{path}",
-                                         content=await request.body(), headers=headers)
+                r = await client.request(request.method, f"{base.rstrip('/')}/{path}", params=request.query_params,
+                                         content=await request.body(), headers=headers)   # 쿼리(예: ?limit=)도 그대로
         except httpx.HTTPError as e:
             raise ApiError(503, C.ERR_UNAVAILABLE, f"{service.upper()} 에 연결할 수 없음: {type(e).__name__}", service) from e
         return Response(r.content, status_code=r.status_code, media_type=r.headers.get("content-type"))

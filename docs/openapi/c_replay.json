@@ -99,14 +99,14 @@
       "get": {
         "tags": ["ui"],
         "summary": "운영 화면용 B·D 중계 (조회)",
-        "description": "환경변수 `B_URL`·`D_URL`의 서버로 그대로 전달하고 응답(상태 코드·본문)을 그대로 돌려준다. 허용 경로: B `imports/{id}`, `bundles/{id}`, `bundles/{id}/validation`, D `deployments/{id}`. 넘기는 헤더는 `Content-Type`, `X-Actor`, `X-Request-ID`만.",
+        "description": "환경변수 `B_URL`·`D_URL`의 서버로 그대로 전달하고 응답(상태 코드·본문)을 그대로 돌려준다. 허용 경로: B `imports/{id}`, `bundles`(목록), `bundles/active`, `bundles/{id}`, `bundles/{id}/validation`, D `deployments`(최근 목록, `?limit=`), `deployments/{id}`. 쿼리 문자열도 그대로 넘긴다. 넘기는 헤더는 `Content-Type`, `X-Actor`, `X-Request-ID`만.",
         "operationId": "proxyGet",
         "responses": { "200": { "description": "B·D 응답 그대로" }, "404": { "$ref": "#/components/responses/NotFound" }, "503": { "$ref": "#/components/responses/Unavailable" } }
       },
       "post": {
         "tags": ["ui"],
         "summary": "운영 화면용 B·D 중계 (요청)",
-        "description": "허용 경로: B `imports`(반입 업로드), `approvals`(승인·반려), D `deployments/{id}/rollback`. 그 밖의 경로는 404. B·D에 연결할 수 없거나 주소가 설정되지 않으면 503.",
+        "description": "허용 경로: B `imports`(반입 업로드), `approvals`(승인·반려), `bundles/{id}/validations`(실행 오류 검증 다시 실행), `bundles/{id}/deployment-recovery`(미접수 배포 요청 잠금 풀기), D `deployments/{id}/rollback`. 그 밖의 경로는 404. B·D에 연결할 수 없거나 주소가 설정되지 않으면 503.",
         "operationId": "proxyPost",
         "responses": { "200": { "description": "B·D 응답 그대로" }, "404": { "$ref": "#/components/responses/NotFound" }, "503": { "$ref": "#/components/responses/Unavailable" } }
       }

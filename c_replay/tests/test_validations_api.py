@@ -281,6 +281,40 @@ def test_proxy_passes_active_bundles():
     assert str(seen[0].url) == "http://b:8100/bundles/active"
 
 
+@pytest.mark.parametrize("path,body,status", [
+    # 다시 검증: 실행 오류로 failed 인 후보만 (B 가 판단). 응답은 새 검증 정보
+    ("bundles/B-9/validations", {"actor": "김민성", "reason": "검증 이미지 수정 후 재실행"}, 202),
+    # 배포 잠금 풀기: 운영자가 D 에서 미접수를 확인한 뒤
+    ("bundles/B-9/deployment-recovery", {"actor": "김민성", "reason": "D 에 요청 없음 확인",
+     "expected_changed_at": "2026-11-21T00:00:00+00:00", "confirmed_not_received": True}, 200),
+])
+def test_proxy_passes_revalidation_and_deployment_recovery(path, body, status):
+    import json
+    import httpx
+    seen = []
+    def handler(req):
+        seen.append(req)
+        return httpx.Response(status, json={"bundle_id": "B-9"})
+    r = proxy_client(handler).post(f"/api/b/{path}", json=body)
+    assert r.status_code == status
+    (req,) = seen
+    assert str(req.url) == f"http://b:8100/{path}" and req.method == "POST"
+    assert json.loads(req.read()) == body   # 한글 담당자 이름도 본문 그대로
+
+
+def test_proxy_passes_lists_for_id_pickers_with_query():
+    """ID 입력란의 고르기 목록: B 번들 목록, D 최근 배포 목록 (?limit= 도 그대로 넘긴다)."""
+    import httpx
+    seen = []
+    def handler(req):
+        seen.append(req)
+        return httpx.Response(200, json=[])
+    c = proxy_client(handler)
+    assert c.get("/api/b/bundles").status_code == 200
+    assert c.get("/api/d/deployments?limit=50").status_code == 200
+    assert [str(r.url) for r in seen] == ["http://b:8100/bundles", "http://d:8300/deployments?limit=50"]
+
+
 def test_proxy_keeps_upstream_error_status_and_body():
     import httpx
     c = proxy_client(lambda req: httpx.Response(409, json={"code": "CONFLICT", "message": "m", "target_id": None}))
@@ -289,11 +323,14 @@ def test_proxy_keeps_upstream_error_status_and_body():
 
 
 @pytest.mark.parametrize("method,path", [
-    ("GET", "/api/b/bundles"),                       # 목록은 화면이 쓰지 않는다
+    ("POST", "/api/b/bundles"),                      # 목록은 조회(GET)만
     ("POST", "/api/b/bundles/B-9/transitions"),      # 상태 직접 변경은 넘기지 않는다
     ("GET", "/api/b/bundles/../imports"),            # 경로 조작
     ("GET", "/api/x/bundles/B-9"),                   # 모르는 서비스
     ("POST", "/api/d/deployments"),                  # 배포 시작은 B 가 한다
+    ("GET", "/api/b/bundles/B-9/validations"),       # 다시 검증·잠금 풀기는 POST 만
+    ("POST", "/api/b/bundles/B-9/validations/x"),
+    ("POST", "/api/b/bundles/../deployment-recovery"),
 ])
 def test_proxy_rejects_paths_the_screen_does_not_use(method, path):
     c = proxy_client(lambda req: pytest.fail("B·D 를 부르면 안 된다"))
