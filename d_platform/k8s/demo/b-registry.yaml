@@ -3,7 +3,7 @@
 # ConfigMap b-registry-files 는 demo_up.sh 가 만든다:
 #   publisher.pub        반입 ZIP 서명을 확인할 공개키 (scripts/demo_sign.sh 가 만든 data/demo/keys/vendor.pub)
 #   validation-job.json  C 검증 Job 양식 (d_platform/k8s/demo/validation-job.json)
-# D 배포 API 는 클러스터 밖(호스트)에서 돈다 → DEPLOYMENT_URL 은 host.k3d.internal (d_platform/README "시연 환경")
+# D 배포 API 는 클러스터 안 d-platform:8300 (d_platform/k8s/platform/d-platform.yaml)
 apiVersion: v1
 kind: ServiceAccount
 metadata: { name: b-registry, namespace: tradeproof }
@@ -44,7 +44,7 @@ spec:
             - { name: VALIDATION_JOB_TEMPLATE, value: /run/registry/validation-job.json }
             - { name: VALIDATION_NAMESPACE, value: tradeproof }
             - { name: VALIDATION_CALLBACK_BASE_URL, value: "http://b-registry:8100" }
-            - { name: DEPLOYMENT_URL, value: "http://host.k3d.internal:8300" }
+            - { name: DEPLOYMENT_URL, value: "http://d-platform:8300" }
           ports: [{ containerPort: 8100 }]
           readinessProbe: { httpGet: { path: /healthz, port: 8100 }, periodSeconds: 5 }
           volumeMounts: [{ name: files, mountPath: /run/registry }]

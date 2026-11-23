@@ -17,7 +17,7 @@ A_PORT=${A_PORT:-18000}              # A 검토 화면 /review (stable 쪽)
 B_PORT=${B_PORT:-18100}              # B 레지스트리 API
 C_PORT=${C_PORT:-18200}              # 운영 화면 /admin
 DB_PORT=${DB_PORT:-15432}            # 클러스터 Postgres (D 가 씀)
-D_PORT=${D_PORT:-8300}               # D 배포 API (호스트에서 실행, 클러스터의 B 가 host.k3d.internal 로 부름)
+D_PORT=${D_PORT:-8300}               # D 배포 API (클러스터 안 d-platform:8300 을 포트포워드)
 
 INGRESS_NGINX_VERSION=controller-v1.12.1
 ARGO_ROLLOUTS_VERSION=v1.10.2   # d_platform/README 의 k3s 시연 환경과 같은 버전
@@ -59,29 +59,30 @@ wait_http() {  # wait_http URL [초]
 }
 
 stop_bg() {
+  pkill -f "scripts/demo/pf_loop.sh" 2>/dev/null || true   # 감시 루프부터 (먼저 안 끄면 포트포워드를 다시 띄움)
+  pkill -f "tradeproof-demo-pf" 2>/dev/null || true          # 예전 키트의 루프
   pkill -f "port-forward --context $CTX" 2>/dev/null || true
-  pkill -f "tradeproof-demo-pf" 2>/dev/null || true
   pkill -f "uvicorn d_platform.api.main:app --host 0.0.0.0 --port $D_PORT" 2>/dev/null || true
 }
 
-start_bg() {
+start_bg() {  # 포트포워드만 (D 배포 API 는 클러스터 안에서 돈다: deploy_platform)
   stop_bg
-  # 포트포워드: 파드가 바뀌어 끊기면 2초 뒤 다시 붙는다
-  local spec svc port
-  for spec in "b-registry:$B_PORT:8100" "c-replay:$C_PORT:8200" "postgres:$DB_PORT:5432" "a-screening-stable:$A_PORT:8000"; do
-    IFS=: read -r svc port tport <<<"$spec"
-    detach "pf-$svc" bash -c "exec -a tradeproof-demo-pf bash -c 'while true; do kubectl port-forward --context $CTX -n $NS --address 127.0.0.1 svc/$svc $port:$tport; sleep 2; done'" >/dev/null
+  # 파드가 바뀌어 끊기거나 응답이 멈추면 다시 붙는다 (scripts/demo/pf_loop.sh)
+  local spec svc port tport path
+  for spec in "b-registry:$B_PORT:8100:/healthz" "c-replay:$C_PORT:8200:/healthz" "postgres:$DB_PORT:5432:-"               "a-screening-stable:$A_PORT:8000:/livez" "d-platform:$D_PORT:8300:/livez"; do
+    IFS=: read -r svc port tport path <<<"$spec"
+    detach "pf-$svc" bash "$ROOT/scripts/demo/pf_loop.sh" "$CTX" "$NS" "$svc" "$port" "$tport" "$path" >/dev/null
   done
   wait_http "http://localhost:$B_PORT/healthz" 60 || die "B 포트포워드가 안 붙음 ($STATE/logs/pf-b-registry.log)"
-  # D 배포 API (argo 드라이버). helm·kubectl·kubectl-argo-rollouts 를 이 KUBECONFIG 로 부른다
-  [ -x "$STATE/dvenv/bin/uvicorn" ] || { python3 -m venv "$STATE/dvenv" && "$STATE/dvenv/bin/pip" install -q -r d_platform/requirements.txt; }
-  detach d-platform env PATH="$STATE/dvenv/bin:$PATH" KUBECONFIG="$KUBECONFIG" \
-    DEPLOY_DRIVER=argo CANARY_PAUSE_SECONDS="$CANARY_PAUSE_SECONDS" BUNDLE_ID=B-7 \
-    REGISTRY_MODE=http REGISTRY_URL="http://localhost:$B_PORT" \
-    DATABASE_URL="postgresql://tradeproof:tradeproof-dev@localhost:$DB_PORT/tradeproof" \
-    HELM_BUNDLE_VALUES="$STATE/values-bundle.yaml" HELM_VALUES_FILES="$A_VALUES" K8S_NAMESPACE=$NS \
-    "$STATE/dvenv/bin/uvicorn" d_platform.api.main:app --host 0.0.0.0 --port "$D_PORT" >/dev/null
-  wait_http "http://localhost:$D_PORT/healthz" 60 || die "D 배포 API 가 안 뜸 ($STATE/logs/d-platform.log)"
+  wait_http "http://localhost:$D_PORT/healthz" 60 || die "D 포트포워드가 안 붙음 ($STATE/logs/pf-d-platform.log)"
+}
+
+deploy_platform() {  # D 배포 API 를 클러스터 안에 (d_platform/k8s/platform/d-platform.yaml)
+  kn create configmap d-platform-helm-values --from-file=a-screening-values.yaml="$A_VALUES" \
+    --dry-run=client -o yaml | k apply -f - >/dev/null
+  k apply -f d_platform/k8s/platform/d-platform.yaml >/dev/null
+  kn rollout restart deploy/d-platform >/dev/null   # 이미지·값 파일이 바뀌었을 수 있음
+  kn rollout status deploy/d-platform --timeout=300s
 }
 
 write_bundle_values() {  # 배포 API 가 쓰는 번들 값 파일을 처음 상태(stable B-7)로

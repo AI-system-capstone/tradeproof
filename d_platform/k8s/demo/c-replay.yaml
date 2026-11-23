@@ -1,6 +1,6 @@
 # 시연 키트(scripts/demo_up.sh)용 C 검증 조회 API + 운영 화면(/admin). 네임스페이스 tradeproof.
 # 운영 화면은 C 서버 한 곳만 부르고 C 가 /api/b/…, /api/d/… 로 B·D 에 중계한다 (docs/interfaces.md 1절).
-# D 배포 API 는 클러스터 밖(호스트)에서 돈다 → D_URL 은 host.k3d.internal
+# D 배포 API 는 클러스터 안 d-platform:8300
 apiVersion: apps/v1
 kind: Deployment
 metadata: { name: c-replay, namespace: tradeproof, labels: { app.kubernetes.io/part-of: tradeproof } }
@@ -17,7 +17,7 @@ spec:
           envFrom: [{ secretRef: { name: tradeproof-env } }]
           env:
             - { name: B_URL, value: "http://b-registry:8100" }
-            - { name: D_URL, value: "http://host.k3d.internal:8300" }
+            - { name: D_URL, value: "http://d-platform:8300" }
           ports: [{ containerPort: 8200 }]
           readinessProbe: { httpGet: { path: /healthz, port: 8200 }, periodSeconds: 5 }
 ---
