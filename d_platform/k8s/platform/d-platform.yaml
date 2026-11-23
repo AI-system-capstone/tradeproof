@@ -59,7 +59,7 @@ spec:
           env:
             - { name: DEPLOY_DRIVER, value: argo }
             - { name: REGISTRY_MODE, value: http }               # 공용 Secret 에는 넣지 않는다 (A 도 같은 이름을 씀)
-            - { name: CANARY_PAUSE_SECONDS, value: "30" }
+            - { name: CANARY_PAUSE_SECONDS, value: "30" }        # A 차트 감시를 끈 경우에만 쓴다 (켜면 감시 통과로 다음 비율)
             - { name: RECONCILE_SECONDS, value: "5" }           # 감시가 canary 를 중단하면 화면을 안 열어 둬도 5초 안에 롤백
             - { name: HELM_BUNDLE_VALUES, value: /var/lib/d-platform/values-bundle.yaml }
             - { name: HELM_VALUES_FILES, value: /etc/d-platform/a-screening-values.yaml }

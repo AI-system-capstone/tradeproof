@@ -80,11 +80,12 @@ scripts/demo_up.sh
 ### 승인 → canary → 롤백
 
 1. 4번 번들에서 사유를 적고 **"승인"** → 확인 창에서 **OK**
-2. "3. 배포"에 배포 ID가 자동으로 들어갑니다. **조회**를 누를 때마다 weight가 10 → 50 → 100으로 올라갑니다 (단계당 30초, 약 65초면 끝).
-3. **"롤백"** → OK.
+2. **바로 다른 터미널에서 심사 트래픽을 넣습니다** (`scripts/demo_traffic.sh`). canary는 시간이 아니라 **감시가 통과해야** 다음 비율로 올라갑니다. 트래픽이 없으면 10%에서 기다립니다(아래 "감시").
+3. "3. 배포"에 배포 ID가 자동으로 들어갑니다. **조회**하면 weight가 10 → 50 → 100으로 올라가는 것이 보입니다(초당 1건이면 약 3~4분).
+4. **"롤백"** → OK.
    - weight 10·50일 때 누르면 진행 중 롤백, 100이 된 뒤 누르면 반영 뒤 롤백입니다.
    - 약 8초 안에 모든 요청이 B-7로 돌아갑니다.
-4. 확인: "3. 배포" 조회 → `rolled_back`, 그 번들 조회 → `cancelled`.
+5. 확인: "3. 배포" 조회 → `rolled_back`, 그 번들 조회 → `cancelled`.
 
 canary 비율을 직접 보려면 터미널에서:
 
@@ -92,17 +93,15 @@ canary 비율을 직접 보려면 터미널에서:
 for i in $(seq 40); do curl -s -H 'Host: tradeproof.local' localhost:8081/healthz | python3 -c 'import json,sys;print(json.load(sys.stdin)["bundle_id"])'; done | sort | uniq -c
 ```
 
-### 감시 → 자동 롤백 (MON-02)
+### 감시: 다음 비율로 가는 조건 · 자동 롤백 (MON-02)
 
-canary 동안 Prometheus가 A의 지표를 번들별로 모으고, Argo가 10초마다 후보 번들을 검사합니다(`d_platform/helm/a-screening/templates/analysis.yaml`).
+canary는 **시간으로 올라가지 않습니다.** 각 비율(10%, 50%)에서 Argo가 10초마다 후보 번들의 운영 지표를 Prometheus에서 읽어 판단합니다(`d_platform/helm/a-screening/templates/analysis.yaml`).
 
-| 기준 | 값 | 넘으면 |
+| 판단 | 조건 | 그러면 |
 |---|---|---|
-| 처리 시간: 후보 평균 / 운영 번들 평균 | 2배 이하 | 두 번째 측정까지 넘으면 Argo가 canary 중단 |
-| 처리 실패: 후보 실패 / 후보 판정 건수 | 10% 이하 | 〃 |
-| 판단 시작 | 후보가 5건 이상 처리한 뒤 | 그 전에는 시간대로 진행 |
-
-중단되면 D 배포 API가 5초 안에 알아채(화면을 안 열어 둬도) 직전 번들로 되돌리고 B에 `cancelled`를 알립니다.
+| 통과 | 후보가 5건 이상 처리했고, 아래 기준 안의 측정이 **3번 연속** | 다음 비율로 (10% → 50% → 100%) |
+| 실패 | 처리 시간이 운영 번들의 **2배 초과**, 또는 처리 실패가 **10% 초과**인 측정이 2번 | Argo가 canary 중단 → D가 5초 안에 알아채 직전 번들로 복원, B에 `cancelled` (화면을 안 열어 둬도 됨) |
+| 판단 불가 | 후보 처리가 5건 미만 (트래픽 없음) | 그 비율에서 기다림. 약 10분(측정 60번) 지나면 Argo가 멈추고 D 기록에 이유가 남음 → 사람이 promote 또는 롤백 |
 
 1. `5-MON-slow-model-v3N.zip`을 반입합니다. 정확도는 기준 이상이라 **게이트를 통과**합니다(처리 시간만 느린 모델, `scripts/demo/models/slow.json` — 임시, A 확인 필요).
 2. 승인한 뒤 바로 다른 터미널에서 심사 트래픽을 넣습니다.
@@ -110,8 +109,10 @@ canary 동안 Prometheus가 A의 지표를 번들별로 모으고, Argo가 10초
    ```bash
    scripts/demo_traffic.sh          # 초당 1건, 5분. 샘플 서류로 실제 OCR 심사 (A 의 loadgen.py)
    ```
-3. 50% 단계쯤에서 후보의 처리 시간이 기준을 넘어 canary가 멈추고 B-7로 돌아갑니다. 운영 화면에서 배포는 `rolled_back`(`analysis_failed`), 번들은 `cancelled`.
+3. 10% 단계에서 후보가 5건쯤 처리하면 처리 시간이 기준을 넘어 canary가 멈추고 B-7로 돌아갑니다. 운영 화면에서 배포는 `rolled_back`(`analysis_failed`), 번들은 `cancelled`.
 4. 개선 모델(`4-S4-…`)은 같은 트래픽에서 감시를 통과해 끝까지 반영됩니다.
+
+> canary 때 넣은 트래픽은 실제 거래로 쌓여 **다음 검증의 Replay 대상이 늘어납니다**(100 → 300건 가까이, 검증 시간이 몇 배). 장면 사이에는 `scripts/demo_reset.sh`로 과거 거래를 시드 100건으로 되돌리세요.
 
 Prometheus 화면: `kubectl --context k3d-tradeproof -n tradeproof port-forward svc/prometheus 9090` → http://localhost:9090 (예: `tradeproof_screening_processing_seconds_avg`).
 
@@ -184,6 +185,17 @@ WSL2 우분투, 메모리 8GB·CPU 4개(`.wslconfig`), Docker Desktop, k3d v5.8.
 - 처음 기준(1.5배, 최소 3건)에서는 같은 설정의 모델끼리도 6건일 때 1.49배까지 흔들렸다 → 2배·최소 5건으로 올렸다(느린 모델은 3.9배라 여유가 있다). 바꾼 기준으로 느린 모델을 다시 돌려 보지는 않았다.
 - 분석 쿼리는 `argo-rollouts` 네임스페이스의 컨트롤러가 보낸다 → Prometheus 주소는 네임스페이스까지 적는다(`prometheus.tradeproof.svc`). 짧은 이름이면 연속 오류로 중단된다(처음 확인 때 겪음).
 - 호스트 없는 ingress 규칙만 두면 nginx가 `/healthz`를 가로챈다 → 호스트 규칙을 남기고 호스트 없는 규칙을 더한다(`ingress.matchAnyHost`).
+
+### 시간 대신 감시 통과로 진행 (2026-11-22~23)
+
+| 확인 | 결과 |
+|---|---|
+| Argo 단계 분석 동작 (분석 실행만 따로) | 기준 안 측정이 연속 3번이면 바로 `Successful`(40초), 트래픽 없으면 측정마다 판단 불가 → 정한 횟수에서 `Inconclusive` |
+| 개선 모델, 승인 뒤 60초 동안 트래픽 없음 | 10%에서 **그대로 머묾** → 트래픽 뒤 감시 통과로 50% → 100%, B `active` |
+| 느린 모델(3.2배 확대) | 게이트 통과(정확도 0.93) → 10%에서 후보 5건 뒤 처리 시간 **5.9배** → 감시 실패 → D가 스스로 롤백, B `cancelled` |
+
+- 단계 분석은 측정 횟수(`count`)가 꼭 있어야 한다. 없으면 Argo가 Rollout을 `InvalidSpec`으로 거부한다(처음 시도 때 겪음) → `count` = 최대 대기 측정 수(60), 연속 3번 통과하면 일찍 끝난다.
+- 느린 모델을 2.4배 확대로 했을 때는 어떤 때 3.9배, 어떤 때 1.83배라 기준(2배)을 넘지 못한 적이 있다 → 3.2배로 올렸다(5.9배). 대신 검증이 길어진다(이 PC 약 14분).
 
 ## 7. 이 폴더의 파일 (D)
 

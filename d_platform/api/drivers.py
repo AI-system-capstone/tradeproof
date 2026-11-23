@@ -137,7 +137,8 @@ class ArgoDriver:
     번들 교체 = deploy/values-dev.yaml → Helm → BUNDLE_ID (docs/interfaces.md 4절). 파일은 D 만 쓴다(11/15 팀 합의).
 
     - 시작: 파일에 stable=직전, candidate=새 번들을 적고 helm upgrade → 파드 템플릿이 바뀌어 canary 시작.
-      단계는 Argo 가 pause_seconds 마다 스스로 올린다 (0 이면 사람이 promote 할 때까지 멈춤).
+      다음 비율로 올라가는 조건은 A 차트가 정한다: 감시(analysis.enabled)를 켜면 각 비율에서 감시가 통과해야 올라가고
+      (시간으로 올라가지 않음), 끄면 pause_seconds 마다 (0 이면 사람이 promote 할 때까지) 올라간다.
     - 롤백 (진행 중이든 100% 반영 뒤든 같다):
       abort(진행 중일 때만, 트래픽을 바로 stable 로) → 파일을 직전 번들로 → helm upgrade
       → 직전 번들로 가는 canary 가 생겼으면 promote --full 로 단계를 건너뜀.
@@ -240,7 +241,11 @@ class ArgoDriver:
                                M.ROLLBACK_ANALYSIS_FAILED)
         if phase == "Healthy" and not _updating(ro):
             return Observation(M.SUCCEEDED, 100, len(steps) - 1, {"result": "passed", "checks": passed})
-        return Observation(M.PROGRESSING, weight, step_index, {"result": "running", "checks": checks})
+        running = {"result": "running", "checks": checks}
+        if phase == "Paused" and message:
+            # 감시가 판단하지 못한 채 기다림이 끝났거나(트래픽 부족) 사람 승격을 기다리는 중 → 화면에 이유를 보여 준다
+            running["message"] = message
+        return Observation(M.PROGRESSING, weight, step_index, running)
 
 
 def make_driver(kind: str, step_seconds: float, fail_bundles: frozenset[str], env: Mapping[str, str] | None = None):
