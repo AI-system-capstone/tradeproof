@@ -434,3 +434,22 @@ def test_watch_does_not_judge_while_start_is_applying():
         dep_id = r.json()["deployment_id"]
         assert not _wait(lambda: store.get(dep_id).status == "failed", 0.5)
         assert store.get(dep_id).status in ("pending", "progressing")
+
+
+# ---------------------------------------------------------------- 한글 담당자 (B-1)
+def test_korean_actor_in_body_is_recorded_as_is(client):
+    r = client.post("/deployments", json={"bundle_id": "B-8", "actor": "지윤아"})
+    assert r.status_code == 202 and r.json()["requested_by"] == "지윤아"
+
+
+def test_percent_encoded_header_is_decoded(client):
+    r = client.post("/deployments", json={"bundle_id": "B-8"}, headers={"X-Actor": "%EC%A7%80%EC%9C%A4%EC%95%84"})
+    assert r.status_code == 202 and r.json()["requested_by"] == "지윤아"
+
+
+def test_body_and_header_actor_must_match(client):
+    r = client.post("/deployments", json={"bundle_id": "B-8", "actor": "지윤아"}, headers={"X-Actor": "someone"})
+    assert_error(r, 422, "VALIDATION_ERROR")
+    ok = client.post("/deployments", json={"bundle_id": "B-8", "actor": "지윤아"},
+                     headers={"X-Actor": "%EC%A7%80%EC%9C%A4%EC%95%84"})
+    assert ok.status_code == 202
