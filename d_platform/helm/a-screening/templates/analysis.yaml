@@ -1,8 +1,11 @@
 {{- if .Values.analysis.enabled }}
 {{- /* 분석 쿼리는 argo-rollouts 네임스페이스의 컨트롤러가 보낸다 → 짧은 이름(prometheus)이 안 통한다. 네임스페이스까지 적은 주소를 쓴다 */}}
 {{- $prom := default (printf "http://prometheus.%s.svc:9090" .Release.Namespace) .Values.analysis.prometheusAddress }}
-# canary 감시 (MON-02): canary 동안 후보 번들의 운영 지표를 Prometheus 에서 읽어 기준을 넘으면 Argo 가 canary 를 중단한다.
-# 중단되면 D 배포 API 가 이를 보고(백그라운드 확인) 직전 번들로 되돌리고 B 에 cancelled 를 알린다.
+# canary 단계 통과 조건 (MON-02). 각 비율(10% → 50%)에서 이 분석이 "통과"해야 다음 비율로 올라간다 (시간으로 올라가지 않음).
+#   통과: 후보가 minSamples 건 이상 처리했고, 기준 안의 측정이 consecutiveSuccesses 번 연속
+#   실패: 기준을 넘은 측정이 failureLimit 을 넘으면 → Argo 가 canary 중단 → D 배포 API 가 직전 번들로 되돌리고 B 에 cancelled
+#   판단 불가: 후보가 아직 minSamples 건을 처리하지 못함(트래픽 없음) → 그 비율에서 기다린다.
+#     maxWaitMeasurements 번(× interval) 동안 판단을 못 하면 Argo 가 rollout 을 멈춘다(사람이 promote 또는 롤백).
 #
 # 지표는 A 의 /metrics (번들별, DB 전체 집계):
 #   tradeproof_screening_processing_seconds_avg{bundle_id}  최근 완료 100건 처리 시간 평균
@@ -23,8 +26,13 @@ spec:
     # 후보의 처리 시간이 운영 번들의 몇 배인지
     - name: processing-time-ratio
       interval: {{ .Values.analysis.interval }}
+      count: {{ .Values.analysis.maxWaitMeasurements }}          # 단계 분석은 횟수가 있어야 한다 (없으면 Argo 가 InvalidSpec)
+      consecutiveSuccessLimit: {{ .Values.analysis.consecutiveSuccesses }}
       failureLimit: {{ .Values.analysis.failureLimit }}
-      successCondition: "result[0] <= {{ .Values.analysis.maxProcessingTimeRatio }}"
+      inconclusiveLimit: {{ .Values.analysis.maxWaitMeasurements }}
+      # 건수가 모자라면 -1 → 통과도 실패도 아님(판단 불가) → 그 비율에서 기다린다
+      successCondition: "result[0] >= 0 && result[0] <= {{ .Values.analysis.maxProcessingTimeRatio }}"
+      failureCondition: "result[0] > {{ .Values.analysis.maxProcessingTimeRatio }}"
       provider:
         prometheus:
           address: {{ $prom | quote }}
@@ -34,20 +42,25 @@ spec:
               / max(tradeproof_screening_processing_seconds_avg{bundle_id="{{ "{{args.stable}}" }}"})
             )
             and on() (sum(tradeproof_screening_results_total{bundle_id="{{ "{{args.candidate}}" }}"}) >= {{ .Values.analysis.minSamples }})
-            or on() vector(0)
-    # 후보의 처리 실패 비율
+            or on() vector(-1)
+    # 후보의 처리 실패 비율 (실패가 없으면 0)
     - name: failure-rate
       interval: {{ .Values.analysis.interval }}
+      count: {{ .Values.analysis.maxWaitMeasurements }}          # 단계 분석은 횟수가 있어야 한다 (없으면 Argo 가 InvalidSpec)
+      consecutiveSuccessLimit: {{ .Values.analysis.consecutiveSuccesses }}
       failureLimit: {{ .Values.analysis.failureLimit }}
-      successCondition: "result[0] <= {{ .Values.analysis.maxFailureRate }}"
+      inconclusiveLimit: {{ .Values.analysis.maxWaitMeasurements }}
+      # 건수가 모자라면 -1 → 통과도 실패도 아님(판단 불가) → 그 비율에서 기다린다
+      successCondition: "result[0] >= 0 && result[0] <= {{ .Values.analysis.maxFailureRate }}"
+      failureCondition: "result[0] > {{ .Values.analysis.maxFailureRate }}"
       provider:
         prometheus:
           address: {{ $prom | quote }}
           query: |
             (
-              sum(tradeproof_screening_failed_total{bundle_id="{{ "{{args.candidate}}" }}"})
+              (sum(tradeproof_screening_failed_total{bundle_id="{{ "{{args.candidate}}" }}"}) or on() vector(0))
               / clamp_min(sum(tradeproof_screening_results_total{bundle_id="{{ "{{args.candidate}}" }}"}), 1)
             )
             and on() (sum(tradeproof_screening_results_total{bundle_id="{{ "{{args.candidate}}" }}"}) >= {{ .Values.analysis.minSamples }})
-            or on() vector(0)
+            or on() vector(-1)
 {{- end }}

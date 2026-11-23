@@ -58,12 +58,15 @@ ingress:
   host: tradeproof.local
   matchAnyHost: false       # true: 호스트 이름 없는 요청도 받는다 (시연 키트: 부하 생성기가 localhost:8081 로 보냄)
 
-# canary 감시 (MON-02, templates/analysis.yaml). Prometheus 가 A 의 /metrics 를 수집하고 있어야 한다.
+# canary 단계 통과 조건 (MON-02, templates/analysis.yaml). Prometheus 가 A 의 /metrics 를 수집하고 있어야 한다.
+# 켜면 canary 는 시간이 아니라 이 감시가 통과할 때 다음 비율로 올라간다.
 analysis:
   enabled: false
   prometheusAddress: ""           # 비우면 http://prometheus.<릴리스 네임스페이스>.svc:9090 (분석은 argo-rollouts 네임스페이스에서 돎)
   interval: 10s
-  failureLimit: 1                 # 기준을 넘은 측정이 이 횟수를 넘으면(= 두 번째 실패) 중단
+  consecutiveSuccesses: 3         # 기준 안의 측정이 이만큼 연속이면 그 비율 통과 (10초 간격이면 약 30초)
+  failureLimit: 1                 # 기준을 넘은 측정이 이 횟수를 넘으면(= 두 번째 실패) 중단 → 롤백
+  maxWaitMeasurements: 60         # 판단 불가(후보 처리 건수 부족)로 기다리는 측정 수 (10초 간격이면 약 10분). 넘으면 Argo 가 멈춤
   minSamples: 5                   # 후보가 처리한 건수가 이보다 적으면 판단하지 않음 (적으면 평균이 크게 흔들림)
   maxProcessingTimeRatio: 2.0     # 후보 처리 시간 평균 / 운영 번들 평균 (11/21: 같은 설정끼리도 6건일 때 1.49배까지 흔들림, 느린 모델은 3.9배)
   maxFailureRate: 0.1             # 후보 처리 실패 / 후보 판정 건수
@@ -71,8 +74,8 @@ analysis:
 canary:
   # 단계마다 이 비율로 올린 뒤 멈춘다. 마지막 단계를 넘기면 100%.  (MTG-05 제안: 10 → 50 → 100)
   weights: [10, 50]
-  # 0 이면 사람이 승격할 때까지 멈춘다 (kubectl argo rollouts promote a-screening -n tradeproof).
-  # 초를 적으면 그 시간 뒤 자동으로 다음 단계. 감시(AnalysisTemplate)는 다음 단계에서 붙인다.
+  # 감시(analysis.enabled)를 켜면 쓰지 않는다: 각 비율에서 감시가 통과해야 다음 비율로 간다.
+  # 감시를 끈 경우에만: 0 이면 사람이 승격할 때까지 멈춤(kubectl argo rollouts promote), 초를 적으면 그 시간 뒤 다음 단계.
   pauseSeconds: 0
   # 옛 버전 파드를 내리기 전 기다리는 시간. 이 안에 undo 하면 옛 ReplicaSet 을 그대로 다시 쓴다.
   scaleDownDelaySeconds: 30

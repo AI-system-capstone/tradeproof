@@ -2,5 +2,5 @@
   "engine": "tesseract",
   "lang": "eng",
   "config": "--oem 1 --psm 6",
-  "preprocess": {"scale": 2.4, "resample": "bicubic"}
+  "preprocess": {"scale": 3.2, "resample": "bicubic"}
 }

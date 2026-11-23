@@ -271,3 +271,10 @@ def test_initial_bundle_not_running_in_cluster_is_409():
     kube = Kube(rollout(bundle="B-8", phase="Healthy", weight=0, stable="aaa", current="aaa"))
     r = _first_client(kube).post("/deployments", json={"bundle_id": "B-7"}, headers={"X-Actor": "b"})
     assert r.status_code == 409 and "B-8" in r.json()["message"]
+
+
+def test_observe_paused_canary_reports_why():
+    """감시가 판단하지 못해 Argo 가 멈추면(트래픽 부족 등) 그 이유를 배포 기록에 남긴다."""
+    state = rollout(phase="Paused", weight=10, message="InconclusiveAnalysisRun: metric processing-time-ratio inconclusive")
+    obs = driver(Kube(state)).observe(dep(), NOW)
+    assert obs.status == M.PROGRESSING and "Inconclusive" in obs.analysis["message"]
