@@ -27,8 +27,11 @@ rules:
     resources: ["ingresses"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["argoproj.io"]
-    resources: ["rollouts", "rollouts/status", "rollouts/scale"]
+    resources: ["rollouts", "rollouts/status", "rollouts/scale", "analysistemplates"]   # analysistemplates: A 차트의 canary 감시
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["analysisruns"]                 # 중단 사유를 볼 때 (읽기만)
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -57,6 +60,7 @@ spec:
             - { name: DEPLOY_DRIVER, value: argo }
             - { name: REGISTRY_MODE, value: http }               # 공용 Secret 에는 넣지 않는다 (A 도 같은 이름을 씀)
             - { name: CANARY_PAUSE_SECONDS, value: "30" }
+            - { name: RECONCILE_SECONDS, value: "5" }           # 감시가 canary 를 중단하면 화면을 안 열어 둬도 5초 안에 롤백
             - { name: HELM_BUNDLE_VALUES, value: /var/lib/d-platform/values-bundle.yaml }
             - { name: HELM_VALUES_FILES, value: /etc/d-platform/a-screening-values.yaml }
             - name: K8S_NAMESPACE

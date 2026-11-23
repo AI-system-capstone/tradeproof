@@ -26,7 +26,7 @@
 - [x] k3s + ingress-nginx + Argo Rollouts: `helm/a-screening` 차트(더미 이미지), `BUNDLE_ID` 주입, canary 10→50→100 수동 승격·abort·undo 확인 (DEP-03·04·05). 데이터 계층(`k8s/data/`)도 올림
 - [x] 차트에 A의 실제 이미지 2개(API·워커) (A #23), 샘플 서류 볼륨 선택 값(`api.volumes`·`worker.volumes`)
 - [ ] TODO(A와 확정): 워커 canary — A 제안은 "워커는 하나, 번들은 접수 때 거래마다 고정(`screening_jobs.bundle_id`), canary는 API Rollout만 나눈다". 워커 지표는 A의 API `/metrics`가 DB에서 `bundle_id`별로 집계(`tradeproof_screening_failed_total`, `tradeproof_screening_processing_seconds_avg`)
-- [ ] Prometheus 수집(MON-01), AnalysisTemplate로 단계별 분석 → 기준 초과 시 자동 중단 → 직전 번들 복원(MON-02). B에는 배포 API가 `cancelled`를 보낸다
+- [x] Prometheus 수집(MON-01, `k8s/monitoring/`), A 차트 AnalysisTemplate(처리 시간 비율·실패율) → 기준 초과 시 Argo 중단 → 배포 API가 백그라운드 확인(`RECONCILE_SECONDS`)으로 직전 번들 복원·B에 `cancelled` (MON-02, 11/21 k3d 확인)
 - [x] 배포 API 실제 드라이버(`DEPLOY_DRIVER=argo`): `deploy/values-dev.yaml`을 쓰고 Helm으로 canary 시작, 롤백(진행 중·반영 뒤 같은 방식, undo 없음), 밖에서 중단된 배포 감지. k3s에서 확인
 - [x] 배포 API를 클러스터 안에서 띄우기: 이미지에 helm·kubectl·Argo Rollouts 플러그인·A 차트(`Dockerfile`), 배포 파일·권한(`k8s/platform/d-platform.yaml`). 시연 키트가 같이 올린다 (11/21)
 - [ ] 감지 시간·전환 시간 측정 도구

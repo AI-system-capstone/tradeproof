@@ -77,16 +77,18 @@ start_bg() {  # 포트포워드만 (D 배포 API 는 클러스터 안에서 돈�
   wait_http "http://localhost:$D_PORT/healthz" 60 || die "D 포트포워드가 안 붙음 ($STATE/logs/pf-d-platform.log)"
 }
 
-deploy_platform() {  # D 배포 API 를 클러스터 안에 (d_platform/k8s/platform/d-platform.yaml)
+deploy_platform() {  # Prometheus + D 배포 API 를 클러스터 안에 (d_platform/k8s/monitoring/, d_platform/k8s/platform/)
   kn create configmap d-platform-helm-values --from-file=a-screening-values.yaml="$A_VALUES" \
     --dry-run=client -o yaml | k apply -f - >/dev/null
-  k apply -f d_platform/k8s/platform/d-platform.yaml >/dev/null
+  k apply -f d_platform/k8s/monitoring/prometheus.yaml -f d_platform/k8s/platform/d-platform.yaml >/dev/null
+  kn rollout status deploy/prometheus --timeout=300s
   kn rollout restart deploy/d-platform >/dev/null   # 이미지·값 파일이 바뀌었을 수 있음
   kn rollout status deploy/d-platform --timeout=300s
 }
 
-write_bundle_values() {  # 배포 API 가 쓰는 번들 값 파일을 처음 상태(stable B-7)로
-  printf '# 시연 키트용 (D 배포 API 가 쓰고 helm 으로 적용). 처음 상태\nbundle:\n  stable: "B-7"\n  candidate: ""\n' > "$STATE/values-bundle.yaml"
+write_bundle_values() {  # write_bundle_values [운영 번들] → demo_up·reset 이 A 를 다시 설치할 때 쓰는 번들 값 (기본 B-7)
+  # D 배포 API 는 클러스터 안에서 자기 파일(파드 안)을 따로 쓴다. 이 파일은 키트가 helm 으로 A 를 설치할 때만 쓴다
+  printf '# 시연 키트용 (demo_up·demo_reset 이 A 차트에 넣는 번들 값)\nbundle:\n  stable: "%s"\n  candidate: ""\n' "${1:-B-7}" > "$STATE/values-bundle.yaml"
 }
 
 b_post_import() {  # b_post_import ZIP → import 응답 JSON
