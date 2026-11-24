@@ -18,6 +18,8 @@ api:
   volumeMounts:
     - { name: docs, mountPath: /app/data/docs, readOnly: true }
 worker:
+  autoscaling:
+    enabled: true          # OCR 워커 1 → 최대 3개 (심사 트래픽이 몰리면)
   volumes:
     - name: docs
       hostPath: { path: /data/tradeproof/docs, type: Directory }

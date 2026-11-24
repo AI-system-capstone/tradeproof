@@ -44,8 +44,9 @@ spec:
             periodSeconds: 5
             failureThreshold: 10
           resources:
-            requests: { cpu: 20m, memory: 64Mi }
-            limits: { memory: 256Mi }
+            # CPU 는 requests 비율로 나눠 받는다. OCR 워커가 늘어나도(각 500m) DB 가 밀려 전체가 느려지지 않게 넉넉히 (11/25 측정)
+            requests: { cpu: 250m, memory: 128Mi }
+            limits: { memory: 512Mi }
           volumeMounts:
             - { name: data, mountPath: /var/lib/postgresql/data }
             - { name: schema, mountPath: /docker-entrypoint-initdb.d, readOnly: true }

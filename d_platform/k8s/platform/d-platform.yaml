@@ -23,6 +23,9 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]                  # A OCR 워커
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]     # A 차트의 OCR 워커 자동 확장
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

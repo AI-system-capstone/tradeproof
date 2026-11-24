@@ -8,7 +8,9 @@ metadata:
     app.kubernetes.io/name: a-ocr-worker
     app.kubernetes.io/part-of: tradeproof
 spec:
+  {{- if not .Values.worker.autoscaling.enabled }}
   replicas: {{ .Values.worker.replicas }}
+  {{- end }}   {{- /* 자동 확장을 켜면 개수는 HPA 가 정한다 (helm 이 되돌리지 않게 비워 둠) */}}
   selector:
     matchLabels:
       app: a-ocr-worker

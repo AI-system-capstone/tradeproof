@@ -29,7 +29,8 @@ api:
   env:
     REGISTRY_MODE: http    # 번들 구성·모델 설정·제재 리스트를 B 의 GET /bundles/{id} 와 원본 ZIP 에서 받는다 (a_screening/registry.py)
   resources:
-    requests: { cpu: 50m, memory: 64Mi }
+    # 접수만 하지만 OCR 워커가 CPU 를 다 차지하면 접수가 시간 초과된다(11/25 측정) → 워커와 나눠 받을 만큼
+    requests: { cpu: 100m, memory: 64Mi }
     limits: { memory: 256Mi }   # 측정: 리스트 2개 적재 후 약 45MB
   # 선택: 파드에 붙일 볼륨. 샘플 서류(data/docs)를 붙이면 "샘플 ID로 접수"가 된다 (예: d_platform/k8s/demo/a-screening-values.yaml)
   volumes: []
@@ -43,13 +44,23 @@ worker:
   enabled: true
   image: tradeproof/a-ocr-worker:dev
   imagePullPolicy: Never
-  replicas: 1
+  replicas: 1                   # 자동 확장을 끈 경우의 개수
+  # 자동 확장 (templates/worker-hpa.yaml). CPU 사용률이 목표를 넘으면 maxReplicas 까지 늘린다.
+  # 노드 CPU 보다 많이 늘려도 빨라지지 않는다 (OCR 한 건 ≈ 1코어). 시연 키트는 켬
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilization: 70      # requests.cpu 대비
+    scaleDownDelaySeconds: 120    # 이 시간 동안 계속 한가해야 줄인다
   envFromSecret: tradeproof-env
   env:
     REGISTRY_MODE: http
   resources:
-    requests: { cpu: 50m, memory: 128Mi }
-    limits: { memory: 512Mi }   # 측정: 한 건 처리 시 약 115MB + tesseract
+    # OCR 은 처리 중 CPU 1코어 가까이 쓴다. 자동 확장의 사용률은 이 requests 대비라 실제에 가깝게 둔다
+    requests: { cpu: 500m, memory: 128Mi }
+    # OCR 은 한 건에 1코어까지만 쓴다(tesseract 스레드 1개). 상한을 둬 DB·API 몫을 넘보지 않게
+    limits: { cpu: 1000m, memory: 512Mi }   # 측정: 한 건 처리 시 약 115MB + tesseract
   volumes: []        # api 와 같은 형식
   volumeMounts: []
 

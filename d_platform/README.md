@@ -25,6 +25,7 @@
 - [x] 배포 API: 미승인 409, 진행 중 배포 409, `deployments` 기록 (가짜 드라이버)
 - [x] k3s + ingress-nginx + Argo Rollouts: `helm/a-screening` 차트(더미 이미지), `BUNDLE_ID` 주입, canary 10→50→100 수동 승격·abort·undo 확인 (DEP-03·04·05). 데이터 계층(`k8s/data/`)도 올림
 - [x] 차트에 A의 실제 이미지 2개(API·워커) (A #23), 샘플 서류 볼륨 선택 값(`api.volumes`·`worker.volumes`)
+- [x] OCR 워커 자동 확장(HPA, CPU 70%, 1~3개) + Postgres·심사 API CPU 요청 보장 → 360건 처리 647초 → 428초 (11/25)
 - [ ] TODO(A와 확정): 워커 canary — A 제안은 "워커는 하나, 번들은 접수 때 거래마다 고정(`screening_jobs.bundle_id`), canary는 API Rollout만 나눈다". 워커 지표는 A의 API `/metrics`가 DB에서 `bundle_id`별로 집계(`tradeproof_screening_failed_total`, `tradeproof_screening_processing_seconds_avg`)
 - [x] Prometheus 수집(MON-01, `k8s/monitoring/`), A 차트 AnalysisTemplate(처리 시간 비율·실패율)을 canary 각 비율의 통과 조건으로(시간으로 올라가지 않음, 11/23) → 기준 초과 시 Argo 중단 → 배포 API가 백그라운드 확인(`RECONCILE_SECONDS`)으로 직전 번들 복원·B에 `cancelled` (MON-02, 11/21 k3d 확인)
 - [x] 배포 API 실제 드라이버(`DEPLOY_DRIVER=argo`): `deploy/values-dev.yaml`을 쓰고 Helm으로 canary 시작, 롤백(진행 중·반영 뒤 같은 방식, undo 없음), 밖에서 중단된 배포 감지. k3s에서 확인

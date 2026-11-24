@@ -197,6 +197,19 @@ WSL2 우분투, 메모리 8GB·CPU 4개(`.wslconfig`), Docker Desktop, k3d v5.8.
 - 단계 분석은 측정 횟수(`count`)가 꼭 있어야 한다. 없으면 Argo가 Rollout을 `InvalidSpec`으로 거부한다(처음 시도 때 겪음) → `count` = 최대 대기 측정 수(60), 연속 3번 통과하면 일찍 끝난다.
 - 느린 모델을 2.4배 확대로 했을 때는 어떤 때 3.9배, 어떤 때 1.83배라 기준(2배)을 넘지 못한 적이 있다 → 3.2배로 올렸다(5.9배). 대신 검증이 길어진다(이 PC 약 14분).
 
+### OCR 워커 자동 확장 (2026-11-25)
+
+시연 키트는 OCR 워커를 CPU 사용률 70% 기준으로 1 → 최대 3개까지 자동으로 늘립니다(A 차트 `worker.autoscaling`). 같은 트래픽(초당 3건, 2분, 360건)으로 비교:
+
+| | 워커 1개 고정 | 자동 확장(3개) |
+|---|---|---|
+| 360건 모두 처리 | 647초 | **428초 (약 1.5배)** |
+| 접수 실패 | 0 | 0 |
+
+- 노드 CPU보다 많이 늘려도 빨라지지 않습니다(OCR 한 건 ≈ 1코어). 시연 PC 코어 수에 맞춰 `worker.autoscaling.maxReplicas`를 정하세요(코어 수 − 1 정도).
+- 처음에는 워커를 3개로 늘리자 오히려 느려졌습니다. Postgres(CPU 요청 20m)와 심사 API(50m)가 워커(500m씩)에 밀려 접수가 시간 초과됐습니다 → Postgres 250m, 심사 API 100m로 올리고 워커는 1코어 상한을 뒀습니다.
+- WSL에서 예전 k3s가 다시 켜져 있으면 CPU를 많이 씁니다(SeaweedFS). 시연 PC에서는 `sudo systemctl disable --now k3s` 후 `sudo /usr/local/bin/k3s-killall.sh`.
+
 ## 7. 이 폴더의 파일 (D)
 
 | 파일 | 내용 |
@@ -205,7 +218,7 @@ WSL2 우분투, 메모리 8GB·CPU 4개(`.wslconfig`), Docker Desktop, k3d v5.8.
 | `c-replay.yaml` | C 검증 조회 API + 운영 화면(`/admin`). C가 B·D로 중계 |
 | `validation-job.json` | B가 후보마다 만드는 C 검증 Job 양식. `c_replay/job/job-template.json`에 `REGISTRY_MODE=http`, 샘플 서류·제재 리스트 볼륨을 더한 것 (C 양식이 바뀌면 같이 맞춘다) |
 | `../platform/d-platform.yaml` | D 배포 API: Deployment·Service, 배포 권한(Role: helm 릴리스 Secret, Service·Ingress·워커 Deployment·Rollout). 번들 값 파일은 파드 안 임시 폴더(emptyDir) |
-| `a-screening-values.yaml` | A 차트 시연 값: 샘플 서류(`data/docs`) 볼륨. demo_up/reset 의 helm과 D 배포 API(`HELM_VALUES_FILES`)가 같이 쓴다 |
+| `a-screening-values.yaml` | A 차트 시연 값: OCR 워커 자동 확장(1~3개), 샘플 서류(`data/docs`) 볼륨. demo_up/reset 의 helm과 D 배포 API(`HELM_VALUES_FILES`)가 같이 쓴다 |
 
 D 배포 API는 `d_platform/k8s/platform/d-platform.yaml`로 클러스터 안에서 돈다(11/20부터). B·C는 `http://d-platform:8300`으로 부른다.
 
