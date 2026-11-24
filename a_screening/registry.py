@@ -99,18 +99,36 @@ def _get_json(path: str) -> dict:
         raise RegistryUnavailable(f"B 연결 실패: {url} ({e})") from e
 
 
-def _from_registry(bundle_id: str) -> dict:
-    d = _get_json(f"/bundles/{urllib.request.quote(bundle_id, safe='')}")
+def _remember(d: dict, bundle_id: str | None = None) -> dict:
+    """B 번들 응답 하나 → {bundle_id, model_id, list_id}, 모델·리스트 ZIP 위치를 기억한다."""
     try:
-        model_id, list_id = d["model_id"], d["list_id"]
+        bid, model_id, list_id = d.get("bundle_id", bundle_id), d["model_id"], d["list_id"]
         model_uri, list_uri = d["model"]["uri"], d["list"]["uri"]
-    except (KeyError, TypeError) as e:
+    except (KeyError, TypeError, AttributeError) as e:
         raise RegistryUnavailable(f"B 번들 응답 형식이 다름: {sorted(d) if isinstance(d, dict) else d!r}") from e
-    if d.get("bundle_id", bundle_id) != bundle_id or not model_id or not list_id:
+    if (bundle_id is not None and bid != bundle_id) or not bid or not model_id or not list_id:
         raise RegistryUnavailable(f"B 번들 응답이 요청과 맞지 않음: {d}")
     _URIS[("model", model_id)] = model_uri
     _URIS[("list", list_id)] = list_uri
-    return {"bundle_id": bundle_id, "model_id": model_id, "list_id": list_id}
+    return {"bundle_id": bid, "model_id": model_id, "list_id": list_id}
+
+
+def _from_registry(bundle_id: str) -> dict:
+    return _remember(_get_json(f"/bundles/{urllib.request.quote(bundle_id, safe='')}"), bundle_id)
+
+
+def _locate(kind: str, item_id: str) -> str | None:
+    """번들을 거치지 않고 모델·리스트 ID 만 받았을 때 (C 검증 Job 처럼 번들은 호출한 쪽이 B 에서 읽은 경우):
+    B 의 번들 목록 GET /bundles 에서 그 ID 를 쓰는 번들을 찾아 ZIP 위치를 알아낸다."""
+    rows = _get_json("/bundles")
+    if not isinstance(rows, list):
+        raise RegistryUnavailable(f"B 번들 목록 응답 형식이 다름: {type(rows).__name__}")
+    for d in rows:
+        try:
+            _remember(d)
+        except RegistryUnavailable:
+            continue     # 아직 모델·리스트가 다 갖춰지지 않은 번들 등은 건너뛴다
+    return _URIS.get((kind, item_id))
 
 
 def bundle(bundle_id: str) -> dict:
@@ -140,9 +158,9 @@ def known_bundles() -> dict[str, dict]:
 
 # ---------------------------------------------------------------- ZIP 안 파일
 def _artifact_file(kind: str, item_id: str, name: str) -> bytes:
-    uri = _URIS.get((kind, item_id))
+    uri = _URIS.get((kind, item_id)) or _locate(kind, item_id)
     if uri is None:
-        raise RegistryUnavailable(f"{kind} {item_id!r} 의 ZIP 위치를 모름 (그 번들을 먼저 조회해야 함)")
+        raise BadArtifact(f"{kind} {item_id!r} 를 쓰는 번들이 B 에 없음")
     try:
         raw = _blob_store().get(uri)
     except Exception as e:  # noqa: BLE001
