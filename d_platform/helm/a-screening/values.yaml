@@ -70,6 +70,13 @@ analysis:
   minSamples: 5                   # 후보가 처리한 건수가 이보다 적으면 판단하지 않음 (적으면 평균이 크게 흔들림)
   maxProcessingTimeRatio: 2.0     # 후보 처리 시간 평균 / 운영 번들 평균 (11/21: 같은 설정끼리도 6건일 때 1.49배까지 흔들림, 느린 모델은 3.9배)
   maxFailureRate: 0.1             # 후보 처리 실패 / 후보 판정 건수
+  # 담당자 채점 감시 (검토 목록의 AI 판정 맞음/틀림, A 지표 tradeproof_review_feedback{bundle_id, verdict}).
+  # 켜면 후보 번들 판정에 채점이 feedbackMinSamples 건 모일 때까지 그 비율에서 기다리고(판단 불가),
+  # 틀림 비율이 maxIncorrectRate 를 넘는 측정이 failureLimit 을 넘으면 롤백한다.
+  feedback:
+    enabled: false
+    minSamples: 3                 # 후보 번들 채점(맞음+틀림)이 이보다 적으면 판단하지 않음
+    maxIncorrectRate: 0.5         # 후보 번들 틀림 / (맞음 + 틀림)
 
 canary:
   # 단계마다 이 비율로 올린 뒤 멈춘다. 마지막 단계를 넘기면 100%.  (MTG-05 제안: 10 → 50 → 100)

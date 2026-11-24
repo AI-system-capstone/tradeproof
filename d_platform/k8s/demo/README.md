@@ -117,6 +117,18 @@ canary는 **시간으로 올라가지 않습니다.** 각 비율(10%, 50%)에서
 
 Prometheus 화면: `kubectl --context k3d-tradeproof -n tradeproof port-forward svc/prometheus 9090` → http://localhost:9090 (예: `tradeproof_screening_processing_seconds_avg`).
 
+### 담당자 채점으로 canary 진행·롤백 (검토 목록 맞음/틀림)
+
+검토 화면(http://localhost:18000/review) 목록의 각 거래 줄에 **[맞음] [틀림]** 버튼이 있습니다. AI 판정(분류 배지)이 맞았는지 채점하는 버튼이고, 거래 승인·거절과는 따로 저장됩니다. 다시 누르면 취소됩니다.
+
+- 채점은 그 거래를 처리한 번들로 셉니다 → A 지표 `tradeproof_review_feedback{bundle_id, verdict}`.
+- 시연 값(`a-screening-values.yaml`)은 감시 항목 `reviewer-incorrect-rate`를 켭니다. **후보 번들 건에 채점이 3건 이상 모여야** 그 비율을 통과하고, 틀림이 50%를 넘는 측정이 2번이면 자동 롤백됩니다 (처리 시간·실패율 감시는 그대로).
+- 순서: 승인 → `scripts/demo_traffic.sh` → 목록 위 "번들"에서 후보(B-8 등)를 고르고 채점
+  - 맞음 3번: 11/25 맥 실측, 승인 뒤 약 80초에 50%, 95초에 100%
+  - 틀림 2·맞음 1: 세 번째 채점 뒤 약 28초에 자동 롤백 (`analysis_failed`, 번들 `cancelled`)
+- 화면 맨 위 오른쪽에 번들별 맞음·틀림 합계, Grafana 에 "AI 판정 채점"·"틀림 비율(기준 0.5)" 패널.
+- 채점 없이 트래픽만으로 진행시키려면 `analysis.feedback.enabled: false`.
+
 ### Grafana 보기 (모니터링)
 
 `scripts/demo_up.sh`가 Grafana를 같이 띄우고 **http://localhost:13000** 으로 연결합니다 (로그인 없음, 시연 전용 익명 관리자). 열면 바로 "TradeProof 운영" 대시보드가 나오고 5초마다 새로고침합니다.

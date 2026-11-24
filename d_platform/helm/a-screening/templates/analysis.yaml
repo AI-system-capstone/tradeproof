@@ -63,4 +63,25 @@ spec:
             )
             and on() (sum(tradeproof_screening_results_total{bundle_id="{{ "{{args.candidate}}" }}"}) >= {{ .Values.analysis.minSamples }})
             or on() vector(-1)
+    {{- if .Values.analysis.feedback.enabled }}
+    # 담당자 채점: 후보 번들 판정 중 '틀림' 비율 (검토 목록 맞음/틀림). 채점이 모이기 전에는 -1 = 판단 불가로 기다림
+    - name: reviewer-incorrect-rate
+      interval: {{ .Values.analysis.interval }}
+      count: {{ .Values.analysis.maxWaitMeasurements }}
+      consecutiveSuccessLimit: {{ .Values.analysis.consecutiveSuccesses }}
+      failureLimit: {{ .Values.analysis.failureLimit }}
+      inconclusiveLimit: {{ .Values.analysis.maxWaitMeasurements }}
+      successCondition: "result[0] >= 0 && result[0] <= {{ .Values.analysis.feedback.maxIncorrectRate }}"
+      failureCondition: "result[0] > {{ .Values.analysis.feedback.maxIncorrectRate }}"
+      provider:
+        prometheus:
+          address: {{ $prom | quote }}
+          query: |
+            (
+              (sum(tradeproof_review_feedback{bundle_id="{{ "{{args.candidate}}" }}",verdict="incorrect"}) or on() vector(0))
+              / clamp_min(sum(tradeproof_review_feedback{bundle_id="{{ "{{args.candidate}}" }}"}), 1)
+            )
+            and on() (sum(tradeproof_review_feedback{bundle_id="{{ "{{args.candidate}}" }}"}) >= {{ .Values.analysis.feedback.minSamples }})
+            or on() vector(-1)
+    {{- end }}
 {{- end }}

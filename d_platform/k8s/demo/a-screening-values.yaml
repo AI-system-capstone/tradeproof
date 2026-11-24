@@ -3,6 +3,10 @@
 # canary 감시 켜기 (Prometheus: d_platform/k8s/monitoring/prometheus.yaml)
 analysis:
   enabled: true
+  # 담당자 채점 감시: 검토 목록(18000/review)에서 후보 번들 건에 맞음/틀림을 3건 이상 눌러야 다음 비율로 간다.
+  # 틀림이 50% 를 넘으면 자동 롤백. 끄면 처리 시간·실패율만 본다 (그때는 트래픽만 넣으면 올라감)
+  feedback:
+    enabled: true
 
 # 호스트 이름 없이도 canary 입구가 받게 (scripts/demo_traffic.sh 의 부하 생성기가 localhost:8081 로 보냄).
 # Host: tradeproof.local 규칙도 남는다 → curl -H 'Host: tradeproof.local' localhost:8081/healthz 는 그대로 된다

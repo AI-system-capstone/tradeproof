@@ -20,7 +20,9 @@
         {
           "refId": "A",
           "expr": "tradeproof_platform_canary_weight",
-          "legendFormat": "canary %"
+          "legendFormat": "canary %",
+          "instant": true,
+          "range": false
         }
       ],
       "gridPos": {
@@ -49,7 +51,9 @@
         {
           "refId": "A",
           "expr": "tradeproof_platform_stable_bundle_info",
-          "legendFormat": "{{bundle_id}}"
+          "legendFormat": "{{bundle_id}}",
+          "instant": true,
+          "range": false
         }
       ],
       "gridPos": {
@@ -85,7 +89,9 @@
         {
           "refId": "A",
           "expr": "tradeproof_platform_rollbacks",
-          "legendFormat": "{{reason}}"
+          "legendFormat": "{{reason}}",
+          "instant": true,
+          "range": false
         }
       ],
       "gridPos": {
@@ -288,12 +294,93 @@
       ],
       "gridPos": {
         "x": 0,
-        "y": 33,
+        "y": 42,
         "w": 24,
         "h": 8
       },
       "fieldConfig": {
         "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "AI 판정 채점 (번들별 맞음·틀림, 검토 목록)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tradeproof_review_feedback",
+          "legendFormat": "{{bundle_id}} {{verdict}}"
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 33,
+        "w": 12,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "stacking": {
+              "mode": "normal"
+            },
+            "fillOpacity": 40
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "canary 감시: 틀림 비율 (번들별, 기준 0.5)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (bundle_id)(tradeproof_review_feedback{verdict=\"incorrect\"}) / sum by (bundle_id)(tradeproof_review_feedback)",
+          "legendFormat": "{{bundle_id}}"
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 33,
+        "w": 12,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "max": 1,
+          "min": 0,
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.5
+              }
+            ]
+          }
+        },
         "overrides": []
       }
     }
