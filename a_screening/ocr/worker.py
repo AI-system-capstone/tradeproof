@@ -98,8 +98,8 @@ def prepare_upload(job: dict, blob, workdir: Path) -> Path:
         data = blob.get(uri)   # 저장소 일시 장애는 재시도 대상 (PermanentJobError 아님)
         ext = _magic_ext(data)
         if ext == ".pdf":
-            tmp = workdir / f"render-{doc}"
-            tmp.mkdir()
+            tmp = tx_dir / f"render-{doc}"   # 거래별 폴더: workdir 를 여러 거래가 같이 쓰는 C Replay 에서도 겹치지 않게
+            tmp.mkdir(exist_ok=True)
             data = render_pdf(data, tmp)
             blob.put(C.blob_key(tx_id, doc, ".png"), data, "image/png")
         elif ext != ".png":

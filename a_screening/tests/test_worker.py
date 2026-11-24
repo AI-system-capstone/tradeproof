@@ -139,6 +139,19 @@ def test_upload_png(env):
     assert rec["extraction_source"] == C.extraction_source_ocr(C.BUNDLES[C.BASELINE_BUNDLE]["model_id"])
 
 
+def test_prepare_upload_shared_workdir(env, tmp_path, monkeypatch):
+    """C Replay 처럼 여러 거래가 workdir 하나를 같이 써도 PDF 렌더링 임시 폴더가 겹치지 않는다 (FileExistsError 회귀)."""
+    monkeypatch.setattr(W, "render_pdf", lambda data, d: C.FILE_MAGIC[".png"] + b"rendered")
+    workdir = tmp_path / "shared"
+    workdir.mkdir()
+    for _ in range(2):
+        tx = env.new_tx()
+        inv, bl = upload(env, tx, ".pdf")
+        out = W.prepare_upload({"tx_id": tx, "doc_invoice_uri": inv, "doc_bl_uri": bl}, env.blob, workdir)
+        assert out == workdir / tx
+        assert sorted(p.name for p in out.glob("*.png")) == ["bl.png", "invoice.png"]
+
+
 def test_upload_bad_format_goes_to_review(env, tmp_path):
     """원문 형식이 틀리면 다시 해도 같다: 재시도 없이 바로 failed + 담당자 검토."""
     tx = env.new_tx()
