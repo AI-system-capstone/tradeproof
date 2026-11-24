@@ -102,7 +102,7 @@
                 "schema": {}
               },
               "text/plain": {
-                "example": "# TYPE tradeproof_screening_results_total counter\ntradeproof_screening_results_total{bundle_id=\"B-7\",classification=\"HIGH_RISK_HOLD\"} 1\n# TYPE tradeproof_screening_jobs gauge\ntradeproof_screening_jobs{status=\"queued\"} 0\n# TYPE tradeproof_screening_processing_seconds_avg gauge\ntradeproof_screening_processing_seconds_avg{bundle_id=\"B-7\"} 0.571\n# TYPE tradeproof_ocr_confidence_avg gauge\ntradeproof_ocr_confidence_avg{bundle_id=\"B-7\"} 95.89\n"
+                "example": "# TYPE tradeproof_screening_results_total counter\ntradeproof_screening_results_total{bundle_id=\"B-7\",classification=\"HIGH_RISK_HOLD\"} 1\n# TYPE tradeproof_screening_jobs gauge\ntradeproof_screening_jobs{status=\"queued\"} 0\n# TYPE tradeproof_screening_processing_seconds_avg gauge\ntradeproof_screening_processing_seconds_avg{bundle_id=\"B-7\"} 0.571\n# TYPE tradeproof_ocr_confidence_avg gauge\ntradeproof_ocr_confidence_avg{bundle_id=\"B-7\"} 95.89\n# TYPE tradeproof_review_feedback gauge\ntradeproof_review_feedback{bundle_id=\"B-7\",verdict=\"correct\"} 1\n"
               }
             }
           },
@@ -1114,6 +1114,303 @@
           }
         }
       }
+    },
+    "/screenings/{tx_id}/feedback": {
+      "post": {
+        "tags": [
+          "screenings"
+        ],
+        "summary": "AI 판정 채점 (맞음/틀림, null 이면 취소)",
+        "description": "검토 목록의 맞음/틀림 버튼. 그 거래를 처리한 번들(bundle_id)의 판정에 남고, /metrics 의\ntradeproof_review_feedback{bundle_id, verdict} 로 나간다 (canary 감시가 후보 번들의 틀림 비율로 씀).\n분류가 있는 건만 (review 와 같은 조건). 거래 승인·거절(review)은 바꾸지 않는다.",
+        "operationId": "feedback_screening_screenings__tx_id__feedback_post",
+        "parameters": [
+          {
+            "name": "tx_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tx Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "성공",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScreeningDetail"
+                },
+                "example": {
+                  "tx_id": "TX-20261113-639E013E",
+                  "status": "completed",
+                  "bundle_id": "B-7",
+                  "model_id": "model-v3",
+                  "rules_version": "rules-v3",
+                  "list_id": "list-v14",
+                  "input": {
+                    "source": "upload",
+                    "files": {
+                      "invoice": {
+                        "content_type": "application/pdf",
+                        "size": 1955
+                      },
+                      "bl": {
+                        "content_type": "application/pdf",
+                        "size": 1902
+                      }
+                    }
+                  },
+                  "received_at": "2026-11-13T05:54:02+00:00",
+                  "submitted_at": "2026-11-13T05:54:02+00:00",
+                  "started_at": "2026-11-13T05:54:02+00:00",
+                  "completed_at": "2026-11-13T05:54:04+00:00",
+                  "attempts": 1,
+                  "worker_id": "a-ocr-worker-1",
+                  "documents": {
+                    "invoice": "s3://tradeproof-docs/TX-20261113-639E013E/invoice.pdf",
+                    "bl": "s3://tradeproof-docs/TX-20261113-639E013E/bl.pdf"
+                  },
+                  "fields": {
+                    "invoice_no": "INV-2026-5618",
+                    "invoice_date": "2026-08-01",
+                    "bl_no": "BLKHH263335",
+                    "seller_name": "VALERIAN LABS DISTRIBUTION",
+                    "seller_country": "Canada",
+                    "buyer_name": "Fuji Coral Electronics LLC",
+                    "buyer_country": "South Korea",
+                    "vessel_name": "EMERALD TRIUMPH",
+                    "port_of_loading": "Kaohsiung",
+                    "port_of_discharge": "Gwangyang",
+                    "goods_description": "Lithium-ion battery cells, 77,500 pcs",
+                    "currency": "USD",
+                    "amount": "363,517.00"
+                  },
+                  "extracted_fields": {
+                    "invoice_no": {
+                      "value": "INV-2026-5618",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "invoice_date": {
+                      "value": "2026-08-01",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "bl_no": {
+                      "value": "BLKHH263335",
+                      "source_doc": "bl",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "seller_name": {
+                      "value": "VALERIAN LABS DISTRIBUTION",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "seller_country": {
+                      "value": "Canada",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "buyer_name": {
+                      "value": "Fuji Coral Electronics LLC",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "buyer_country": {
+                      "value": "South Korea",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "vessel_name": {
+                      "value": "EMERALD TRIUMPH",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "port_of_loading": {
+                      "value": "Kaohsiung",
+                      "source_doc": "bl",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "port_of_discharge": {
+                      "value": "Gwangyang",
+                      "source_doc": "bl",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "goods_description": {
+                      "value": "Lithium-ion battery cells, 77,500 pcs",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "currency": {
+                      "value": "USD",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    },
+                    "amount": {
+                      "value": "363,517.00",
+                      "source_doc": "invoice",
+                      "bbox": [
+                        296,
+                        410,
+                        754,
+                        434
+                      ],
+                      "confidence": 95.0
+                    }
+                  },
+                  "extraction_source": "ocr:model-v3",
+                  "conflicts": [],
+                  "classification": "HIGH_RISK_HOLD",
+                  "reasons": [
+                    {
+                      "rule": "party_exact",
+                      "field": "seller_name",
+                      "value": "VALERIAN LABS DISTRIBUTION",
+                      "entry_id": "OFAC-45315",
+                      "matched_name": "VALERIAN LABS DISTRIBUTION CORP.",
+                      "score": 1.0,
+                      "classification": "HIGH_RISK_HOLD"
+                    }
+                  ],
+                  "ai_feedback": "correct",
+                  "ai_feedback_by": "yoona",
+                  "ai_feedback_at": "2026-11-13T06:05:00+00:00",
+                  "shadow": []
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "요청 형식·값 오류",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "VALIDATION_ERROR",
+                  "message": "fields: 스크리닝 필드 ['seller_name'] 가 비어 있음",
+                  "target_id": null
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "대상 없음",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "NOT_FOUND",
+                  "message": "심사 건 TX-20261113-639E013E 없음",
+                  "target_id": "TX-20261113-639E013E"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "지금 상태에서는 할 수 없음",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "CONFLICT",
+                  "message": "TX-20261113-639E013E 는 아직 판정이 없음 (status=queued, classification=None)",
+                  "target_id": "TX-20261113-639E013E"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1273,6 +1570,38 @@
         ],
         "title": "ExtractedField"
       },
+      "FeedbackRequest": {
+        "properties": {
+          "verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict"
+          },
+          "reviewer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer"
+          }
+        },
+        "type": "object",
+        "required": [
+          "verdict"
+        ],
+        "title": "FeedbackRequest",
+        "description": "AI 판정 채점 (검토 목록의 맞음/틀림). 거래 승인·거절(review)과는 따로 저장한다."
+      },
       "Health": {
         "properties": {
           "status": {
@@ -1413,6 +1742,21 @@
             ],
             "title": "Reviewer Decision"
           },
+          "ai_feedback": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "correct",
+                  "incorrect"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Feedback"
+          },
           "seller_name": {
             "anyOf": [
               {
@@ -1456,6 +1800,7 @@
           "submitted_at",
           "completed_at",
           "reviewer_decision",
+          "ai_feedback",
           "seller_name",
           "buyer_name",
           "vessel_name"
@@ -1936,6 +2281,44 @@
             ],
             "title": "Reviewed At"
           },
+          "ai_feedback": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "correct",
+                  "incorrect"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Feedback",
+            "description": "담당자가 AI 판정을 채점한 값 (검토 목록 맞음/틀림, 거래 승인과 별개)"
+          },
+          "ai_feedback_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Feedback By"
+          },
+          "ai_feedback_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Feedback At"
+          },
           "shadow_bundle_id": {
             "anyOf": [
               {
@@ -1995,6 +2378,9 @@
           "reviewer_note",
           "corrected_fields",
           "reviewed_at",
+          "ai_feedback",
+          "ai_feedback_by",
+          "ai_feedback_at",
           "shadow_bundle_id",
           "shadow",
           "rescreen"
@@ -2272,6 +2658,44 @@
             ],
             "title": "Reviewed At"
           },
+          "ai_feedback": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "correct",
+                  "incorrect"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Feedback",
+            "description": "담당자가 AI 판정을 채점한 값 (검토 목록 맞음/틀림, 거래 승인과 별개)"
+          },
+          "ai_feedback_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Feedback By"
+          },
+          "ai_feedback_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Feedback At"
+          },
           "shadow_bundle_id": {
             "anyOf": [
               {
@@ -2320,6 +2744,9 @@
           "reviewer_note",
           "corrected_fields",
           "reviewed_at",
+          "ai_feedback",
+          "ai_feedback_by",
+          "ai_feedback_at",
           "shadow_bundle_id",
           "shadow"
         ],

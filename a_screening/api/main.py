@@ -312,6 +312,24 @@ class ReviewRequest(BaseModel):
         return v
 
 
+class FeedbackRequest(BaseModel):
+    """AI 판정 채점 (검토 목록의 맞음/틀림). 거래 승인·거절(review)과는 따로 저장한다."""
+    verdict: str | None                                 # contracts.AI_FEEDBACKS, null 이면 채점 취소
+    reviewer: str | None = None                         # 누른 사람 (기록용, 없어도 됨)
+
+    @field_validator("verdict")
+    @classmethod
+    def _verdict_ok(cls, v: str | None) -> str | None:
+        if v is not None and v not in C.AI_FEEDBACKS:
+            raise ValueError(f"verdict 는 {list(C.AI_FEEDBACKS)} 또는 null(취소)")
+        return v
+
+    @field_validator("reviewer")
+    @classmethod
+    def _reviewer_strip(cls, v: str | None) -> str | None:
+        return (v or "").strip() or None
+
+
 # ---------------------------------------------------------------- 도우미
 def _new_tx_id() -> str:
     return f"TX-{datetime.now(timezone.utc):%Y%m%d}-{uuid.uuid4().hex[:8].upper()}"
@@ -492,6 +510,7 @@ _METRIC_META = {
     C.METRIC_FAILED: ("counter", "처리 실패(MAX_ATTEMPTS 회)로 담당자 검토로 간 건 수"),
     C.METRIC_SHADOW_DISAGREE: ("counter", "주 번들과 섀도 번들의 분류가 다른 건 수"),
     C.METRIC_REVIEWS: ("gauge", "담당자 현재 판단 건수 (판단을 바꾸면 줄 수 있음)"),
+    C.METRIC_FEEDBACK: ("gauge", "번들별 AI 판정 채점 건수 (맞음 correct / 틀림 incorrect, 취소하면 줄어듦)"),
 }
 
 
@@ -519,6 +538,8 @@ def render_metrics(stats: dict) -> str:
         C.METRIC_SHADOW_DISAGREE: [({"bundle_id": r["bundle_id"], "shadow_bundle_id": r["shadow_bundle_id"]},
                                     r["count"]) for r in stats["shadow_disagreements"]],
         C.METRIC_REVIEWS: [({"decision": d}, n) for d, n in stats["reviews"].items()],
+        C.METRIC_FEEDBACK: [({"bundle_id": r["bundle_id"], "verdict": r["verdict"]}, r["count"])
+                            for r in stats.get("feedback", [])],
     }
     lines = []
     for name, (kind, help_) in _METRIC_META.items():
@@ -584,6 +605,7 @@ def meta():
     """검토 화면(a_screening/ui/review.html)이 시작할 때 읽는 계약 값. 화면에 계약을 하드코딩하지 않으려고 둔다."""
     return {"tx_fields": list(C.TX_FIELDS), "screening_fields": list(C.SCREENING_FIELDS),
             "classifications": list(C.CLASSIFICATIONS), "review_decisions": list(C.REVIEW_DECISIONS),
+            "ai_feedbacks": list(C.AI_FEEDBACKS),
             "statuses": list(C.SCREENING_STATUSES), "doc_types": list(C.UPLOAD_DOC_TYPES),
             "ocr_confidence_min": C.OCR_CONFIDENCE_MIN, "rules": all_rules(),
             "classification_roles": {"pass": C.PASS, "review": C.REVIEW, "hold": C.HOLD},
@@ -725,6 +747,21 @@ def review_screening(tx_id: str, req: ReviewRequest):
                        f"{_reason_summary(rs['reasons'], C.HOLD)}", tx_id)
     STORE.review(tx_id, req.decision, req.reviewer, req.note, corrected)
     return {**_get(tx_id), "rescreen": rs}
+
+
+@app.post("/screenings/{tx_id}/feedback", tags=["screenings"], summary="AI 판정 채점 (맞음/틀림, null 이면 취소)",
+          responses={**S.ok(S.ScreeningDetail, S.EX_FEEDBACK), **S.errors(422, 404, 409)})
+def feedback_screening(tx_id: str, req: FeedbackRequest):
+    """검토 목록의 맞음/틀림 버튼. 그 거래를 처리한 번들(bundle_id)의 판정에 남고, /metrics 의
+    tradeproof_review_feedback{bundle_id, verdict} 로 나간다 (canary 감시가 후보 번들의 틀림 비율로 씀).
+    분류가 있는 건만 (review 와 같은 조건). 거래 승인·거절(review)은 바꾸지 않는다."""
+    rec = _get(tx_id)
+    if rec["classification"] is None or rec["status"] not in REVIEWABLE_STATUSES:
+        raise ApiError(409, C.ERR_CONFLICT,
+                       f"{tx_id} 는 아직 판정이 없음 (status={rec['status']}, classification={rec['classification']})",
+                       tx_id)
+    STORE.feedback(tx_id, req.verdict, req.reviewer)
+    return _get(tx_id)
 
 
 def _openapi():

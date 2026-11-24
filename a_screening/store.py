@@ -119,7 +119,7 @@ def _record(tx_id: str, bundle_id: str, status: str, input_: dict, *, submitted_
             completed_at=None, received_at=None, doc_invoice_uri=None, doc_bl_uri=None, extracted_fields=None,
             extraction_source=None, conflicts=None, classification=None, reasons=None, error=None,
             reviewer_decision=None, reviewer=None, reviewer_note=None, corrected_fields=None, reviewed_at=None,
-            attempts=0, worker_id=None, shadow_bundle_id=None, shadow=None) -> dict:
+            ai_feedback=None, ai_feedback_by=None, ai_feedback_at=None, attempts=0, worker_id=None, shadow_bundle_id=None, shadow=None) -> dict:
     """API 응답 한 건. 두 저장소가 같이 쓴다."""
     b = R.bundle(bundle_id)
     fields = None
@@ -136,6 +136,7 @@ def _record(tx_id: str, bundle_id: str, status: str, input_: dict, *, submitted_
         "conflicts": conflicts or [], "classification": classification, "reasons": reasons or [], "error": error,
         "reviewer_decision": reviewer_decision, "reviewer": reviewer, "reviewer_note": reviewer_note,
         "corrected_fields": corrected_fields, "reviewed_at": _iso(reviewed_at),
+        "ai_feedback": ai_feedback, "ai_feedback_by": ai_feedback_by, "ai_feedback_at": _iso(ai_feedback_at),
         "shadow_bundle_id": shadow_bundle_id, "shadow": [_shadow_item(tx_id, s) for s in shadow or []],
     }
 
@@ -143,7 +144,7 @@ def _record(tx_id: str, bundle_id: str, status: str, input_: dict, *, submitted_
 def _empty_stats() -> dict:
     return {"results": [], "jobs": {s: 0 for s in C.SCREENING_STATUSES}, "processing_seconds_avg": {},
             "ocr_confidence_avg": {}, "failed": {}, "shadow_disagreements": [],
-            "reviews": {d: 0 for d in C.REVIEW_DECISIONS}}
+            "reviews": {d: 0 for d in C.REVIEW_DECISIONS}, "feedback": []}
 
 
 def _fenced(worker_id, attempts) -> bool:
@@ -286,6 +287,11 @@ class MemoryStore:
         self._rows[tx_id].update(reviewer_decision=decision, reviewer=reviewer, reviewer_note=note,
                                  corrected_fields=corrected_fields, reviewed_at=now_iso())
 
+    def feedback(self, tx_id, verdict, reviewer) -> None:
+        """AI 판정 채점 (verdict=None 이면 취소)."""
+        self._rows[tx_id].update(ai_feedback=verdict, ai_feedback_by=reviewer if verdict else None,
+                                 ai_feedback_at=now_iso() if verdict else None)
+
     def get(self, tx_id) -> dict | None:
         with self._lock:
             r = self._rows.get(tx_id)
@@ -314,6 +320,7 @@ class MemoryStore:
             items.append({"tx_id": r["tx_id"], "status": r["status"], "bundle_id": r["bundle_id"],
                           "classification": r.get("classification"), "submitted_at": r["submitted_at"],
                           "completed_at": r.get("completed_at"), "reviewer_decision": r.get("reviewer_decision"),
+                          "ai_feedback": r.get("ai_feedback"),
                           **{f: (ext.get(f) or {}).get("value") for f in C.SCREENING_FIELDS}})
         return {"items": items, "total": len(rows)}
 
@@ -322,7 +329,7 @@ class MemoryStore:
         with self._lock:
             rows = [dict(r, shadow_results=dict(r["shadow_results"])) for r in self._rows.values()]
         out = _empty_stats()
-        results, failed, disagree, secs, confs = {}, {}, {}, {}, {}
+        results, failed, disagree, secs, confs, feedback = {}, {}, {}, {}, {}, {}
         for r in rows:
             out["jobs"][r["status"]] += 1
             b = r["bundle_id"]
@@ -332,6 +339,8 @@ class MemoryStore:
                 failed[b] = failed.get(b, 0) + 1
             if r.get("reviewer_decision"):
                 out["reviews"][r["reviewer_decision"]] = out["reviews"].get(r["reviewer_decision"], 0) + 1
+            if r.get("ai_feedback") and r.get("classification"):
+                feedback[(b, r["ai_feedback"])] = feedback.get((b, r["ai_feedback"]), 0) + 1
             sb = r.get("shadow_bundle_id")
             sh = r["shadow_results"].get(sb) if sb else None
             if sh and r.get("classification") and not _is_failed_result(sh["reasons"]) \
@@ -352,6 +361,7 @@ class MemoryStore:
         out["ocr_confidence_avg"] = confs
         out["shadow_disagreements"] = [{"bundle_id": b, "shadow_bundle_id": sb, "count": n}
                                        for (b, sb), n in sorted(disagree.items())]
+        out["feedback"] = [{"bundle_id": b, "verdict": v, "count": n} for (b, v), n in sorted(feedback.items())]
         return out
 
 
@@ -531,6 +541,15 @@ class PostgresStore:
                 "WHERE r.tx_id = j.tx_id AND r.bundle_id = j.bundle_id AND j.tx_id = %s",
                 (decision, reviewer, note, Jsonb(corrected_fields) if corrected_fields is not None else None, tx_id))
 
+    def feedback(self, tx_id, verdict, reviewer) -> None:
+        """AI 판정 채점 (verdict=None 이면 취소). 그 거래를 처리한 번들(주 판정)의 결과 행에 남긴다."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE screening_results r SET ai_feedback = %s, ai_feedback_by = %s, "
+                "ai_feedback_at = CASE WHEN %s::text IS NULL THEN NULL ELSE now() END FROM screening_jobs j "
+                "WHERE r.tx_id = j.tx_id AND r.bundle_id = j.bundle_id AND NOT r.is_shadow AND j.tx_id = %s",
+                (verdict, reviewer if verdict else None, verdict, tx_id))
+
     def get(self, tx_id) -> dict | None:
         with self._conn() as conn:
             r = conn.execute(
@@ -538,7 +557,8 @@ class PostgresStore:
                 "j.completed_at, j.attempts, j.worker_id, j.shadow_bundle_id, "
                 "t.received_at, t.doc_invoice_uri, t.doc_bl_uri, t.extracted_fields, t.extraction_source, "
                 "r.classification, r.reasons, r.reviewer_decision, r.reviewer, r.reviewer_note, r.corrected_fields, "
-                "r.reviewed_at FROM screening_jobs j JOIN transactions t ON t.tx_id = j.tx_id "
+                "r.reviewed_at, r.ai_feedback, r.ai_feedback_by, r.ai_feedback_at "
+                "FROM screening_jobs j JOIN transactions t ON t.tx_id = j.tx_id "
                 "LEFT JOIN screening_results r ON r.tx_id = j.tx_id AND r.bundle_id = j.bundle_id WHERE j.tx_id = %s",
                 (tx_id,)).fetchone()
             if r is None:
@@ -569,7 +589,7 @@ class PostgresStore:
             total = conn.execute(f"SELECT count(*) AS n {base}", params).fetchone()["n"]
             rows = conn.execute(
                 f"SELECT j.tx_id, j.status, j.bundle_id, r.classification, j.submitted_at, j.completed_at, "
-                f"r.reviewer_decision, {cols} {base} ORDER BY {order} LIMIT %s OFFSET %s",
+                f"r.reviewer_decision, r.ai_feedback, {cols} {base} ORDER BY {order} LIMIT %s OFFSET %s",
                 (*params, int(limit), int(offset))).fetchall()
         for r in rows:
             r["submitted_at"], r["completed_at"] = _iso(r["submitted_at"]), _iso(r["completed_at"])
@@ -613,6 +633,10 @@ class PostgresStore:
             for r in conn.execute(f"SELECT r.reviewer_decision AS d, count(*) AS n {primary} "
                                   "AND r.reviewer_decision IS NOT NULL GROUP BY r.reviewer_decision"):
                 out["reviews"][r["d"]] = r["n"]
+            out["feedback"] = conn.execute(
+                f"SELECT r.bundle_id, r.ai_feedback AS verdict, count(*) AS count {primary} "
+                "AND r.ai_feedback IS NOT NULL GROUP BY r.bundle_id, r.ai_feedback ORDER BY r.bundle_id, r.ai_feedback"
+            ).fetchall()
         return out
 
 

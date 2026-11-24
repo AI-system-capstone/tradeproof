@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS screening_results (
     reviewer_note      TEXT,
     corrected_fields   JSONB,                       -- 담당자가 고친 필드만 {field: value}
     reviewed_at        TIMESTAMPTZ,
+    ai_feedback        TEXT CHECK (ai_feedback IN ('correct','incorrect')),  -- 담당자가 AI 판정을 채점 (검토 목록 맞음/틀림)
+    ai_feedback_by     TEXT,
+    ai_feedback_at     TIMESTAMPTZ,
     UNIQUE (tx_id, bundle_id)
 );
 CREATE INDEX IF NOT EXISTS idx_screening_bundle ON screening_results(bundle_id, classification);
@@ -65,3 +68,8 @@ CREATE TABLE IF NOT EXISTS screening_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON screening_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_queue ON screening_jobs(submitted_at) WHERE status = 'queued';
+
+-- 11/25 추가: 이미 만든 DB 에도 AI 판정 채점 컬럼을 붙인다 (다시 적용해도 그대로, scripts/demo_up.sh 가 매번 적용)
+ALTER TABLE screening_results ADD COLUMN IF NOT EXISTS ai_feedback TEXT CHECK (ai_feedback IN ('correct','incorrect'));
+ALTER TABLE screening_results ADD COLUMN IF NOT EXISTS ai_feedback_by TEXT;
+ALTER TABLE screening_results ADD COLUMN IF NOT EXISTS ai_feedback_at TIMESTAMPTZ;
