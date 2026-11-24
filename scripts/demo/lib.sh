@@ -18,6 +18,7 @@ B_PORT=${B_PORT:-18100}              # B 레지스트리 API
 C_PORT=${C_PORT:-18200}              # 운영 화면 /admin
 DB_PORT=${DB_PORT:-15432}            # 클러스터 Postgres (D 가 씀)
 D_PORT=${D_PORT:-8300}               # D 배포 API (클러스터 안 d-platform:8300 을 포트포워드)
+GRAFANA_PORT=${GRAFANA_PORT:-13000}  # Grafana 대시보드 (3000 이 다른 것과 겹치는 PC 가 많아 13000)
 
 INGRESS_NGINX_VERSION=controller-v1.12.1
 ARGO_ROLLOUTS_VERSION=v1.10.2   # d_platform/README 의 k3s 시연 환경과 같은 버전
@@ -69,7 +70,8 @@ start_bg() {  # 포트포워드만 (D 배포 API 는 클러스터 안에서 돈�
   stop_bg
   # 파드가 바뀌어 끊기거나 응답이 멈추면 다시 붙는다 (scripts/demo/pf_loop.sh)
   local spec svc port tport path
-  for spec in "b-registry:$B_PORT:8100:/healthz" "c-replay:$C_PORT:8200:/healthz" "postgres:$DB_PORT:5432:-"               "a-screening-stable:$A_PORT:8000:/livez" "d-platform:$D_PORT:8300:/livez"; do
+  for spec in "b-registry:$B_PORT:8100:/healthz" "c-replay:$C_PORT:8200:/healthz" "postgres:$DB_PORT:5432:-"               "a-screening-stable:$A_PORT:8000:/livez" "d-platform:$D_PORT:8300:/livez" \
+              "grafana:$GRAFANA_PORT:3000:/api/health"; do
     IFS=: read -r svc port tport path <<<"$spec"
     detach "pf-$svc" bash "$ROOT/scripts/demo/pf_loop.sh" "$CTX" "$NS" "$svc" "$port" "$tport" "$path" >/dev/null
   done
@@ -77,11 +79,16 @@ start_bg() {  # 포트포워드만 (D 배포 API 는 클러스터 안에서 돈�
   wait_http "http://localhost:$D_PORT/healthz" 60 || die "D 포트포워드가 안 붙음 ($STATE/logs/pf-d-platform.log)"
 }
 
-deploy_platform() {  # Prometheus + D 배포 API 를 클러스터 안에 (d_platform/k8s/monitoring/, d_platform/k8s/platform/)
+deploy_platform() {  # Prometheus·Grafana + D 배포 API 를 클러스터 안에 (d_platform/k8s/monitoring/, d_platform/k8s/platform/)
   kn create configmap d-platform-helm-values --from-file=a-screening-values.yaml="$A_VALUES" \
     --dry-run=client -o yaml | k apply -f - >/dev/null
   k apply -f d_platform/k8s/monitoring/prometheus.yaml -f d_platform/k8s/platform/d-platform.yaml >/dev/null
   kn rollout status deploy/prometheus --timeout=300s
+  kn create configmap grafana-dashboards --from-file=tradeproof.json=d_platform/k8s/monitoring/grafana-dashboard.json \
+    --dry-run=client -o yaml | k apply -f - >/dev/null
+  k apply -f d_platform/k8s/monitoring/grafana.yaml >/dev/null
+  kn rollout restart deploy/grafana >/dev/null   # 대시보드 JSON 이 바뀌었을 수 있음
+  kn rollout status deploy/grafana --timeout=300s
   kn rollout restart deploy/d-platform >/dev/null   # 이미지·값 파일이 바뀌었을 수 있음
   kn rollout status deploy/d-platform --timeout=300s
 }
@@ -116,6 +123,7 @@ status() {
   printf '  %-28s %s\n' "A 심사 API (canary 입구)" "curl -H 'Host: tradeproof.local' localhost:$INGRESS_PORT/healthz"
   printf '  %-28s %s\n' "B 레지스트리" "http://localhost:$B_PORT/bundles/active"
   printf '  %-28s %s\n' "D 배포 API" "http://localhost:$D_PORT/deployments"
+  printf '  %-28s %s\n' "Grafana (모니터링)" "http://localhost:$GRAFANA_PORT"
   echo
   printf '  운영 번들: %s\n' "$(curl -s --max-time 3 "http://localhost:$B_PORT/bundles/active" | python3 -c 'import json,sys
 d=json.load(sys.stdin); print("active=%s canary=%s" % tuple((v or {}).get("bundle_id") for v in (d.get("active"), d.get("canary"))))' 2>/dev/null || echo '확인 안 됨')"

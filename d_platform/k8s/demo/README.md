@@ -58,6 +58,7 @@ scripts/demo_up.sh
 | 운영 화면 (C) | http://localhost:18200/admin |
 | 담당자 검토 화면 (A) | http://localhost:18000/review |
 | A 심사 API (canary 입구) | `curl -H 'Host: tradeproof.local' localhost:8081/healthz` |
+| Grafana (모니터링) | http://localhost:13000 (로그인 없음, "TradeProof 운영" 대시보드) |
 
 ## 4. 시연 (운영 화면)
 
@@ -115,6 +116,17 @@ canary는 **시간으로 올라가지 않습니다.** 각 비율(10%, 50%)에서
 > canary 때 넣은 트래픽은 실제 거래로 쌓여 **다음 검증의 Replay 대상이 늘어납니다**(100 → 300건 가까이, 검증 시간이 몇 배). 장면 사이에는 `scripts/demo_reset.sh`로 과거 거래를 시드 100건으로 되돌리세요.
 
 Prometheus 화면: `kubectl --context k3d-tradeproof -n tradeproof port-forward svc/prometheus 9090` → http://localhost:9090 (예: `tradeproof_screening_processing_seconds_avg`).
+
+### Grafana 보기 (모니터링)
+
+`scripts/demo_up.sh`가 Grafana를 같이 띄우고 **http://localhost:13000** 으로 연결합니다 (로그인 없음, 시연 전용 익명 관리자). 열면 바로 "TradeProof 운영" 대시보드가 나오고 5초마다 새로고침합니다.
+
+- 위: canary 비율(%), 운영 번들, 사유별 롤백 수(manual·analysis_failed)
+- 번들·분류별 판정 건수, 심사 대기열(상태별), 번들별 처리 시간·OCR 신뢰도 (최근 100건 평균)
+- 감시 값: 처리 시간 비율(후보 ÷ 운영, 기준선 2.0 = A 차트 `analysis.maxProcessingTimeRatio`), 번들별 담당자 검토 비율
+- 시연 때 운영 화면(/admin) 옆에 띄워 두면, 승인 → canary 비율 상승, 느린 모델 → 처리 시간 비율이 2.0을 넘고 롤백 수 +1 이 그래프로 보입니다. 시간 범위는 "Last 15 minutes" 추천.
+- 13000 이 이미 쓰이고 있으면 `GRAFANA_PORT=13001 scripts/demo_up.sh`처럼 바꿉니다 (Prometheus를 9090으로 열 때도 다른 프로그램과 겹치면 `... port-forward svc/prometheus 19090:9090`).
+- 처음 한 번 `grafana/grafana:11.2.2` 이미지(약 600MB)를 클러스터가 받습니다.
 
 ## 5. 다시 하기 / 끄기
 
