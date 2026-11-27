@@ -6,6 +6,7 @@
   - transactions 의 추출 필드 컬럼 == contracts.TX_FIELDS (이름·순서)
   - screening_results.classification CHECK 값 == contracts.CLASSIFICATIONS
   - screening_results.reviewer_decision CHECK 값 == contracts.REVIEW_DECISIONS
+  - screening_results.ai_feedback CHECK 값 == contracts.AI_FEEDBACKS
   - screening_jobs.status CHECK 값 == contracts.SCREENING_STATUSES
 """
 from __future__ import annotations
@@ -63,6 +64,8 @@ def main() -> int:
          check_values(t["screening_results"], "classification"), C.CLASSIFICATIONS, ordered=False)
     same("screening_results.reviewer_decision == REVIEW_DECISIONS",
          check_values(t["screening_results"], "reviewer_decision"), C.REVIEW_DECISIONS, ordered=False)
+    same("screening_results.ai_feedback == AI_FEEDBACKS",
+         check_values(t["screening_results"], "ai_feedback"), C.AI_FEEDBACKS, ordered=False)
     same("screening_jobs.status == SCREENING_STATUSES",
          check_values(t["screening_jobs"], "status"), C.SCREENING_STATUSES, ordered=False)
 

@@ -78,6 +78,11 @@ MAX_ATTEMPTS = 3              # 같은 거래 처리 실패가 이 횟수에 닿
 # 담당자 최종 판단 (screening_results.reviewer_decision)
 REVIEW_DECISIONS = ("APPROVE", "HOLD", "REJECT")
 
+# 담당자가 AI 판정(분류)을 채점한 값 (screening_results.ai_feedback, 검토 목록의 맞음/틀림). 거래 승인·거절과는 따로다
+AI_FEEDBACK_CORRECT = "correct"
+AI_FEEDBACK_INCORRECT = "incorrect"
+AI_FEEDBACKS = (AI_FEEDBACK_CORRECT, AI_FEEDBACK_INCORRECT)
+
 # 심사 API 처리 상태 (POST /screenings 후 GET /screenings/{tx_id} 의 status)
 SCREENING_QUEUED = "queued"
 SCREENING_PROCESSING = "processing"
@@ -136,6 +141,7 @@ METRIC_OCR_CONFIDENCE = "tradeproof_ocr_confidence_avg"      # gauge   {bundle_i
 METRIC_FAILED = "tradeproof_screening_failed_total"          # counter {bundle_id}
 METRIC_SHADOW_DISAGREE = "tradeproof_shadow_disagreements_total"  # counter {bundle_id, shadow_bundle_id}
 METRIC_REVIEWS = "tradeproof_review_decisions"               # gauge   {decision}  현재 판단 건수 (판단을 바꾸면 줄 수 있음)
+METRIC_FEEDBACK = "tradeproof_review_feedback"               # gauge   {bundle_id, verdict}  AI 판정 채점 현재 건수 (취소하면 줄어듦). canary 감시가 후보 번들의 틀림 비율로 씀
 
 # 번들 상태 (모듈 B 소유. B의 정의가 확정되면 그 값으로 맞춘다)
 BUNDLE_STATUSES = ("candidate", "validated", "validation_failed", "approved", "rejected", "active", "rolled_back")

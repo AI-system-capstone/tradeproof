@@ -39,6 +39,7 @@ ErrorCode = Literal["VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "INTERNAL_ERROR
 Classification = Literal["PASS_CANDIDATE", "MANUAL_REVIEW", "HIGH_RISK_HOLD"]
 Status = Literal["queued", "processing", "completed", "failed"]
 Decision = Literal["APPROVE", "HOLD", "REJECT"]
+Feedback = Literal["correct", "incorrect"]
 
 assert set(ErrorCode.__args__) == {C.ERR_VALIDATION, C.ERR_NOT_FOUND, C.ERR_CONFLICT, C.ERR_INTERNAL,
                                    C.ERR_UNAVAILABLE}
@@ -119,6 +120,9 @@ class ScreeningDetail(BaseModel):
     reviewer_note: str | None
     corrected_fields: dict[str, str | None] | None = Field(description="담당자가 고친 필드만")
     reviewed_at: str | None
+    ai_feedback: Feedback | None = Field(description="담당자가 AI 판정을 채점한 값 (검토 목록 맞음/틀림, 거래 승인과 별개)")
+    ai_feedback_by: str | None
+    ai_feedback_at: str | None
     shadow_bundle_id: str | None
     shadow: list[ShadowResult] = Field(description="섀도 판정 결과 (실제 분류에 쓰지 않음)")
 
@@ -140,6 +144,7 @@ class ListItem(BaseModel):
     submitted_at: str
     completed_at: str | None
     reviewer_decision: Decision | None
+    ai_feedback: Feedback | None
     seller_name: str | None
     buyer_name: str | None
     vessel_name: str | None
@@ -195,13 +200,16 @@ EX_DETAIL = {
     "fields": _FIELDS, "extracted_fields": _EXTRACTED, "extraction_source": "ocr:model-v3", "conflicts": [],
     "classification": "HIGH_RISK_HOLD", "reasons": [_REASON], "error": None,
     "reviewer_decision": None, "reviewer": None, "reviewer_note": None, "corrected_fields": None, "reviewed_at": None,
+    "ai_feedback": None, "ai_feedback_by": None, "ai_feedback_at": None,
     "shadow_bundle_id": None, "shadow": [],
 }
 EX_REVIEW = {**EX_DETAIL, "reviewer_decision": "HOLD", "reviewer": "kim", "reviewer_note": "제재 대상 일치",
              "reviewed_at": "2026-11-13T06:10:00+00:00", "rescreen": None}
+EX_FEEDBACK = {**EX_DETAIL, "ai_feedback": "correct", "ai_feedback_by": "yoona",
+               "ai_feedback_at": "2026-11-13T06:05:00+00:00"}
 EX_LIST = {"items": [{"tx_id": _TX, "status": "completed", "bundle_id": "B-7", "classification": "HIGH_RISK_HOLD",
                       "submitted_at": "2026-11-13T05:54:02+00:00", "completed_at": "2026-11-13T05:54:04+00:00",
-                      "reviewer_decision": None, "seller_name": "VALERIAN LABS DISTRIBUTION",
+                      "reviewer_decision": None, "ai_feedback": None, "seller_name": "VALERIAN LABS DISTRIBUTION",
                       "buyer_name": "Fuji Coral Electronics LLC", "vessel_name": "EMERALD TRIUMPH"}], "total": 1}
 EX_HEALTH = {"status": "ok", "bundle_id": "B-7", "model_id": "model-v3", "rules_version": "rules-v3",
              "list_id": "list-v14", "rules_supported": ["rules-v2", "rules-v3"], "shadow_bundle_id": None,
@@ -214,6 +222,8 @@ tradeproof_screening_jobs{status="queued"} 0
 tradeproof_screening_processing_seconds_avg{bundle_id="B-7"} 0.571
 # TYPE tradeproof_ocr_confidence_avg gauge
 tradeproof_ocr_confidence_avg{bundle_id="B-7"} 95.89
+# TYPE tradeproof_review_feedback gauge
+tradeproof_review_feedback{bundle_id="B-7",verdict="correct"} 1
 """
 
 _ERR_EX = {

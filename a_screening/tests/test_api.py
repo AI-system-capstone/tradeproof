@@ -372,6 +372,50 @@ def test_review_unknown_404():
                  404, C.ERR_NOT_FOUND, "TX-NOPE")
 
 
+# ---------------------------------------------------------------- AI 판정 채점 (검토 목록 맞음/틀림)
+def feedback_count(bundle_id, verdict):
+    _, s = parse_metrics(client.get("/metrics").text)
+    return s.get(f'{C.METRIC_FEEDBACK}{{bundle_id="{bundle_id}",verdict="{verdict}"}}', 0)
+
+
+def test_feedback_flow(env):
+    tx = submit(env, json={"fields": truth_fields()})["tx_id"]
+    url = f"/screenings/{tx}/feedback"
+    assert_error(client.post(url, json={"verdict": C.AI_FEEDBACK_CORRECT}), 409, C.ERR_CONFLICT, tx)  # 판정 전
+    env.run()
+    assert_error(client.post(url, json={"verdict": "maybe"}), 422, C.ERR_VALIDATION, tx)
+    before = feedback_count("B-7", C.AI_FEEDBACK_INCORRECT)
+    r = client.post(url, json={"verdict": C.AI_FEEDBACK_INCORRECT, "reviewer": " yoona "})
+    assert r.status_code == 200
+    got = r.json()
+    assert got["ai_feedback"] == C.AI_FEEDBACK_INCORRECT and got["ai_feedback_by"] == "yoona" and got["ai_feedback_at"]
+    assert got["reviewer_decision"] is None                  # 거래 승인·거절과는 따로
+    assert feedback_count("B-7", C.AI_FEEDBACK_INCORRECT) == before + 1
+    items = client.get("/screenings?bundle_id=B-7&limit=200").json()["items"]
+    assert next(i for i in items if i["tx_id"] == tx)["ai_feedback"] == C.AI_FEEDBACK_INCORRECT
+    # 다른 값으로 바꾸면 옮겨 가고, null 이면 취소
+    client.post(url, json={"verdict": C.AI_FEEDBACK_CORRECT})
+    assert feedback_count("B-7", C.AI_FEEDBACK_INCORRECT) == before
+    r = client.post(url, json={"verdict": None})
+    assert r.status_code == 200 and r.json()["ai_feedback"] is None and r.json()["ai_feedback_at"] is None
+    assert get(tx)["ai_feedback_by"] is None
+
+
+def test_feedback_counts_by_bundle(env):
+    """채점은 그 거래를 처리한 번들로 센다 (canary 중 후보 번들의 틀림 비율을 따로 보려고)."""
+    tx = submit(env, json={"fields": truth_fields()})["tx_id"]
+    env.run()
+    client.post(f"/screenings/{tx}/feedback", json={"verdict": C.AI_FEEDBACK_CORRECT})
+    bundle = get(tx)["bundle_id"]
+    assert feedback_count(bundle, C.AI_FEEDBACK_CORRECT) >= 1
+    assert feedback_count("B-NOPE", C.AI_FEEDBACK_CORRECT) == 0
+
+
+def test_feedback_unknown_404():
+    assert_error(client.post("/screenings/TX-NOPE/feedback", json={"verdict": C.AI_FEEDBACK_CORRECT}),
+                 404, C.ERR_NOT_FOUND, "TX-NOPE")
+
+
 # ---------------------------------------------------------------- 번들 고정 / 섀도
 def new_listing_fields() -> dict:
     return clean_fields(seller_name=C.NEW_LISTING["name"])   # v15 에만 있는 가상 'A사'
@@ -453,7 +497,8 @@ def test_metrics(env):
     meta, s = parse_metrics(r.text)
     want_types = {C.METRIC_RESULTS: "counter", C.METRIC_JOBS: "gauge", C.METRIC_PROCESSING_SECONDS: "gauge",
                   C.METRIC_OCR_CONFIDENCE: "gauge", C.METRIC_FAILED: "counter", C.METRIC_SHADOW_DISAGREE: "counter",
-                  C.METRIC_REVIEWS: "gauge"}   # contracts: 현재 판단 건수 (판단을 바꾸면 줄 수 있음)
+                  C.METRIC_REVIEWS: "gauge",   # contracts: 현재 판단 건수 (판단을 바꾸면 줄 수 있음)
+                  C.METRIC_FEEDBACK: "gauge"}  # AI 판정 채점 현재 건수 (취소하면 줄어듦)
     assert meta == want_types
     for name in want_types:
         assert f"# HELP {name} " in r.text

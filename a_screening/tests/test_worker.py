@@ -306,6 +306,7 @@ def test_list_shape_and_filters(env):
     page = env.store.list(limit=500)
     assert set(page) == {"items", "total"} and page["total"] >= 2
     keys = {"tx_id", "status", "bundle_id", "classification", "submitted_at", "completed_at", "reviewer_decision",
+            "ai_feedback",
             "seller_name", "buyer_name", "vessel_name"}
     assert all(set(i) == keys for i in page["items"])
     ids = [i["tx_id"] for i in page["items"]]
@@ -325,7 +326,7 @@ def test_stats_shape(env):
     env.store.review(tx, "HOLD", "kim", "확인", None)
     s = env.store.stats()
     assert set(s) == {"results", "jobs", "processing_seconds_avg", "ocr_confidence_avg", "failed",
-                      "shadow_disagreements", "reviews"}
+                      "shadow_disagreements", "reviews", "feedback"}
     assert all(set(r) == {"bundle_id", "classification", "count"} for r in s["results"])
     assert any(r["bundle_id"] == "B-7" and r["classification"] == C.HOLD and r["count"] >= 1 for r in s["results"])
     assert set(s["jobs"]) >= set(C.SCREENING_STATUSES) and s["jobs"][C.SCREENING_COMPLETED] >= 1
