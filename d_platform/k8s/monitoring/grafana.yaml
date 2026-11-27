@@ -1,0 +1,59 @@
+# Grafana (시연 전용): Prometheus(prometheus.yaml)가 모은 운영 지표를 그래프로 보는 화면. 네임스페이스 tradeproof.
+#   kn create configmap grafana-dashboards --from-file=tradeproof.json=d_platform/k8s/monitoring/grafana-dashboard.json
+#   kubectl apply -f d_platform/k8s/monitoring/grafana.yaml      (scripts/demo/lib.sh 의 deploy_platform 이 둘 다 한다)
+# 로그인 없이 익명 관리자로 열린다 (로컬 시연용. 실제 운영에 쓰지 말 것). 데이터는 파드 안에만 둔다.
+# 대시보드 "TradeProof 운영": canary 비율·운영 번들·롤백 수, 번들별 판정·처리 시간·OCR 신뢰도, 감시 값(처리 시간 비율, 기준선 2.0
+# = A 차트 analysis.maxProcessingTimeRatio), 담당자 검토 비율, 배포·담당자 판단 수.
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: grafana-provisioning, namespace: tradeproof }
+data:
+  datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - { name: Prometheus, uid: prom, type: prometheus, access: proxy, url: "http://prometheus.tradeproof.svc:9090",
+          isDefault: true, jsonData: { timeInterval: 5s } }
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - { name: tradeproof, type: file, options: { path: /var/lib/grafana/dashboards } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: grafana, namespace: tradeproof, labels: { app.kubernetes.io/part-of: tradeproof } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: grafana } }
+  template:
+    metadata: { labels: { app: grafana, app.kubernetes.io/part-of: tradeproof } }
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.2.2
+          imagePullPolicy: IfNotPresent
+          ports: [{ name: http, containerPort: 3000 }]
+          env:
+            - { name: GF_AUTH_ANONYMOUS_ENABLED, value: "true" }
+            - { name: GF_AUTH_ANONYMOUS_ORG_ROLE, value: Admin }
+            - { name: GF_AUTH_DISABLE_LOGIN_FORM, value: "true" }
+            - { name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH, value: /var/lib/grafana/dashboards/tradeproof.json }
+            - { name: GF_ANALYTICS_REPORTING_ENABLED, value: "false" }
+            - { name: GF_ANALYTICS_CHECK_FOR_UPDATES, value: "false" }
+          readinessProbe: { httpGet: { path: /api/health, port: http }, periodSeconds: 5 }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: provisioning, mountPath: /etc/grafana/provisioning/datasources/ds.yaml, subPath: datasource.yaml }
+            - { name: provisioning, mountPath: /etc/grafana/provisioning/dashboards/db.yaml, subPath: dashboards.yaml }
+            - { name: dashboards, mountPath: /var/lib/grafana/dashboards }
+      volumes:
+        - { name: provisioning, configMap: { name: grafana-provisioning } }
+        - { name: dashboards, configMap: { name: grafana-dashboards } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: grafana, namespace: tradeproof, labels: { app.kubernetes.io/part-of: tradeproof } }
+spec:
+  selector: { app: grafana }
+  ports: [{ name: http, port: 3000, targetPort: http }]
