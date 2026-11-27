@@ -1,0 +1,31 @@
+{{- if and .Values.worker.enabled .Values.worker.autoscaling.enabled }}
+# OCR 워커 자동 확장: 워커 CPU 사용률이 목표를 넘으면 늘리고 한가하면 줄인다 (metrics-server 필요: k3s·k3d 기본 포함).
+# OCR(tesseract)은 한 건에 CPU 1코어 가까이 쓰고, 워커는 여러 개여도 같은 건을 두 번 잡지 않는다 (store.claim: SKIP LOCKED).
+# 사용률은 requests.cpu 대비라서 worker.resources.requests.cpu 를 실제 사용량에 가깝게 둬야 한다.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: a-ocr-worker
+  labels:
+    app.kubernetes.io/part-of: tradeproof
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: a-ocr-worker
+  minReplicas: {{ .Values.worker.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.worker.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.worker.autoscaling.targetCPUUtilization }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0          # 밀리면 바로 늘린다
+      policies: [{ type: Pods, value: 2, periodSeconds: 15 }]
+    scaleDown:
+      stabilizationWindowSeconds: {{ .Values.worker.autoscaling.scaleDownDelaySeconds }}   # 잠깐 한가해져도 바로 줄이지 않는다
+{{- end }}
