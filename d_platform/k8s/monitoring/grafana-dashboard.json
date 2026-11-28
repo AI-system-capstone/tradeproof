@@ -267,6 +267,129 @@
       }
     },
     {
+      "id": 11,
+      "type": "timeseries",
+      "title": "canary 감시: 오판율 (담당자 채점 틀림 비율, 기준 30%)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (bundle_id)(tradeproof_review_feedback{verdict=\"incorrect\"}) / sum by (bundle_id)(tradeproof_review_feedback)",
+          "legendFormat": "{{bundle_id}}"
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 33,
+        "w": 8,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.3
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "canary 감시: 실패율 (번들별, 기준 10%)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (bundle_id)(tradeproof_screening_failed_total) / clamp_min(sum by (bundle_id)(tradeproof_screening_results_total), 1)",
+          "legendFormat": "{{bundle_id}}"
+        }
+      ],
+      "gridPos": {
+        "x": 8,
+        "y": 33,
+        "w": 8,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.1
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "담당자 채점 건수 (번들별, 판정 시작 5건)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (bundle_id, verdict)(tradeproof_review_feedback)",
+          "legendFormat": "{{bundle_id}} {{verdict}}"
+        }
+      ],
+      "gridPos": {
+        "x": 16,
+        "y": 33,
+        "w": 8,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "decimals": 0
+        },
+        "overrides": []
+      }
+    },
+    {
       "id": 10,
       "type": "timeseries",
       "title": "배포 수 (상태별) · 담당자 판단",
@@ -288,7 +411,7 @@
       ],
       "gridPos": {
         "x": 0,
-        "y": 33,
+        "y": 42,
         "w": 24,
         "h": 8
       },

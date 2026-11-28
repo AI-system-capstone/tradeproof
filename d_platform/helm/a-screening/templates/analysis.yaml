@@ -2,16 +2,20 @@
 {{- /* 분석 쿼리는 argo-rollouts 네임스페이스의 컨트롤러가 보낸다 → 짧은 이름(prometheus)이 안 통한다. 네임스페이스까지 적은 주소를 쓴다 */}}
 {{- $prom := default (printf "http://prometheus.%s.svc:9090" .Release.Namespace) .Values.analysis.prometheusAddress }}
 # canary 단계 통과 조건 (MON-02). 각 비율(10% → 50%)에서 이 분석이 "통과"해야 다음 비율로 올라간다 (시간으로 올라가지 않음).
-#   통과: 후보가 minSamples 건 이상 처리했고, 기준 안의 측정이 consecutiveSuccesses 번 연속
-#   실패: 기준을 넘은 측정이 failureLimit 을 넘으면 → Argo 가 canary 중단 → D 배포 API 가 직전 번들로 되돌리고 B 에 cancelled
-#   판단 불가: 후보가 아직 minSamples 건을 처리하지 못함(트래픽 없음) → 그 비율에서 기다린다.
+# 팀 결정 (11/28): 오판율·실패율·처리 시간 세 가지로 판정. 건수가 쌓이기 전에는 판정하지 않는다.
+#   판정 시작: 후보가 minSamples 건 이상 판정했고, 담당자가 후보 판정을 minGraded 건 이상 채점함 (세 지표 모두 같은 조건)
+#             건수는 누적이다 (10% 에서 쌓인 건이 50% 단계에도 그대로 쓰인다)
+#   통과: 세 지표 모두 기준 안인 측정이 consecutiveSuccesses 번 연속
+#   실패: 한 지표라도 기준을 넘은 측정이 failureLimit 을 넘으면 → Argo 가 canary 중단 → D 배포 API 가 직전 번들로 되돌리고 B 에 cancelled
+#   판단 불가: 건수가 모자람 → 쿼리가 -1 → 통과도 실패도 아님 → 그 비율에서 기다린다.
 #     maxWaitMeasurements 번(× interval) 동안 판단을 못 하면 Argo 가 rollout 을 멈춘다(사람이 promote 또는 롤백).
 #
 # 지표는 A 의 /metrics (번들별, DB 전체 집계):
 #   tradeproof_screening_processing_seconds_avg{bundle_id}  최근 완료 100건 처리 시간 평균
 #   tradeproof_screening_failed_total{bundle_id}            처리 실패 건수
 #   tradeproof_screening_results_total{bundle_id,...}       판정한 건수
-# 후보가 처리한 건수가 minSamples 보다 적으면 판단하지 않는다(0 을 돌려 통과). 트래픽이 없으면 시간대로 진행된다.
+#   tradeproof_review_feedback{bundle_id,verdict}           담당자 채점 건수 (correct|incorrect, 검토 화면의 맞음/틀림)
+#     통과 후보(PASS_CANDIDATE)도 채점 대상이다: 통과 후보는 심사 통과일 뿐 판정이 맞다는 뜻이 아니다.
 apiVersion: argoproj.io/v1alpha1
 kind: AnalysisTemplate
 metadata:
@@ -30,7 +34,7 @@ spec:
       consecutiveSuccessLimit: {{ .Values.analysis.consecutiveSuccesses }}
       failureLimit: {{ .Values.analysis.failureLimit }}
       inconclusiveLimit: {{ .Values.analysis.maxWaitMeasurements }}
-      # 건수가 모자라면 -1 → 통과도 실패도 아님(판단 불가) → 그 비율에서 기다린다
+      # 건수가 모자라면(처리·채점) -1 → 통과도 실패도 아님(판단 불가) → 그 비율에서 기다린다
       successCondition: "result[0] >= 0 && result[0] <= {{ .Values.analysis.maxProcessingTimeRatio }}"
       failureCondition: "result[0] > {{ .Values.analysis.maxProcessingTimeRatio }}"
       provider:
@@ -42,6 +46,7 @@ spec:
               / max(tradeproof_screening_processing_seconds_avg{bundle_id="{{ "{{args.stable}}" }}"})
             )
             and on() (sum(tradeproof_screening_results_total{bundle_id="{{ "{{args.candidate}}" }}"}) >= {{ .Values.analysis.minSamples }})
+            and on() (sum(tradeproof_review_feedback{bundle_id="{{ "{{args.candidate}}" }}"}) >= {{ .Values.analysis.minGraded }})
             or on() vector(-1)
     # 후보의 처리 실패 비율 (실패가 없으면 0)
     - name: failure-rate
@@ -50,7 +55,7 @@ spec:
       consecutiveSuccessLimit: {{ .Values.analysis.consecutiveSuccesses }}
       failureLimit: {{ .Values.analysis.failureLimit }}
       inconclusiveLimit: {{ .Values.analysis.maxWaitMeasurements }}
-      # 건수가 모자라면 -1 → 통과도 실패도 아님(판단 불가) → 그 비율에서 기다린다
+      # 건수가 모자라면(처리·채점) -1 → 통과도 실패도 아님(판단 불가) → 그 비율에서 기다린다
       successCondition: "result[0] >= 0 && result[0] <= {{ .Values.analysis.maxFailureRate }}"
       failureCondition: "result[0] > {{ .Values.analysis.maxFailureRate }}"
       provider:
@@ -62,5 +67,27 @@ spec:
               / clamp_min(sum(tradeproof_screening_results_total{bundle_id="{{ "{{args.candidate}}" }}"}), 1)
             )
             and on() (sum(tradeproof_screening_results_total{bundle_id="{{ "{{args.candidate}}" }}"}) >= {{ .Values.analysis.minSamples }})
+            and on() (sum(tradeproof_review_feedback{bundle_id="{{ "{{args.candidate}}" }}"}) >= {{ .Values.analysis.minGraded }})
+            or on() vector(-1)
+    # 후보 판정 중 담당자가 "틀림"으로 채점한 비율 (오판율)
+    - name: incorrect-rate
+      interval: {{ .Values.analysis.interval }}
+      count: {{ .Values.analysis.maxWaitMeasurements }}          # 단계 분석은 횟수가 있어야 한다 (없으면 Argo 가 InvalidSpec)
+      consecutiveSuccessLimit: {{ .Values.analysis.consecutiveSuccesses }}
+      failureLimit: {{ .Values.analysis.failureLimit }}
+      inconclusiveLimit: {{ .Values.analysis.maxWaitMeasurements }}
+      # 건수가 모자라면(처리·채점) -1 → 통과도 실패도 아님(판단 불가) → 그 비율에서 기다린다
+      successCondition: "result[0] >= 0 && result[0] <= {{ .Values.analysis.maxIncorrectRate }}"
+      failureCondition: "result[0] > {{ .Values.analysis.maxIncorrectRate }}"
+      provider:
+        prometheus:
+          address: {{ $prom | quote }}
+          query: |
+            (
+              (sum(tradeproof_review_feedback{bundle_id="{{ "{{args.candidate}}" }}",verdict="incorrect"}) or on() vector(0))
+              / sum(tradeproof_review_feedback{bundle_id="{{ "{{args.candidate}}" }}"})
+            )
+            and on() (sum(tradeproof_screening_results_total{bundle_id="{{ "{{args.candidate}}" }}"}) >= {{ .Values.analysis.minSamples }})
+            and on() (sum(tradeproof_review_feedback{bundle_id="{{ "{{args.candidate}}" }}"}) >= {{ .Values.analysis.minGraded }})
             or on() vector(-1)
 {{- end }}

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 시연용 심사 트래픽: canary 입구(ingress)로 샘플 서류 심사를 계속 넣는다 (A 의 a_screening/tools/loadgen.py).
-# 후보 번들이 받은 거래가 쌓여야 canary 감시(처리 시간·실패율)가 판단할 수 있다.
+# canary 감시(오판율·실패율·처리 시간)는 후보 번들이 10건 이상 판정하고 담당자가 5건 이상 채점해야 판단한다.
+# 트래픽만으로는 다음 단계로 올라가지 않는다 → 검토 화면에서 채점 (리허설은 scripts/demo_grade.sh).
 #
 #   scripts/demo_traffic.sh                    # 초당 1건, 5분 (Ctrl+C 로 멈춤)
 #   RATE=2 DURATION=120 scripts/demo_traffic.sh
